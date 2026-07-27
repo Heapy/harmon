@@ -7,17 +7,31 @@ linkerOpts = -framework IOKit -framework CoreFoundation -lcurl
 #define HARMON_NATIVE_H
 
 #include <CoreFoundation/CoreFoundation.h>
+#include <IOKit/IOKitLib.h>
 #include <IOKit/ps/IOPowerSources.h>
 #include <IOKit/ps/IOPSKeys.h>
+#include <IOKit/storage/IOBlockStorageDriver.h>
+#include <IOKit/storage/IOMedia.h>
+#include <arpa/inet.h>
 #include <curl/curl.h>
 #include <errno.h>
+#include <fcntl.h>
 #include <libproc.h>
+#include <mach/host_info.h>
+#include <mach/mach.h>
+#include <mach/mach_host.h>
+#include <mach/vm_statistics.h>
 #include <spawn.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/mount.h>
+#include <sys/socket.h>
+#include <sys/stat.h>
 #include <sys/sysctl.h>
+#include <sys/time.h>
+#include <sys/un.h>
 #include <sys/wait.h>
 #include <time.h>
 #include <unistd.h>
@@ -31,6 +45,8 @@ extern "C" {
 #define HM_HTTP_ERROR_SIZE 256
 #define HM_PROCESS_ISSUE_RUSAGE 1
 #define HM_PROCESS_ISSUE_CAPACITY 2
+#define HM_MAX_VM_REGIONS 32768
+#define HM_MAX_JSON_FRAME_SIZE (32U * 1024U * 1024U)
 
 typedef struct {
     int32_t pid;
@@ -41,11 +57,29 @@ typedef struct {
     uint64_t system_time_ns;
     uint64_t package_idle_wakeups;
     uint64_t interrupt_wakeups;
+    uint64_t pageins;
     uint64_t disk_bytes_read;
     uint64_t disk_bytes_written;
+    uint64_t logical_writes_bytes;
+    uint64_t instructions;
+    uint64_t cycles;
+    uint64_t energy_nanojoules;
+    uint64_t wired_bytes;
     uint64_t resident_bytes;
     uint64_t physical_footprint_bytes;
+    uint64_t lifetime_max_physical_footprint_bytes;
+    uint64_t compressed_or_paged_out_bytes;
+    uint64_t faults;
+    uint64_t copy_on_write_faults;
+    uint64_t mach_system_calls;
+    uint64_t unix_system_calls;
+    uint64_t context_switches;
     uint64_t billed_energy;
+    int32_t thread_count;
+    int32_t running_thread_count;
+    int32_t virtual_memory_region_count;
+    int32_t compressed_attribution_attempted;
+    int32_t compressed_attribution_available;
     char name[HM_PROCESS_NAME_SIZE];
     char executable_path[HM_PROCESS_PATH_SIZE];
 } HMProcessSample;
@@ -76,6 +110,52 @@ typedef struct {
 } HMBatterySample;
 
 typedef struct {
+    uint64_t user_ticks;
+    uint64_t system_ticks;
+    uint64_t idle_ticks;
+    uint64_t nice_ticks;
+} HMProcessorSample;
+
+typedef struct {
+    double one_minute;
+    double five_minutes;
+    double fifteen_minutes;
+} HMLoadAverageSample;
+
+typedef struct {
+    uint64_t page_size_bytes;
+    uint64_t free_bytes;
+    uint64_t active_bytes;
+    uint64_t inactive_bytes;
+    uint64_t wired_bytes;
+    uint64_t purgeable_bytes;
+    uint64_t compressed_bytes;
+    uint64_t uncompressed_bytes_in_compressor;
+    uint64_t swap_backed_uncompressed_bytes;
+    uint64_t pageins;
+    uint64_t pageouts;
+    uint64_t faults;
+    uint64_t copy_on_write_faults;
+    uint64_t compressions;
+    uint64_t decompressions;
+    uint64_t swapins;
+    uint64_t swapouts;
+} HMVirtualMemorySample;
+
+typedef struct {
+    int32_t available;
+    int32_t device_count;
+    uint64_t bytes_read;
+    uint64_t bytes_written;
+    uint64_t read_operations;
+    uint64_t write_operations;
+    uint64_t read_time_ns;
+    uint64_t write_time_ns;
+    uint64_t root_filesystem_total_bytes;
+    uint64_t root_filesystem_available_bytes;
+} HMStorageSample;
+
+typedef struct {
     long status_code;
     int32_t curl_code;
     char error[HM_HTTP_ERROR_SIZE];
@@ -98,6 +178,405 @@ static inline void hm_sleep_millis(uint64_t milliseconds) {
     while (nanosleep(&requested, &remaining) != 0 && errno == EINTR) {
         requested = remaining;
     }
+}
+
+static inline int hm_set_socket_options(int descriptor) {
+    int enabled = 1;
+    if (setsockopt(
+            descriptor,
+            SOL_SOCKET,
+            SO_NOSIGPIPE,
+            &enabled,
+            (socklen_t)sizeof(enabled)
+        ) != 0) {
+        return -1;
+    }
+
+    struct timeval timeout = {
+        .tv_sec = 30,
+        .tv_usec = 0,
+    };
+    if (setsockopt(
+            descriptor,
+            SOL_SOCKET,
+            SO_SNDTIMEO,
+            &timeout,
+            (socklen_t)sizeof(timeout)
+        ) != 0 ||
+        setsockopt(
+            descriptor,
+            SOL_SOCKET,
+            SO_RCVTIMEO,
+            &timeout,
+            (socklen_t)sizeof(timeout)
+        ) != 0) {
+        return -1;
+    }
+
+    int flags = fcntl(descriptor, F_GETFD);
+    if (flags < 0 || fcntl(descriptor, F_SETFD, flags | FD_CLOEXEC) != 0) {
+        return -1;
+    }
+    return 0;
+}
+
+static inline int hm_unix_server_open(const char *path, uint32_t group_id) {
+    if (path == NULL || path[0] == '\0') {
+        errno = EINVAL;
+        return -1;
+    }
+    if (strlen(path) >= sizeof(((struct sockaddr_un *)0)->sun_path)) {
+        errno = ENAMETOOLONG;
+        return -1;
+    }
+
+    struct stat existing;
+    if (lstat(path, &existing) == 0) {
+        if (!S_ISSOCK(existing.st_mode) || existing.st_uid != geteuid()) {
+            errno = EEXIST;
+            return -1;
+        }
+        if (unlink(path) != 0) {
+            return -1;
+        }
+    } else if (errno != ENOENT) {
+        return -1;
+    }
+
+    int descriptor = socket(AF_UNIX, SOCK_STREAM, 0);
+    if (descriptor < 0) {
+        return -1;
+    }
+    if (hm_set_socket_options(descriptor) != 0) {
+        int saved_errno = errno;
+        close(descriptor);
+        errno = saved_errno;
+        return -1;
+    }
+
+    struct sockaddr_un address;
+    memset(&address, 0, sizeof(address));
+    address.sun_family = AF_UNIX;
+    snprintf(address.sun_path, sizeof(address.sun_path), "%s", path);
+
+    if (bind(descriptor, (struct sockaddr *)&address, (socklen_t)sizeof(address)) != 0) {
+        int saved_errno = errno;
+        close(descriptor);
+        errno = saved_errno;
+        return -1;
+    }
+    if (chmod(path, 0660) != 0) {
+        int saved_errno = errno;
+        close(descriptor);
+        unlink(path);
+        errno = saved_errno;
+        return -1;
+    }
+    if (geteuid() == 0 && chown(path, 0, (gid_t)group_id) != 0) {
+        int saved_errno = errno;
+        close(descriptor);
+        unlink(path);
+        errno = saved_errno;
+        return -1;
+    }
+    if (listen(descriptor, 8) != 0) {
+        int saved_errno = errno;
+        close(descriptor);
+        unlink(path);
+        errno = saved_errno;
+        return -1;
+    }
+    return descriptor;
+}
+
+static inline int hm_unix_accept(
+    int server_descriptor,
+    uint32_t allowed_user_id,
+    uint32_t *peer_user_id
+) {
+    int descriptor;
+    do {
+        descriptor = accept(server_descriptor, NULL, NULL);
+    } while (descriptor < 0 && errno == EINTR);
+    if (descriptor < 0) {
+        return -1;
+    }
+    if (hm_set_socket_options(descriptor) != 0) {
+        int saved_errno = errno;
+        close(descriptor);
+        errno = saved_errno;
+        return -1;
+    }
+
+    uid_t user_id = UINT32_MAX;
+    gid_t group_id = UINT32_MAX;
+    if (getpeereid(descriptor, &user_id, &group_id) != 0) {
+        int saved_errno = errno;
+        close(descriptor);
+        errno = saved_errno;
+        return -1;
+    }
+    (void)group_id;
+    if (peer_user_id != NULL) {
+        *peer_user_id = (uint32_t)user_id;
+    }
+    if ((uint32_t)user_id != allowed_user_id && user_id != 0) {
+        close(descriptor);
+        errno = EACCES;
+        return -2;
+    }
+    return descriptor;
+}
+
+static inline int hm_unix_connect(const char *path) {
+    if (path == NULL || path[0] == '\0') {
+        errno = EINVAL;
+        return -1;
+    }
+    if (strlen(path) >= sizeof(((struct sockaddr_un *)0)->sun_path)) {
+        errno = ENAMETOOLONG;
+        return -1;
+    }
+
+    int descriptor = socket(AF_UNIX, SOCK_STREAM, 0);
+    if (descriptor < 0) {
+        return -1;
+    }
+    if (hm_set_socket_options(descriptor) != 0) {
+        int saved_errno = errno;
+        close(descriptor);
+        errno = saved_errno;
+        return -1;
+    }
+
+    struct sockaddr_un address;
+    memset(&address, 0, sizeof(address));
+    address.sun_family = AF_UNIX;
+    snprintf(address.sun_path, sizeof(address.sun_path), "%s", path);
+    if (connect(descriptor, (struct sockaddr *)&address, (socklen_t)sizeof(address)) != 0) {
+        int saved_errno = errno;
+        close(descriptor);
+        errno = saved_errno;
+        return -1;
+    }
+
+    uid_t peer_user_id = UINT32_MAX;
+    gid_t peer_group_id = UINT32_MAX;
+    if (getpeereid(descriptor, &peer_user_id, &peer_group_id) != 0) {
+        int saved_errno = errno;
+        close(descriptor);
+        errno = saved_errno;
+        return -1;
+    }
+    (void)peer_group_id;
+    if (peer_user_id != 0 && peer_user_id != geteuid()) {
+        close(descriptor);
+        errno = EACCES;
+        return -1;
+    }
+    return descriptor;
+}
+
+static inline int hm_send_all(int descriptor, const void *buffer, size_t size) {
+    const uint8_t *cursor = (const uint8_t *)buffer;
+    size_t remaining = size;
+    while (remaining > 0) {
+        ssize_t written = send(descriptor, cursor, remaining, 0);
+        if (written < 0 && errno == EINTR) {
+            continue;
+        }
+        if (written <= 0) {
+            if (written == 0) {
+                errno = EPIPE;
+            }
+            return -1;
+        }
+        cursor += (size_t)written;
+        remaining -= (size_t)written;
+    }
+    return 0;
+}
+
+static inline int hm_receive_all(int descriptor, void *buffer, size_t size) {
+    uint8_t *cursor = (uint8_t *)buffer;
+    size_t remaining = size;
+    while (remaining > 0) {
+        ssize_t received = recv(descriptor, cursor, remaining, 0);
+        if (received < 0 && errno == EINTR) {
+            continue;
+        }
+        if (received <= 0) {
+            if (received == 0) {
+                errno = ECONNRESET;
+            }
+            return -1;
+        }
+        cursor += (size_t)received;
+        remaining -= (size_t)received;
+    }
+    return 0;
+}
+
+static inline int hm_send_json_frame(int descriptor, const char *json) {
+    if (json == NULL) {
+        errno = EINVAL;
+        return -1;
+    }
+    size_t length = strlen(json);
+    if (length == 0 || length > HM_MAX_JSON_FRAME_SIZE || length > UINT32_MAX) {
+        errno = EMSGSIZE;
+        return -1;
+    }
+    uint32_t network_length = htonl((uint32_t)length);
+    if (hm_send_all(descriptor, &network_length, sizeof(network_length)) != 0) {
+        return -1;
+    }
+    return hm_send_all(descriptor, json, length);
+}
+
+static inline char *hm_receive_json_frame(
+    int descriptor,
+    uint32_t maximum_size,
+    uint32_t *output_size
+) {
+    uint32_t network_length = 0;
+    if (hm_receive_all(descriptor, &network_length, sizeof(network_length)) != 0) {
+        return NULL;
+    }
+    uint32_t length = ntohl(network_length);
+    if (length == 0 ||
+        length > HM_MAX_JSON_FRAME_SIZE ||
+        length > maximum_size) {
+        errno = EMSGSIZE;
+        return NULL;
+    }
+
+    char *json = (char *)malloc((size_t)length + 1U);
+    if (json == NULL) {
+        errno = ENOMEM;
+        return NULL;
+    }
+    if (hm_receive_all(descriptor, json, length) != 0) {
+        int saved_errno = errno;
+        free(json);
+        errno = saved_errno;
+        return NULL;
+    }
+    if (memchr(json, '\0', length) != NULL) {
+        free(json);
+        errno = EILSEQ;
+        return NULL;
+    }
+    json[length] = '\0';
+    if (output_size != NULL) {
+        *output_size = length;
+    }
+    return json;
+}
+
+static inline void hm_close_descriptor(int descriptor) {
+    if (descriptor >= 0) {
+        close(descriptor);
+    }
+}
+
+static inline int hm_remove_socket(const char *path) {
+    if (path == NULL || path[0] == '\0') {
+        errno = EINVAL;
+        return -1;
+    }
+    return unlink(path);
+}
+
+static inline void hm_free(void *value) {
+    free(value);
+}
+
+static inline uint64_t hm_uint32_counter(int32_t value) {
+    return (uint64_t)(uint32_t)value;
+}
+
+static inline uint64_t hm_saturating_add_u64(uint64_t left, uint64_t right) {
+    return UINT64_MAX - left < right ? UINT64_MAX : left + right;
+}
+
+static inline uint64_t hm_saturating_multiply_u64(uint64_t left, uint64_t right) {
+    if (left == 0 || right == 0) {
+        return 0;
+    }
+    return UINT64_MAX / left < right ? UINT64_MAX : left * right;
+}
+
+static inline int hm_read_compressed_or_paged_out(
+    pid_t pid,
+    uint64_t *output_bytes,
+    int32_t *output_regions
+) {
+    if (output_bytes == NULL || output_regions == NULL) {
+        errno = EINVAL;
+        return -1;
+    }
+
+    uint64_t address = 0;
+    uint64_t pages = 0;
+    int32_t regions = 0;
+    while (regions < HM_MAX_VM_REGIONS) {
+        struct proc_regioninfo region;
+        memset(&region, 0, sizeof(region));
+        int result = proc_pidinfo(
+            pid,
+            PROC_PIDREGIONINFO,
+            address,
+            &region,
+            (int)sizeof(region)
+        );
+        if (result != (int)sizeof(region)) {
+            if (regions == 0) {
+                return -1;
+            }
+            break;
+        }
+
+        pages = hm_saturating_add_u64(
+            pages,
+            (uint64_t)region.pri_pages_swapped_out
+        );
+        ++regions;
+
+        uint64_t next_address = region.pri_address + region.pri_size;
+        if (next_address <= address || next_address < region.pri_address) {
+            break;
+        }
+        address = next_address;
+    }
+
+    *output_bytes = hm_saturating_multiply_u64(
+        pages,
+        (uint64_t)getpagesize()
+    );
+    *output_regions = regions;
+    return 0;
+}
+
+typedef struct {
+    int32_t index;
+    uint64_t physical_footprint_bytes;
+} HMProcessAttributionCandidate;
+
+static inline int hm_compare_process_candidates(const void *left, const void *right) {
+    const HMProcessAttributionCandidate *left_candidate =
+        (const HMProcessAttributionCandidate *)left;
+    const HMProcessAttributionCandidate *right_candidate =
+        (const HMProcessAttributionCandidate *)right;
+    if (left_candidate->physical_footprint_bytes <
+        right_candidate->physical_footprint_bytes) {
+        return 1;
+    }
+    if (left_candidate->physical_footprint_bytes >
+        right_candidate->physical_footprint_bytes) {
+        return -1;
+    }
+    return left_candidate->index - right_candidate->index;
 }
 
 static inline void hm_read_process_metadata(
@@ -164,11 +643,16 @@ static inline int hm_list_processes(
     int output_capacity,
     HMProcessIssue *issues,
     int issue_capacity,
+    int attribution_process_limit,
     int *total_processes,
     int *inaccessible_processes,
     int *written_issues
 ) {
-    if (output == NULL || output_capacity <= 0 || issues == NULL || issue_capacity <= 0) {
+    if (output == NULL ||
+        output_capacity <= 0 ||
+        issues == NULL ||
+        issue_capacity <= 0 ||
+        attribution_process_limit < 0) {
         errno = EINVAL;
         return -1;
     }
@@ -227,9 +711,21 @@ static inline int hm_list_processes(
             continue;
         }
 
-        struct rusage_info_v4 usage;
+        struct rusage_info_v6 usage;
         memset(&usage, 0, sizeof(usage));
-        if (proc_pid_rusage(pid, RUSAGE_INFO_V4, (rusage_info_t *)&usage) != 0) {
+        int usage_result = proc_pid_rusage(
+            pid,
+            RUSAGE_INFO_V6,
+            (rusage_info_t *)&usage
+        );
+        if (usage_result != 0 && errno == EINVAL) {
+            usage_result = proc_pid_rusage(
+                pid,
+                RUSAGE_INFO_V4,
+                (rusage_info_t *)&usage
+            );
+        }
+        if (usage_result != 0) {
             int usage_errno = errno;
             ++inaccessible;
             if (issue_count < issue_capacity) {
@@ -261,11 +757,44 @@ static inline int hm_list_processes(
         sample->system_time_ns = usage.ri_system_time;
         sample->package_idle_wakeups = usage.ri_pkg_idle_wkups;
         sample->interrupt_wakeups = usage.ri_interrupt_wkups;
+        sample->pageins = usage.ri_pageins;
         sample->disk_bytes_read = usage.ri_diskio_bytesread;
         sample->disk_bytes_written = usage.ri_diskio_byteswritten;
+        sample->logical_writes_bytes = usage.ri_logical_writes;
+        sample->instructions = usage.ri_instructions;
+        sample->cycles = usage.ri_cycles;
+        sample->energy_nanojoules = usage.ri_energy_nj;
+        sample->wired_bytes = usage.ri_wired_size;
         sample->resident_bytes = usage.ri_resident_size;
         sample->physical_footprint_bytes = usage.ri_phys_footprint;
+        sample->lifetime_max_physical_footprint_bytes =
+            usage.ri_lifetime_max_phys_footprint;
         sample->billed_energy = usage.ri_billed_energy;
+
+        struct proc_taskinfo task_info;
+        memset(&task_info, 0, sizeof(task_info));
+        int task_info_size = proc_pidinfo(
+            pid,
+            PROC_PIDTASKINFO,
+            0,
+            &task_info,
+            (int)sizeof(task_info)
+        );
+        if (task_info_size == (int)sizeof(task_info)) {
+            sample->faults = hm_uint32_counter(task_info.pti_faults);
+            sample->copy_on_write_faults =
+                hm_uint32_counter(task_info.pti_cow_faults);
+            sample->mach_system_calls =
+                hm_uint32_counter(task_info.pti_syscalls_mach);
+            sample->unix_system_calls =
+                hm_uint32_counter(task_info.pti_syscalls_unix);
+            sample->context_switches = hm_uint32_counter(task_info.pti_csw);
+            sample->thread_count =
+                task_info.pti_threadnum > 0 ? task_info.pti_threadnum : 0;
+            sample->running_thread_count =
+                task_info.pti_numrunning > 0 ? task_info.pti_numrunning : 0;
+        }
+
         hm_read_process_metadata(
             pid,
             &sample->parent_pid,
@@ -280,6 +809,45 @@ static inline int hm_list_processes(
         }
 
         ++written;
+    }
+
+    if (written > 0 && attribution_process_limit > 0) {
+        HMProcessAttributionCandidate *candidates =
+            (HMProcessAttributionCandidate *)calloc(
+                (size_t)written,
+                sizeof(HMProcessAttributionCandidate)
+            );
+        if (candidates != NULL) {
+            for (int index = 0; index < written; ++index) {
+                candidates[index].index = index;
+                candidates[index].physical_footprint_bytes =
+                    output[index].physical_footprint_bytes;
+            }
+            qsort(
+                candidates,
+                (size_t)written,
+                sizeof(HMProcessAttributionCandidate),
+                hm_compare_process_candidates
+            );
+
+            int attempts = attribution_process_limit < written
+                ? attribution_process_limit
+                : written;
+            for (int candidate_index = 0;
+                 candidate_index < attempts;
+                 ++candidate_index) {
+                HMProcessSample *sample = &output[candidates[candidate_index].index];
+                sample->compressed_attribution_attempted = 1;
+                if (hm_read_compressed_or_paged_out(
+                        sample->pid,
+                        &sample->compressed_or_paged_out_bytes,
+                        &sample->virtual_memory_region_count
+                    ) == 0) {
+                    sample->compressed_attribution_available = 1;
+                }
+            }
+            free(candidates);
+        }
     }
 
     free(pids);
@@ -322,11 +890,315 @@ static inline int hm_read_physical_memory(uint64_t *output) {
     return sysctlbyname("hw.memsize", output, &size, NULL, 0);
 }
 
+static inline int hm_read_processor(HMProcessorSample *output) {
+    if (output == NULL) {
+        errno = EINVAL;
+        return -1;
+    }
+    memset(output, 0, sizeof(*output));
+
+    mach_port_t host = mach_host_self();
+    host_cpu_load_info_data_t information;
+    mach_msg_type_number_t count = HOST_CPU_LOAD_INFO_COUNT;
+    kern_return_t result = host_statistics(
+        host,
+        HOST_CPU_LOAD_INFO,
+        (host_info_t)&information,
+        &count
+    );
+    mach_port_deallocate(mach_task_self(), host);
+    if (result != KERN_SUCCESS) {
+        errno = EIO;
+        return -1;
+    }
+
+    output->user_ticks = information.cpu_ticks[CPU_STATE_USER];
+    output->system_ticks = information.cpu_ticks[CPU_STATE_SYSTEM];
+    output->idle_ticks = information.cpu_ticks[CPU_STATE_IDLE];
+    output->nice_ticks = information.cpu_ticks[CPU_STATE_NICE];
+    return 0;
+}
+
+static inline int hm_read_load_averages(HMLoadAverageSample *output) {
+    if (output == NULL) {
+        errno = EINVAL;
+        return -1;
+    }
+    double values[3] = {0.0, 0.0, 0.0};
+    if (getloadavg(values, 3) != 3) {
+        return -1;
+    }
+    output->one_minute = values[0];
+    output->five_minutes = values[1];
+    output->fifteen_minutes = values[2];
+    return 0;
+}
+
+static inline int hm_read_virtual_memory(HMVirtualMemorySample *output) {
+    if (output == NULL) {
+        errno = EINVAL;
+        return -1;
+    }
+    memset(output, 0, sizeof(*output));
+
+    mach_port_t host = mach_host_self();
+    vm_size_t page_size = 0;
+    if (host_page_size(host, &page_size) != KERN_SUCCESS) {
+        mach_port_deallocate(mach_task_self(), host);
+        errno = EIO;
+        return -1;
+    }
+
+    vm_statistics64_data_t information;
+    memset(&information, 0, sizeof(information));
+    mach_msg_type_number_t count = HOST_VM_INFO64_COUNT;
+    kern_return_t result = host_statistics64(
+        host,
+        HOST_VM_INFO64,
+        (host_info64_t)&information,
+        &count
+    );
+    mach_port_deallocate(mach_task_self(), host);
+    if (result != KERN_SUCCESS) {
+        errno = EIO;
+        return -1;
+    }
+
+    output->page_size_bytes = (uint64_t)page_size;
+    output->free_bytes = hm_saturating_multiply_u64(
+        information.free_count,
+        page_size
+    );
+    output->active_bytes = hm_saturating_multiply_u64(
+        information.active_count,
+        page_size
+    );
+    output->inactive_bytes = hm_saturating_multiply_u64(
+        information.inactive_count,
+        page_size
+    );
+    output->wired_bytes = hm_saturating_multiply_u64(
+        information.wire_count,
+        page_size
+    );
+    output->purgeable_bytes = hm_saturating_multiply_u64(
+        information.purgeable_count,
+        page_size
+    );
+    output->compressed_bytes = hm_saturating_multiply_u64(
+        information.compressor_page_count,
+        page_size
+    );
+    output->uncompressed_bytes_in_compressor = hm_saturating_multiply_u64(
+        information.total_uncompressed_pages_in_compressor,
+        page_size
+    );
+    output->swap_backed_uncompressed_bytes = hm_saturating_multiply_u64(
+        information.swapped_count,
+        page_size
+    );
+    output->pageins = information.pageins;
+    output->pageouts = information.pageouts;
+    output->faults = information.faults;
+    output->copy_on_write_faults = information.cow_faults;
+    output->compressions = information.compressions;
+    output->decompressions = information.decompressions;
+    output->swapins = information.swapins;
+    output->swapouts = information.swapouts;
+    return 0;
+}
+
 static inline int hm_cf_number_to_int(CFTypeRef value, int *output) {
     if (value == NULL || output == NULL || CFGetTypeID(value) != CFNumberGetTypeID()) {
         return 0;
     }
     return CFNumberGetValue((CFNumberRef)value, kCFNumberIntType, output) ? 1 : 0;
+}
+
+static inline int hm_cf_number_to_u64(CFTypeRef value, uint64_t *output) {
+    if (value == NULL || output == NULL || CFGetTypeID(value) != CFNumberGetTypeID()) {
+        return 0;
+    }
+    int64_t signed_value = 0;
+    if (!CFNumberGetValue(
+            (CFNumberRef)value,
+            kCFNumberSInt64Type,
+            &signed_value
+        ) ||
+        signed_value < 0) {
+        return 0;
+    }
+    *output = (uint64_t)signed_value;
+    return 1;
+}
+
+static inline int hm_cf_boolean_value(CFTypeRef value, int fallback) {
+    if (value == NULL || CFGetTypeID(value) != CFBooleanGetTypeID()) {
+        return fallback;
+    }
+    return CFBooleanGetValue((CFBooleanRef)value) ? 1 : 0;
+}
+
+static inline int hm_storage_driver_is_internal(io_registry_entry_t driver) {
+    io_iterator_t children = IO_OBJECT_NULL;
+    if (IORegistryEntryGetChildIterator(
+            driver,
+            kIOServicePlane,
+            &children
+        ) != KERN_SUCCESS) {
+        return 0;
+    }
+
+    int matched = 0;
+    io_registry_entry_t child;
+    while ((child = IOIteratorNext(children)) != IO_OBJECT_NULL) {
+        if (IOObjectConformsTo(child, kIOMediaClass)) {
+            CFTypeRef whole = IORegistryEntryCreateCFProperty(
+                child,
+                CFSTR(kIOMediaWholeKey),
+                kCFAllocatorDefault,
+                0
+            );
+            CFTypeRef removable = IORegistryEntryCreateCFProperty(
+                child,
+                CFSTR(kIOMediaRemovableKey),
+                kCFAllocatorDefault,
+                0
+            );
+            CFTypeRef ejectable = IORegistryEntryCreateCFProperty(
+                child,
+                CFSTR(kIOMediaEjectableKey),
+                kCFAllocatorDefault,
+                0
+            );
+            matched =
+                hm_cf_boolean_value(whole, 0) &&
+                !hm_cf_boolean_value(removable, 1) &&
+                !hm_cf_boolean_value(ejectable, 1);
+            if (whole != NULL) {
+                CFRelease(whole);
+            }
+            if (removable != NULL) {
+                CFRelease(removable);
+            }
+            if (ejectable != NULL) {
+                CFRelease(ejectable);
+            }
+        }
+        IOObjectRelease(child);
+        if (matched) {
+            break;
+        }
+    }
+    IOObjectRelease(children);
+    return matched;
+}
+
+static inline void hm_add_storage_statistic(
+    CFDictionaryRef statistics,
+    CFStringRef key,
+    uint64_t *total
+) {
+    uint64_t value = 0;
+    if (statistics != NULL &&
+        total != NULL &&
+        hm_cf_number_to_u64(CFDictionaryGetValue(statistics, key), &value)) {
+        *total = hm_saturating_add_u64(*total, value);
+    }
+}
+
+static inline int hm_read_storage(HMStorageSample *output) {
+    if (output == NULL) {
+        errno = EINVAL;
+        return -1;
+    }
+    memset(output, 0, sizeof(*output));
+
+    struct statfs filesystem;
+    if (statfs("/", &filesystem) == 0) {
+        output->root_filesystem_total_bytes = hm_saturating_multiply_u64(
+            (uint64_t)filesystem.f_blocks,
+            (uint64_t)filesystem.f_bsize
+        );
+        output->root_filesystem_available_bytes = hm_saturating_multiply_u64(
+            (uint64_t)filesystem.f_bavail,
+            (uint64_t)filesystem.f_bsize
+        );
+    }
+
+    CFMutableDictionaryRef matching = IOServiceMatching(
+        kIOBlockStorageDriverClass
+    );
+    if (matching == NULL) {
+        errno = ENOMEM;
+        return -1;
+    }
+
+    io_iterator_t iterator = IO_OBJECT_NULL;
+    kern_return_t matching_result = IOServiceGetMatchingServices(
+        kIOMainPortDefault,
+        matching,
+        &iterator
+    );
+    if (matching_result != KERN_SUCCESS) {
+        errno = EIO;
+        return -1;
+    }
+
+    io_registry_entry_t driver;
+    while ((driver = IOIteratorNext(iterator)) != IO_OBJECT_NULL) {
+        if (hm_storage_driver_is_internal(driver)) {
+            CFTypeRef value = IORegistryEntryCreateCFProperty(
+                driver,
+                CFSTR(kIOBlockStorageDriverStatisticsKey),
+                kCFAllocatorDefault,
+                0
+            );
+            if (value != NULL &&
+                CFGetTypeID(value) == CFDictionaryGetTypeID()) {
+                CFDictionaryRef statistics = (CFDictionaryRef)value;
+                hm_add_storage_statistic(
+                    statistics,
+                    CFSTR(kIOBlockStorageDriverStatisticsBytesReadKey),
+                    &output->bytes_read
+                );
+                hm_add_storage_statistic(
+                    statistics,
+                    CFSTR(kIOBlockStorageDriverStatisticsBytesWrittenKey),
+                    &output->bytes_written
+                );
+                hm_add_storage_statistic(
+                    statistics,
+                    CFSTR(kIOBlockStorageDriverStatisticsReadsKey),
+                    &output->read_operations
+                );
+                hm_add_storage_statistic(
+                    statistics,
+                    CFSTR(kIOBlockStorageDriverStatisticsWritesKey),
+                    &output->write_operations
+                );
+                hm_add_storage_statistic(
+                    statistics,
+                    CFSTR(kIOBlockStorageDriverStatisticsTotalReadTimeKey),
+                    &output->read_time_ns
+                );
+                hm_add_storage_statistic(
+                    statistics,
+                    CFSTR(kIOBlockStorageDriverStatisticsTotalWriteTimeKey),
+                    &output->write_time_ns
+                );
+                ++output->device_count;
+            }
+            if (value != NULL) {
+                CFRelease(value);
+            }
+        }
+        IOObjectRelease(driver);
+    }
+    IOObjectRelease(iterator);
+
+    output->available = output->device_count > 0 ? 1 : 0;
+    return 0;
 }
 
 static inline int hm_read_battery(HMBatterySample *output) {

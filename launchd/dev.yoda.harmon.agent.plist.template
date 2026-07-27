@@ -1,0 +1,49 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>dev.yoda.harmon.agent</string>
+
+    <key>ProgramArguments</key>
+    <array>
+        <string>@HARMON_BINARY@</string>
+        <string>run</string>
+        <string>--config</string>
+        <string>@HARMON_CONFIG@</string>
+    </array>
+
+    <key>RunAtLoad</key>
+    <true/>
+
+    <key>KeepAlive</key>
+    <dict>
+        <key>SuccessfulExit</key>
+        <false/>
+    </dict>
+
+    <key>ProcessType</key>
+    <string>Background</string>
+
+    <key>LowPriorityIO</key>
+    <true/>
+
+    <key>Nice</key>
+    <integer>5</integer>
+
+    <key>ThrottleInterval</key>
+    <integer>30</integer>
+
+    <key>LimitLoadToSessionType</key>
+    <string>Aqua</string>
+
+    <key>Umask</key>
+    <integer>63</integer>
+
+    <key>StandardOutPath</key>
+    <string>@HARMON_LOG_DIR@/agent.log</string>
+
+    <key>StandardErrorPath</key>
+    <string>@HARMON_LOG_DIR@/agent.error.log</string>
+</dict>
+</plist>

@@ -59,6 +59,35 @@ class AlertAnalyzer {
                 }
         }
 
+        thresholds.applicationDiskWriteMiBPerSecond?.let { thresholdMiB ->
+            val thresholdBytesPerSecond = thresholdMiB * BYTES_PER_MEBIBYTE_DOUBLE
+            usage.applications
+                .asSequence()
+                .filter { it.diskWriteBytesPerSecond >= thresholdBytesPerSecond }
+                .sortedByDescending { it.diskWriteBytesPerSecond }
+                .take(config.maxAlertsPerCategory)
+                .forEach { application ->
+                    add(
+                        Alert(
+                            key = "disk-write:${application.id}",
+                            severity = if (
+                                application.diskWriteBytesPerSecond >=
+                                thresholdBytesPerSecond * 2.0
+                            ) {
+                                Severity.CRITICAL
+                            } else {
+                                Severity.WARNING
+                            },
+                            title = "High application storage writes",
+                            message = "${application.alertLabel()} writes " +
+                                "${Format.bytesPerSecond(
+                                    application.diskWriteBytesPerSecond,
+                                )} to physical storage",
+                        ),
+                    )
+                }
+        }
+
         thresholds.swapUsedMiB?.let { thresholdMiB ->
             val thresholdBytes = thresholdMiB.toULong() * BYTES_PER_MEBIBYTE
             if (usage.swap.usedBytes >= thresholdBytes) {
@@ -72,6 +101,30 @@ class AlertAnalyzer {
                         },
                         title = "High swap usage",
                         message = "${Format.bytes(usage.swap.usedBytes)} of swap is in use",
+                    ),
+                )
+            }
+        }
+
+        thresholds.swapOutMiBPerSecond?.let { thresholdMiB ->
+            val thresholdBytesPerSecond = thresholdMiB * BYTES_PER_MEBIBYTE_DOUBLE
+            if (usage.virtualMemory.swapOutBytesPerSecond >= thresholdBytesPerSecond) {
+                add(
+                    Alert(
+                        key = "swap-out",
+                        severity = if (
+                            usage.virtualMemory.swapOutBytesPerSecond >=
+                            thresholdBytesPerSecond * 2.0
+                        ) {
+                            Severity.CRITICAL
+                        } else {
+                            Severity.WARNING
+                        },
+                        title = "High swap-out traffic",
+                        message = "macOS is writing " +
+                            "${Format.bytesPerSecond(
+                                usage.virtualMemory.swapOutBytesPerSecond,
+                            )} to swap",
                     ),
                 )
             }
@@ -137,5 +190,6 @@ class AlertAnalyzer {
 
     private companion object {
         const val BYTES_PER_MEBIBYTE: ULong = 1_048_576u
+        const val BYTES_PER_MEBIBYTE_DOUBLE = 1_048_576.0
     }
 }

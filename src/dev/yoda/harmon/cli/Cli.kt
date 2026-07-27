@@ -2,9 +2,12 @@ package dev.yoda.harmon.cli
 
 import dev.yoda.harmon.config.ConfigException
 import dev.yoda.harmon.config.ConfigLoader
+import dev.yoda.harmon.ipc.CollectorServer
 import dev.yoda.harmon.report.ReportFormatter
 import dev.yoda.harmon.runtime.HarmonService
 import dev.yoda.harmon.util.printError
+import kotlinx.cinterop.ExperimentalForeignApi
+import platform.posix.geteuid
 import kotlin.system.exitProcess
 
 object HarmonApplication {
@@ -20,7 +23,8 @@ object HarmonApplication {
 
         when (command) {
             Command.Help -> println(CliParser.help())
-            Command.Version -> println("harmon 0.1.0")
+            Command.Version -> println("harmon 0.2.0")
+            is Command.Collector -> runCollector(command)
             is Command.Run -> withConfig(command.configPath) { config ->
                 HarmonService(config).runForever()
             }
@@ -60,6 +64,29 @@ object HarmonApplication {
         }
     }
 
+    @OptIn(ExperimentalForeignApi::class)
+    private fun runCollector(command: Command.Collector) {
+        if (geteuid() != 0u && !command.allowUnprivileged) {
+            printError(
+                "error: the collector must run as root; " +
+                    "--allow-unprivileged is for local development only",
+            )
+            exitProcess(77)
+        }
+        try {
+            CollectorServer(
+                socketPath = command.socketPath,
+                allowedUserId = command.allowedUserId,
+                socketGroupId = command.socketGroupId,
+            ).runForever()
+        } catch (failure: Throwable) {
+            printError(
+                "collector error: ${failure.message ?: failure::class.simpleName}",
+            )
+            exitProcess(1)
+        }
+    }
+
     private fun withConfig(path: String?, block: (dev.yoda.harmon.config.HarmonConfig) -> Unit) {
         try {
             val effectivePath = path ?: ConfigLoader.defaultPath()
@@ -92,6 +119,13 @@ sealed interface Command {
     data object Help : Command
 
     data object Version : Command
+
+    data class Collector(
+        val socketPath: String,
+        val allowedUserId: UInt,
+        val socketGroupId: UInt,
+        val allowUnprivileged: Boolean,
+    ) : Command
 
     data class Run(
         val configPath: String?,
@@ -129,6 +163,9 @@ object CliParser {
                 "-h", "--help", "help" -> return Command.Help
                 "-v", "--version", "version" -> return Command.Version
             }
+        }
+        if (arguments.firstOrNull() == "collector") {
+            return parseCollector(arguments.drop(1))
         }
 
         val commandName = arguments.first().takeUnless { it.startsWith('-') } ?: "run"
@@ -186,6 +223,7 @@ object CliParser {
         Harmon — lightweight macOS process and battery monitor
 
         Usage:
+          harmon collector --allowed-uid UID --allowed-gid GID [--socket PATH]
           harmon run [--config PATH]
           harmon once [--config PATH] [--sample-seconds N] [--notify]
           harmon diagnose [--config PATH] [--sample-seconds N]
@@ -194,7 +232,8 @@ object CliParser {
           harmon --help
           harmon --version
 
-        With no command, Harmon runs continuously. If --config is omitted and
+        launchd runs `collector` as root and `run` as the logged-in user. With
+        no command, Harmon starts the user agent. If --config is omitted and
         ~/.config/harmon/config does not exist, safe defaults are used.
 
         Secret settings can be supplied via HARMON_WEBHOOK_BEARER_TOKEN,
@@ -213,4 +252,55 @@ object CliParser {
             throw CliException("--notify is available only for 'once'")
         }
     }
+
+    private fun parseCollector(arguments: List<String>): Command.Collector {
+        var socketPath = DEFAULT_COLLECTOR_SOCKET
+        var allowedUserId: UInt? = null
+        var socketGroupId: UInt? = null
+        var allowUnprivileged = false
+
+        var index = 0
+        while (index < arguments.size) {
+            when (val option = arguments[index]) {
+                "--socket" -> {
+                    socketPath = arguments.valueAfter(index, option)
+                    index += 2
+                }
+                "--allowed-uid" -> {
+                    allowedUserId = arguments.unsignedValueAfter(index, option)
+                    index += 2
+                }
+                "--allowed-gid" -> {
+                    socketGroupId = arguments.unsignedValueAfter(index, option)
+                    index += 2
+                }
+                "--allow-unprivileged" -> {
+                    allowUnprivileged = true
+                    index += 1
+                }
+                else -> throw CliException("unknown collector option '$option'")
+            }
+        }
+        if (!socketPath.startsWith('/') || socketPath.length > 100) {
+            throw CliException("--socket must be an absolute path up to 100 characters")
+        }
+        return Command.Collector(
+            socketPath = socketPath,
+            allowedUserId = allowedUserId
+                ?: throw CliException("collector requires --allowed-uid"),
+            socketGroupId = socketGroupId
+                ?: throw CliException("collector requires --allowed-gid"),
+            allowUnprivileged = allowUnprivileged,
+        )
+    }
+
+    private fun List<String>.valueAfter(index: Int, option: String): String =
+        getOrNull(index + 1)?.takeUnless { it.startsWith('-') }
+            ?: throw CliException("$option requires a value")
+
+    private fun List<String>.unsignedValueAfter(index: Int, option: String): UInt =
+        valueAfter(index, option).toUIntOrNull()
+            ?: throw CliException("$option must be an unsigned integer")
+
+    private const val DEFAULT_COLLECTOR_SOCKET = "/var/run/harmon.collector.sock"
 }

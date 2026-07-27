@@ -78,13 +78,44 @@ class ApplicationGrouper {
                 it.physicalFootprintBytes
             },
             residentBytes = members.saturatingSumOf { it.residentBytes },
+            wiredBytes = members.saturatingSumOf { it.wiredBytes },
+            lifetimeMaxPhysicalFootprintBytes = members.saturatingSumOf {
+                it.lifetimeMaxPhysicalFootprintBytes
+            },
+            compressedOrPagedOutBytes = members.saturatingSumOf {
+                it.compressedOrPagedOutBytes ?: 0u
+            },
+            compressedAttributionProcessCount = members.count {
+                it.compressedOrPagedOutBytes != null
+            },
             wakeupsPerSecond = members.sumOf { it.wakeupsPerSecond }.finiteNonNegative(),
+            pageInsPerSecond = members.sumOf { it.pageInsPerSecond }.finiteNonNegative(),
             diskReadBytesPerSecond = members
                 .sumOf { it.diskReadBytesPerSecond }
                 .finiteNonNegative(),
             diskWriteBytesPerSecond = members
                 .sumOf { it.diskWriteBytesPerSecond }
                 .finiteNonNegative(),
+            logicalWriteBytesPerSecond = members
+                .sumOf { it.logicalWriteBytesPerSecond }
+                .finiteNonNegative(),
+            instructionsPerSecond = members
+                .sumOf { it.instructionsPerSecond }
+                .finiteNonNegative(),
+            cyclesPerSecond = members.sumOf { it.cyclesPerSecond }.finiteNonNegative(),
+            energyWatts = members.sumOf { it.energyWatts }.finiteNonNegative(),
+            faultsPerSecond = members.sumOf { it.faultsPerSecond }.finiteNonNegative(),
+            copyOnWriteFaultsPerSecond = members
+                .sumOf { it.copyOnWriteFaultsPerSecond }
+                .finiteNonNegative(),
+            systemCallsPerSecond = members
+                .sumOf { it.systemCallsPerSecond }
+                .finiteNonNegative(),
+            contextSwitchesPerSecond = members
+                .sumOf { it.contextSwitchesPerSecond }
+                .finiteNonNegative(),
+            threadCount = members.sumOf { it.threadCount },
+            runningThreadCount = members.sumOf { it.runningThreadCount },
             billedEnergyPerSecond = members
                 .sumOf { it.billedEnergyPerSecond }
                 .finiteNonNegative(),

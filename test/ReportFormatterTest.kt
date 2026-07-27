@@ -36,4 +36,33 @@ class ReportFormatterTest {
         assertContains(output, "PID 123 protected")
         assertContains(output, "/usr/libexec/protected")
     }
+
+    @Test
+    fun reportShowsSystemStorageAndCompressedMemorySignals() {
+        val usage = systemUsage(
+            processes = listOf(
+                processUsage(
+                    name = "writer",
+                    diskWriteBytesPerSecond = 64.0 * 1_048_576.0,
+                    logicalWriteBytesPerSecond = 96.0 * 1_048_576.0,
+                    compressedOrPagedOutBytes = 512uL * 1_048_576uL,
+                    energyWatts = 0.012,
+                ),
+            ),
+        )
+
+        val output = ReportFormatter.text(
+            MonitoringReport(
+                usage = usage,
+                alerts = emptyList(),
+                topProcessCount = 5,
+            ),
+        )
+
+        assertContains(output, "Internal storage:")
+        assertContains(output, "Top application storage writes")
+        assertContains(output, "Top application compressed/paged-out memory")
+        assertContains(output, "writer")
+        assertContains(output, "12.0 mW accounted")
+    }
 }

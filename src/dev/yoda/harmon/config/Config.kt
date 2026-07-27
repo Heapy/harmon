@@ -15,7 +15,9 @@ import platform.posix.getenv
 data class AlertThresholds(
     val applicationCpuPercent: Double? = 150.0,
     val applicationMemoryMiB: Long? = 2_048,
+    val applicationDiskWriteMiBPerSecond: Double? = 50.0,
     val swapUsedMiB: Long? = 1_024,
+    val swapOutMiBPerSecond: Double? = 25.0,
     val applicationBatteryImpactScore: Double? = 100.0,
     val batteryLowPercent: Int? = 20,
 )
@@ -31,6 +33,7 @@ data class NotificationConfig(
 )
 
 data class HarmonConfig(
+    val collectorSocket: String = "/var/run/harmon.collector.sock",
     val intervalSeconds: Long = 300,
     val onceSampleSeconds: Long = 2,
     val topProcessCount: Int = 8,
@@ -40,6 +43,7 @@ data class HarmonConfig(
     val notifications: NotificationConfig = NotificationConfig(),
 ) {
     fun redactedDescription(): String = buildString {
+        appendLine("collectorSocket=$collectorSocket")
         appendLine("intervalSeconds=$intervalSeconds")
         appendLine("onceSampleSeconds=$onceSampleSeconds")
         appendLine("topProcessCount=$topProcessCount")
@@ -47,7 +51,14 @@ data class HarmonConfig(
         appendLine("alertCooldownSeconds=$alertCooldownSeconds")
         appendLine("applicationCpuAlertPercent=${thresholds.applicationCpuPercent ?: 0}")
         appendLine("applicationMemoryAlertMiB=${thresholds.applicationMemoryMiB ?: 0}")
+        appendLine(
+            "applicationDiskWriteAlertMiBPerSecond=" +
+                (thresholds.applicationDiskWriteMiBPerSecond ?: 0),
+        )
         appendLine("swapAlertMiB=${thresholds.swapUsedMiB ?: 0}")
+        appendLine(
+            "swapOutAlertMiBPerSecond=${thresholds.swapOutMiBPerSecond ?: 0}",
+        )
         appendLine(
             "applicationBatteryImpactAlertScore=" +
                 (thresholds.applicationBatteryImpactScore ?: 0),
@@ -88,13 +99,16 @@ object ConfigLoader {
 
     private val knownKeys = setOf(
         "intervalSeconds",
+        "collectorSocket",
         "onceSampleSeconds",
         "topProcessCount",
         "maxAlertsPerCategory",
         "alertCooldownSeconds",
         "applicationCpuAlertPercent",
         "applicationMemoryAlertMiB",
+        "applicationDiskWriteAlertMiBPerSecond",
         "swapAlertMiB",
+        "swapOutAlertMiBPerSecond",
         "applicationBatteryImpactAlertScore",
         "batteryLowAlertPercent",
         "systemNotifications",
@@ -147,12 +161,16 @@ object ConfigLoader {
         environment["HARMON_TELEGRAM_CHAT_ID"]?.let {
             values["telegramChatId"] = it
         }
+        environment["HARMON_COLLECTOR_SOCKET"]?.let {
+            values["collectorSocket"] = it
+        }
 
         val defaults = HarmonConfig()
         val notificationDefaults = defaults.notifications
         val thresholdDefaults = defaults.thresholds
 
         val config = HarmonConfig(
+            collectorSocket = values["collectorSocket"] ?: defaults.collectorSocket,
             intervalSeconds = values.positiveLong(
                 "intervalSeconds",
                 defaults.intervalSeconds,
@@ -182,9 +200,17 @@ object ConfigLoader {
                     "applicationMemoryAlertMiB",
                     thresholdDefaults.applicationMemoryMiB,
                 ),
+                applicationDiskWriteMiBPerSecond = values.optionalPositiveDouble(
+                    "applicationDiskWriteAlertMiBPerSecond",
+                    thresholdDefaults.applicationDiskWriteMiBPerSecond,
+                ),
                 swapUsedMiB = values.optionalPositiveLong(
                     "swapAlertMiB",
                     thresholdDefaults.swapUsedMiB,
+                ),
+                swapOutMiBPerSecond = values.optionalPositiveDouble(
+                    "swapOutAlertMiBPerSecond",
+                    thresholdDefaults.swapOutMiBPerSecond,
                 ),
                 applicationBatteryImpactScore = values.optionalPositiveDouble(
                     "applicationBatteryImpactAlertScore",
@@ -241,6 +267,15 @@ object ConfigLoader {
         if (exists(path)) load(path) else parse(emptySequence())
 
     private fun validate(config: HarmonConfig) {
+        if (
+            !config.collectorSocket.startsWith('/') ||
+            config.collectorSocket.length > 100 ||
+            config.collectorSocket.any { it == '\u0000' }
+        ) {
+            throw ConfigException(
+                "collectorSocket must be an absolute Unix socket path up to 100 characters",
+            )
+        }
         if (config.intervalSeconds !in 1..86_400) {
             throw ConfigException("intervalSeconds must be between 1 and 86400")
         }
@@ -308,6 +343,7 @@ object ConfigLoader {
         "HARMON_WEBHOOK_BEARER_TOKEN",
         "HARMON_TELEGRAM_BOT_TOKEN",
         "HARMON_TELEGRAM_CHAT_ID",
+        "HARMON_COLLECTOR_SOCKET",
     ).mapNotNull { key ->
         getenv(key)?.toKString()?.let { key to it }
     }.toMap()

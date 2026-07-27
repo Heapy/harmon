@@ -32,5 +32,13 @@ object Format {
 
     fun bytesPerSecond(value: Double): String =
         "${bytes(value.coerceAtLeast(0.0).toULong())}/s"
-}
 
+    fun power(value: Double): String {
+        val watts = value.takeIf { it.isFinite() && it > 0.0 } ?: return "0 W"
+        return when {
+            watts >= 1.0 -> "${decimal(watts)} W"
+            watts >= 0.001 -> "${decimal(watts * 1_000.0)} mW"
+            else -> "${decimal(watts * 1_000_000.0)} \u00b5W"
+        }
+    }
+}

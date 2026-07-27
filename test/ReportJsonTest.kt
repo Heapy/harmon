@@ -28,7 +28,25 @@ class ReportJsonTest {
 
         assertEquals("harmon.sample", payload.getValue("event").jsonPrimitive.content)
         assertTrue(payload.getValue("applications").jsonObject.containsKey("topCpu"))
+        assertTrue(
+            payload.getValue("applications").jsonObject.containsKey("topPhysicalWrites"),
+        )
+        assertTrue(
+            payload
+                .getValue("applications")
+                .jsonObject
+                .containsKey("topInternalLogicalWrites"),
+        )
         assertTrue(payload.getValue("processes").jsonObject.containsKey("topCpu"))
+        assertTrue(payload.getValue("system").jsonObject.containsKey("virtualMemory"))
+        assertTrue(payload.getValue("system").jsonObject.containsKey("storage"))
+        val virtualMemory = payload
+            .getValue("system")
+            .jsonObject
+            .getValue("virtualMemory")
+            .jsonObject
+        assertTrue(virtualMemory.containsKey("swapBackedUncompressedBytes"))
+        assertFalse(virtualMemory.containsKey("swappedBytes"))
         assertFalse("/Applications/Private.app" in ReportJson.encode(report))
     }
 

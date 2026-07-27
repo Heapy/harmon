@@ -1,84 +1,146 @@
 # Harmon
 
-Harmon is a lightweight macOS process monitor written in Kotlin/Native. It
-periodically samples process, swap, and battery metrics, writes a compact
-report, and sends alerts to Notification Center, Telegram, and JSON webhooks.
+Harmon is a lightweight macOS workload monitor written in Kotlin/Native. It
+samples processes every few minutes, groups helpers into their owning
+application, explains memory and storage pressure, and can notify Notification
+Center, Telegram, or an HTTPS webhook.
 
-The current application is a launchd-managed CLI without a UI. Its monitoring
-core, macOS collector, rule analysis, and delivery channels are separated so a
-SwiftUI or Compose UI can be added without moving the monitoring logic.
+The project currently has no UI. It runs as two launchd services:
 
-See [docs/collection.md](docs/collection.md) for the complete specification of
-data sources, formulas, access limitations, and external delivery.
-
-## Features
-
-- CPU usage for every readable process over the actual sampling window;
-- resident memory and physical footprint;
-- automatic grouping by the outermost macOS `.app` bundle, including helper
-  and descendant processes;
-- allocated and used swap, including its encryption status;
-- AC or battery power, charging state, percentage, and remaining-time estimate;
-- process wakeups, disk I/O, and the system `billed_energy` counter;
-- transparent application-level battery-impact ranking;
-- application-level threshold rules, alert cooldowns, and per-category limits;
-- local diagnostics showing grouped PIDs and every process whose resource
-  metrics could not be read;
-- Notification Center, Telegram Bot API, and arbitrary HTTPS webhook delivery;
-- typed JSON encoded with `kotlinx.serialization`;
-- installation as a user LaunchAgent.
-
-## Important macOS limitation
-
-Activity Monitor does not publish its exact `Energy Impact` algorithm as a
-supported API. Harmon therefore does not pretend to reproduce that value.
-`batteryImpactScore` is a documented heuristic:
-
-```text
-CPU % + wakeups/s × 0.25 + disk I/O MiB/s × 2
+```mermaid
+flowchart LR
+    LD[Root LaunchDaemon] -->|collects public kernel and IOKit counters| S[Unix socket]
+    S -->|length-prefixed kotlinx.serialization JSON| LA[User LaunchAgent]
+    LA --> R[Reports and alert rules]
+    R --> N[Notification Center]
+    R --> T[Telegram]
+    R --> W[Webhook]
 ```
 
-The system `billed_energy` value is exported separately in webhook payloads
-without assuming a physical unit.
+The privileged collector never loads user configuration or notification
+credentials. The user agent never calls the process-inspection APIs directly.
+Both roles currently use the same native executable, installed at different,
+appropriately owned paths.
 
-The user LaunchAgent is intentional: it runs in the GUI session and can display
-notifications. Some protected macOS processes do not expose metrics to an
-unprivileged user, so reports explicitly include the number of `inaccessible`
-processes. Full root-level visibility would require two components in the
-future: a privileged LaunchDaemon collector and a user agent for delivery and
-UI.
+See [the collection model](docs/collection.md) for metric definitions and
+[the service architecture](docs/architecture.md) for the privilege and IPC
+boundary.
 
-Run `harmon diagnose` to see multi-process application groups and the PID,
-executable path, failure category, and `errno` for each process without
-resource metrics.
+## What Harmon monitors
+
+- per-process and per-application CPU over the real sampling window;
+- resident, wired, physical-footprint, and lifetime-peak memory;
+- a bounded per-process compressed-or-paged-out memory proxy;
+- global allocated/used swap, physical compressor size, uncompressed memory
+  represented in the compressor and in swap, compression/decompression rates,
+  and compressor swap-I/O rates;
+- physical disk reads and writes, logical writes, page-ins, faults, system
+  calls, context switches, thread counts, instructions, cycles, and accounted
+  energy where macOS supplies it;
+- internal block-device bytes, operations, and service time from IOKit;
+- root-filesystem capacity;
+- system CPU, 1/5/15-minute load averages, physical memory, and power state;
+- automatic `.app` grouping, including Firefox, Chromium, Electron, and other
+  multi-process applications;
+- alert cooldowns and thresholds for CPU, memory, physical storage writes, swap
+  usage, swap-out traffic, likely battery impact, and low battery.
+
+All local IPC and outbound JSON is encoded with `kotlinx.serialization`.
+Executable paths and detailed collection failures remain local and are omitted
+from normal webhook payloads.
+
+## Important interpretation limits
+
+### Per-process swap
+
+macOS exposes supported global swap state, but it does not expose a supported
+public `PID → bytes physically present in swap files` table. Harmon therefore
+keeps three concepts separate:
+
+- `swap.usedBytes`, from `vm.swapusage`, is the global amount of used swap
+  space;
+- `virtualMemory.swapBackedUncompressedBytes` is the uncompressed size of VM
+  pages represented by compressor slots currently on disk. It is deliberately
+  not labelled physical swap bytes and can be larger than `swap.usedBytes`;
+- `compressedOrPagedOutBytes` is a per-process proxy obtained by walking public
+  VM region information. It counts pages owned by the compressor pager and
+  cannot distinguish pages still held in compressed RAM from pages whose
+  compressor segment was written to disk.
+
+To keep collection bounded, Harmon walks VM regions only for the 256 readable
+processes with the largest physical footprint. Reports include the attribution
+coverage and failure count. The proxy must not be summed and presented as exact
+disk swap.
+
+### Root access
+
+Running the collector as root fixes the normal same-user restriction applied
+by `proc_pid_rusage` and `proc_pidinfo`, so it substantially improves process
+coverage. It does not disable SIP, mandatory access-control policy, or every
+special protection used by macOS. Harmon keeps an inaccessible-process count
+and detailed local diagnostics instead of silently treating missing processes
+as zero usage.
+
+### Battery impact
+
+Activity Monitor's `Energy Impact` formula is private. Harmon exports macOS's
+accounted nanojoule counter when available and also calculates a transparent
+relative score:
+
+```text
+CPU % + wakeups/s × 0.25 + physical disk I/O MiB/s × 2
+```
+
+The score is useful for ranking and alerting, not as a wattmeter.
 
 ## Requirements
 
 - Apple Silicon Mac;
 - Xcode Command Line Tools or Xcode;
-- Kotlin Toolchain 0.11.1 through the project wrapper;
-- Kotlin 2.4.10, downloaded automatically by the toolchain.
+- Kotlin Toolchain 0.11.1 through the checked-in `./kotlin` wrapper;
+- Kotlin 2.4.10, resolved by the toolchain.
 
 ## Build and test
 
 ```shell
-./kotlin build
 ./kotlin test
-./kotlin run -- once --sample-seconds 2
-```
-
-Build the release variant with:
-
-```shell
+./kotlin build
 ./kotlin build --variant release
 ```
 
-The resulting arm64 executable is written to
-`build/tasks/_harmon_linkMacosArm64Release/harmon.kexe`.
+The release executable is written to:
+
+```text
+build/tasks/_harmon_linkMacosArm64Release/harmon.kexe
+```
+
+For a local, unprivileged IPC smoke test without installing launchd services,
+start the collector in one terminal:
+
+```shell
+build/tasks/_harmon_linkMacosArm64Debug/harmon.kexe \
+  collector \
+  --socket /tmp/harmon-dev.sock \
+  --allowed-uid "$(id -u)" \
+  --allowed-gid "$(id -g)" \
+  --allow-unprivileged
+```
+
+Then sample through it from another terminal:
+
+```shell
+HARMON_COLLECTOR_SOCKET=/tmp/harmon-dev.sock \
+  build/tasks/_harmon_linkMacosArm64Debug/harmon.kexe \
+  once --sample-seconds 2
+```
+
+This development mode intentionally has the same visibility limitations as
+the current login user.
 
 ## Commands
 
 ```text
+harmon collector --allowed-uid UID --allowed-gid GID [--socket PATH]
 harmon run [--config PATH]
 harmon once [--config PATH] [--sample-seconds N] [--notify]
 harmon diagnose [--config PATH] [--sample-seconds N]
@@ -88,53 +150,52 @@ harmon --help
 harmon --version
 ```
 
-With no command, Harmon starts its continuous monitoring loop. `once` takes two
-snapshots over a short interval and prints one report. Add `--notify` to deliver
-that report through every configured channel. `diagnose` takes the same sampled
-report and appends the full grouping and collection-failure inventory.
+launchd owns the `collector` command in a normal installation. With no command,
+Harmon starts the user-agent loop. `once` takes two collector snapshots and
+prints one report. `diagnose` also prints grouping, attribution coverage, and
+process-access failures.
 
 ## Configuration
 
-Harmon reads `~/.config/harmon/config` by default. If the file does not exist,
-safe defaults are used. See
-[config/harmon.conf.example](config/harmon.conf.example).
+Harmon reads `~/.config/harmon/config`. The installer creates it from
+[config/harmon.conf.example](config/harmon.conf.example) without overwriting an
+existing file.
 
-Key settings:
+Important defaults:
 
 ```properties
+collectorSocket=/var/run/harmon.collector.sock
 intervalSeconds=300
 applicationCpuAlertPercent=150
 applicationMemoryAlertMiB=2048
+applicationDiskWriteAlertMiBPerSecond=50
 swapAlertMiB=1024
+swapOutAlertMiBPerSecond=25
 applicationBatteryImpactAlertScore=100
 batteryLowAlertPercent=20
 systemNotifications=true
 notifyEverySample=false
 ```
 
-A threshold of `0` disables its rule. Swap is checked by absolute usage because
-macOS dynamically changes the allocated swap pool.
+A threshold of `0` disables that rule. The old
+`processCpuAlertPercent`, `processMemoryAlertMiB`, and
+`batteryImpactAlertScore` keys remain accepted as compatibility aliases.
 
-The former `processCpuAlertPercent`, `processMemoryAlertMiB`, and
-`batteryImpactAlertScore` names are accepted as compatibility aliases.
-
-The webhook receives an `application/json` POST. External endpoints must use
-HTTPS; `http://127.0.0.1` is allowed for local development. Telegram and
-webhook credentials can be stored in a configuration file with `0600`
-permissions. For manual runs or CI, provide them through the environment:
+Notification destinations can be overridden for manual runs:
 
 ```text
 HARMON_WEBHOOK_URL
 HARMON_WEBHOOK_BEARER_TOKEN
 HARMON_TELEGRAM_BOT_TOKEN
 HARMON_TELEGRAM_CHAT_ID
+HARMON_COLLECTOR_SOCKET
 ```
 
-A LaunchAgent does not inherit variables from the current terminal. For a
-normal installation, keep secrets in the generated `0600` configuration file
-or explicitly add them to the launchd environment.
+External webhooks must use HTTPS. Plain HTTP is accepted only for
+`127.0.0.1`. A LaunchAgent does not inherit terminal environment variables, so
+normal installations should keep secrets in the generated `0600` config file.
 
-Validate configuration and delivery without printing secrets:
+Validate configuration and notification delivery without printing secrets:
 
 ```shell
 harmon check-config
@@ -143,54 +204,59 @@ harmon test-notifications
 
 ## Install with launchd
 
+Run the installer as the login user:
+
 ```shell
-./scripts/install-launch-agent.sh
+./scripts/install.sh
 ```
 
-The installer:
+It asks for sudo only for the system-owned collector files and services. It:
 
 - builds the release executable;
-- installs it as `~/.local/bin/harmon`;
-- creates `~/.config/harmon/config` without overwriting an existing file;
-- registers `~/Library/LaunchAgents/dev.yoda.harmon.plist`;
-- writes logs under `~/Library/Logs/Harmon`.
+- installs the user CLI at `~/.local/bin/harmon`;
+- installs a root-owned copy at
+  `/Library/PrivilegedHelperTools/dev.yoda.harmon`;
+- registers `dev.yoda.harmon.collector` as a system LaunchDaemon;
+- creates `/var/run/harmon.collector.sock`, accessible only to root and the
+  configured login user;
+- registers `dev.yoda.harmon.agent` in the Aqua user session;
+- preserves an existing user configuration.
 
-Inspect status and logs:
+Inspect services and logs:
 
 ```shell
-launchctl print "gui/$(id -u)/dev.yoda.harmon"
-tail -f ~/Library/Logs/Harmon/harmon.log
-tail -f ~/Library/Logs/Harmon/harmon.error.log
+launchctl print "gui/$(id -u)/dev.yoda.harmon.agent"
+sudo launchctl print system/dev.yoda.harmon.collector
+tail -f ~/Library/Logs/Harmon/agent.log
+sudo tail -f /Library/Logs/Harmon/collector.log
 ```
 
-Remove the agent and executable while preserving configuration and logs:
+Remove both services and installed binaries while preserving configuration and
+logs:
 
 ```shell
-./scripts/uninstall-launch-agent.sh
+./scripts/uninstall.sh
 ```
 
 ## Project structure
 
 ```text
 src/
-  config/      configuration loading and validation
-  monitor/     macOS collection and interval calculations
+  ipc/         versioned kotlinx.serialization protocol and Unix socket roles
+  monitor/     privileged macOS collection and interval calculations
   analysis/    application grouping, alert rules, and cooldowns
-  report/      text output and kotlinx.serialization DTOs
+  config/      user-agent configuration
+  report/      text and JSON reporting
   notify/      Notification Center, webhook, and Telegram delivery
-  runtime/     continuous service loop
-cinterop/      libproc, sysctl, IOKit, and libcurl bridge
-launchd/       LaunchAgent template
-docs/          collection model, formulas, and exported data
-LICENSE        GPL-3.0-only terms
+  runtime/     user-agent monitoring loop
+cinterop/      libproc, Mach, sysctl, IOKit, sockets, and libcurl bridge
+launchd/       LaunchDaemon and LaunchAgent templates
+scripts/       install and uninstall flows
+docs/          architecture and metric semantics
+LICENSE        GPL-3.0-only license text
 ```
-
-A future UI can consume the same `SystemUsage` and `MonitoringReport` models,
-with local time-series storage and IPC between the collector process and the
-application.
 
 ## License
 
-Harmon is free software licensed under the
-[GNU General Public License version 3 only](LICENSE)
-(`GPL-3.0-only`).
+Harmon is licensed under the
+[GNU General Public License version 3 only](LICENSE) (`GPL-3.0-only`).

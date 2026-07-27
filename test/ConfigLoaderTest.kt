@@ -36,12 +36,14 @@ class ConfigLoaderTest {
                 "telegramChatId=file-chat",
             ),
             environment = mapOf(
+                "HARMON_COLLECTOR_SOCKET" to "/tmp/harmon-test.sock",
                 "HARMON_WEBHOOK_URL" to "https://new.example/events",
                 "HARMON_TELEGRAM_BOT_TOKEN" to "env-token",
                 "HARMON_TELEGRAM_CHAT_ID" to "env-chat",
             ),
         )
 
+        assertEquals("/tmp/harmon-test.sock", config.collectorSocket)
         assertEquals("https://new.example/events", config.notifications.webhookUrl)
         assertEquals("env-token", config.notifications.telegramBotToken)
         assertEquals("env-chat", config.notifications.telegramChatId)

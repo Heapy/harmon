@@ -1,11 +1,18 @@
 import dev.yoda.harmon.analysis.ApplicationGrouper
+import dev.yoda.harmon.model.LoadAverages
 import dev.yoda.harmon.model.PowerState
+import dev.yoda.harmon.model.ProcessorCounters
+import dev.yoda.harmon.model.ProcessorUsage
 import dev.yoda.harmon.model.ProcessIdentity
 import dev.yoda.harmon.model.ProcessUsage
 import dev.yoda.harmon.model.RawProcessSample
 import dev.yoda.harmon.model.RawSystemSnapshot
+import dev.yoda.harmon.model.StorageCounters
+import dev.yoda.harmon.model.StorageUsage
 import dev.yoda.harmon.model.SwapUsage
 import dev.yoda.harmon.model.SystemUsage
+import dev.yoda.harmon.model.VirtualMemoryCounters
+import dev.yoda.harmon.model.VirtualMemoryUsage
 import kotlin.time.Instant
 
 fun rawProcess(
@@ -17,9 +24,13 @@ fun rawProcess(
     userTimeNs: ULong = 0u,
     systemTimeNs: ULong = 0u,
     wakeups: ULong = 0u,
+    pageIns: ULong = 0u,
     diskRead: ULong = 0u,
     diskWrite: ULong = 0u,
+    logicalWrite: ULong = 0u,
     footprint: ULong = 512uL * 1_048_576uL,
+    compressedOrPagedOut: ULong? = null,
+    energyNanojoules: ULong = 0u,
     billedEnergy: ULong = 0u,
 ): RawProcessSample = RawProcessSample(
     identity = ProcessIdentity(pid, startedAt),
@@ -31,10 +42,26 @@ fun rawProcess(
     systemTimeNs = systemTimeNs,
     packageIdleWakeups = wakeups,
     interruptWakeups = 0u,
+    pageIns = pageIns,
     diskBytesRead = diskRead,
     diskBytesWritten = diskWrite,
+    logicalWritesBytes = logicalWrite,
+    instructions = 0u,
+    cycles = 0u,
+    energyNanojoules = energyNanojoules,
+    wiredBytes = 0u,
     residentBytes = footprint,
     physicalFootprintBytes = footprint,
+    lifetimeMaxPhysicalFootprintBytes = footprint,
+    compressedOrPagedOutBytes = compressedOrPagedOut,
+    virtualMemoryRegionCount = compressedOrPagedOut?.let { 12 },
+    faults = 0u,
+    copyOnWriteFaults = 0u,
+    machSystemCalls = 0u,
+    unixSystemCalls = 0u,
+    contextSwitches = 0u,
+    threadCount = 1,
+    runningThreadCount = 0,
     billedEnergy = billedEnergy,
 )
 
@@ -59,8 +86,54 @@ fun rawSnapshot(
         percentage = 75,
         minutesRemaining = 240,
     ),
+    processor = ProcessorCounters(
+        userTicks = monotonicNs / 1_000_000u,
+        systemTicks = monotonicNs / 2_000_000u,
+        idleTicks = monotonicNs / 1_000_000u,
+        niceTicks = 0u,
+    ),
+    loadAverages = LoadAverages(
+        oneMinute = 1.0,
+        fiveMinutes = 0.8,
+        fifteenMinutes = 0.5,
+    ),
+    virtualMemory = VirtualMemoryCounters(
+        pageSizeBytes = 16_384u,
+        freeBytes = 4uL * 1_073_741_824uL,
+        activeBytes = 8uL * 1_073_741_824uL,
+        inactiveBytes = 8uL * 1_073_741_824uL,
+        wiredBytes = 4uL * 1_073_741_824uL,
+        purgeableBytes = 128uL * 1_048_576uL,
+        compressedBytes = 2uL * 1_073_741_824uL,
+        uncompressedBytesInCompressor = 4uL * 1_073_741_824uL,
+        swapBackedUncompressedBytes = swapUsed,
+        pageIns = monotonicNs / 10_000_000u,
+        pageOuts = monotonicNs / 20_000_000u,
+        faults = monotonicNs / 1_000_000u,
+        copyOnWriteFaults = monotonicNs / 2_000_000u,
+        compressions = monotonicNs / 5_000_000u,
+        decompressions = monotonicNs / 6_000_000u,
+        swapIns = monotonicNs / 20_000_000u,
+        swapOuts = monotonicNs / 25_000_000u,
+    ),
+    storage = StorageCounters(
+        available = true,
+        deviceCount = 1,
+        bytesRead = monotonicNs,
+        bytesWritten = monotonicNs / 2u,
+        readOperations = monotonicNs / 1_000_000u,
+        writeOperations = monotonicNs / 2_000_000u,
+        readTimeNs = monotonicNs / 4u,
+        writeTimeNs = monotonicNs / 5u,
+        rootFileSystemTotalBytes = 1_000_000_000_000u,
+        rootFileSystemAvailableBytes = 500_000_000_000u,
+    ),
     totalProcessCount = processes.size,
     inaccessibleProcessCount = 0,
+    compressedAttributionProcessCount = processes.count {
+        it.compressedOrPagedOutBytes != null
+    },
+    compressedAttributionFailureCount = 0,
     processes = processes,
     processIssues = emptyList(),
 )
@@ -73,6 +146,10 @@ fun processUsage(
     executablePath: String? = null,
     cpuPercent: Double = 0.0,
     footprint: ULong = 512uL * 1_048_576uL,
+    diskWriteBytesPerSecond: Double = 0.0,
+    logicalWriteBytesPerSecond: Double = 0.0,
+    compressedOrPagedOutBytes: ULong? = null,
+    energyWatts: Double = 0.0,
     impact: Double = 0.0,
 ): ProcessUsage = ProcessUsage(
     identity = ProcessIdentity(pid, startedAt),
@@ -85,9 +162,24 @@ fun processUsage(
     systemCpuPercent = 0.0,
     physicalFootprintBytes = footprint,
     residentBytes = footprint,
+    wiredBytes = 0u,
+    lifetimeMaxPhysicalFootprintBytes = footprint,
+    compressedOrPagedOutBytes = compressedOrPagedOutBytes,
+    virtualMemoryRegionCount = compressedOrPagedOutBytes?.let { 12 },
     wakeupsPerSecond = impact,
+    pageInsPerSecond = 0.0,
     diskReadBytesPerSecond = 0.0,
-    diskWriteBytesPerSecond = 0.0,
+    diskWriteBytesPerSecond = diskWriteBytesPerSecond,
+    logicalWriteBytesPerSecond = logicalWriteBytesPerSecond,
+    instructionsPerSecond = 0.0,
+    cyclesPerSecond = 0.0,
+    energyWatts = energyWatts,
+    faultsPerSecond = 0.0,
+    copyOnWriteFaultsPerSecond = 0.0,
+    systemCallsPerSecond = 0.0,
+    contextSwitchesPerSecond = 0.0,
+    threadCount = 1,
+    runningThreadCount = 0,
     billedEnergyPerSecond = 0.0,
     batteryImpactScore = impact,
 )
@@ -95,6 +187,7 @@ fun processUsage(
 fun systemUsage(
     processes: List<ProcessUsage>,
     swapUsed: ULong = 0u,
+    swapOutBytesPerSecond: Double = 0.0,
     batteryPercentage: Int = 75,
 ): SystemUsage = SystemUsage(
     capturedAt = Instant.fromEpochSeconds(100),
@@ -113,8 +206,54 @@ fun systemUsage(
         percentage = batteryPercentage,
         minutesRemaining = 180,
     ),
+    processor = ProcessorUsage(
+        totalPercent = 40.0,
+        userPercent = 30.0,
+        systemPercent = 10.0,
+        nicePercent = 0.0,
+        idlePercent = 60.0,
+    ),
+    loadAverages = LoadAverages(
+        oneMinute = 1.0,
+        fiveMinutes = 0.8,
+        fifteenMinutes = 0.5,
+    ),
+    virtualMemory = VirtualMemoryUsage(
+        freeBytes = 4uL * 1_073_741_824uL,
+        activeBytes = 8uL * 1_073_741_824uL,
+        inactiveBytes = 8uL * 1_073_741_824uL,
+        wiredBytes = 4uL * 1_073_741_824uL,
+        purgeableBytes = 128uL * 1_048_576uL,
+        compressedBytes = 2uL * 1_073_741_824uL,
+        uncompressedBytesInCompressor = 4uL * 1_073_741_824uL,
+        swapBackedUncompressedBytes = swapUsed,
+        pageInBytesPerSecond = 0.0,
+        pageOutBytesPerSecond = 0.0,
+        faultRate = 0.0,
+        copyOnWriteFaultRate = 0.0,
+        compressionBytesPerSecond = 0.0,
+        decompressionBytesPerSecond = 0.0,
+        swapInBytesPerSecond = 0.0,
+        swapOutBytesPerSecond = swapOutBytesPerSecond,
+    ),
+    storage = StorageUsage(
+        available = true,
+        deviceCount = 1,
+        readBytesPerSecond = 0.0,
+        writeBytesPerSecond = 0.0,
+        readOperationsPerSecond = 0.0,
+        writeOperationsPerSecond = 0.0,
+        readServiceTimePercent = 0.0,
+        writeServiceTimePercent = 0.0,
+        rootFileSystemTotalBytes = 1_000_000_000_000u,
+        rootFileSystemAvailableBytes = 500_000_000_000u,
+    ),
     totalProcessCount = processes.size,
     inaccessibleProcessCount = 0,
+    compressedAttributionProcessCount = processes.count {
+        it.compressedOrPagedOutBytes != null
+    },
+    compressedAttributionFailureCount = 0,
     processes = processes,
     applications = ApplicationGrouper().group(processes),
     processIssues = emptyList(),

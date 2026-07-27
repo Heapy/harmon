@@ -1,22 +1,34 @@
 package dev.yoda.harmon.monitor
 
 import dev.yoda.harmon.model.PowerState
+import dev.yoda.harmon.model.ProcessorCounters
 import dev.yoda.harmon.model.ProcessCollectionIssue
 import dev.yoda.harmon.model.ProcessCollectionIssueReason
 import dev.yoda.harmon.model.ProcessIdentity
 import dev.yoda.harmon.model.RawProcessSample
 import dev.yoda.harmon.model.RawSystemSnapshot
+import dev.yoda.harmon.model.LoadAverages
+import dev.yoda.harmon.model.StorageCounters
 import dev.yoda.harmon.model.SwapUsage
+import dev.yoda.harmon.model.VirtualMemoryCounters
 import dev.yoda.harmon.nativebridge.HMBatterySample
+import dev.yoda.harmon.nativebridge.HMLoadAverageSample
+import dev.yoda.harmon.nativebridge.HMProcessorSample
 import dev.yoda.harmon.nativebridge.HMProcessIssue
 import dev.yoda.harmon.nativebridge.HMProcessSample
 import dev.yoda.harmon.nativebridge.HM_PROCESS_ISSUE_CAPACITY
+import dev.yoda.harmon.nativebridge.HMStorageSample
 import dev.yoda.harmon.nativebridge.HMSwapSample
+import dev.yoda.harmon.nativebridge.HMVirtualMemorySample
 import dev.yoda.harmon.nativebridge.hm_list_processes
 import dev.yoda.harmon.nativebridge.hm_monotonic_time_ns
 import dev.yoda.harmon.nativebridge.hm_read_battery
+import dev.yoda.harmon.nativebridge.hm_read_load_averages
 import dev.yoda.harmon.nativebridge.hm_read_physical_memory
+import dev.yoda.harmon.nativebridge.hm_read_processor
+import dev.yoda.harmon.nativebridge.hm_read_storage
 import dev.yoda.harmon.nativebridge.hm_read_swap
+import dev.yoda.harmon.nativebridge.hm_read_virtual_memory
 import kotlinx.cinterop.ByteVar
 import kotlinx.cinterop.CArrayPointer
 import kotlinx.cinterop.ExperimentalForeignApi
@@ -43,10 +55,15 @@ class CollectionException(message: String) : IllegalStateException(message)
 class DarwinSystemCollector(
     private val processCapacity: Int = DEFAULT_PROCESS_CAPACITY,
     private val issueCapacity: Int = DEFAULT_ISSUE_CAPACITY,
+    private val compressedAttributionProcessLimit: Int =
+        DEFAULT_COMPRESSED_ATTRIBUTION_PROCESS_LIMIT,
 ) : SystemCollector {
     init {
         require(processCapacity > 0) { "processCapacity must be positive" }
         require(issueCapacity > 0) { "issueCapacity must be positive" }
+        require(compressedAttributionProcessLimit >= 0) {
+            "compressedAttributionProcessLimit must not be negative"
+        }
     }
 
     @OptIn(ExperimentalForeignApi::class)
@@ -61,6 +78,7 @@ class DarwinSystemCollector(
             processCapacity,
             nativeIssues,
             issueCapacity,
+            compressedAttributionProcessLimit,
             totalProcesses.ptr,
             inaccessibleProcesses.ptr,
             writtenIssues.ptr,
@@ -82,6 +100,24 @@ class DarwinSystemCollector(
         val batterySample = alloc<HMBatterySample>()
         val batteryRead = hm_read_battery(batterySample.ptr) == 0
 
+        val processorSample = alloc<HMProcessorSample>()
+        if (hm_read_processor(processorSample.ptr) != 0) {
+            throw CollectionException("Unable to read host CPU counters")
+        }
+
+        val loadAverageSample = alloc<HMLoadAverageSample>()
+        if (hm_read_load_averages(loadAverageSample.ptr) != 0) {
+            throw CollectionException("Unable to read system load averages")
+        }
+
+        val virtualMemorySample = alloc<HMVirtualMemorySample>()
+        if (hm_read_virtual_memory(virtualMemorySample.ptr) != 0) {
+            throw CollectionException("Unable to read HOST_VM_INFO64")
+        }
+
+        val storageSample = alloc<HMStorageSample>()
+        val storageRead = hm_read_storage(storageSample.ptr) == 0
+
         val processes = buildList(processCount) {
             for (index in 0..<processCount) {
                 val sample = nativeProcesses[index]
@@ -99,10 +135,33 @@ class DarwinSystemCollector(
                         systemTimeNs = sample.system_time_ns,
                         packageIdleWakeups = sample.package_idle_wakeups,
                         interruptWakeups = sample.interrupt_wakeups,
+                        pageIns = sample.pageins,
                         diskBytesRead = sample.disk_bytes_read,
                         diskBytesWritten = sample.disk_bytes_written,
+                        logicalWritesBytes = sample.logical_writes_bytes,
+                        instructions = sample.instructions,
+                        cycles = sample.cycles,
+                        energyNanojoules = sample.energy_nanojoules,
+                        wiredBytes = sample.wired_bytes,
                         residentBytes = sample.resident_bytes,
                         physicalFootprintBytes = sample.physical_footprint_bytes,
+                        lifetimeMaxPhysicalFootprintBytes =
+                            sample.lifetime_max_physical_footprint_bytes,
+                        compressedOrPagedOutBytes =
+                            sample.compressed_or_paged_out_bytes.takeIf {
+                                sample.compressed_attribution_available != 0
+                            },
+                        virtualMemoryRegionCount =
+                            sample.virtual_memory_region_count.takeIf {
+                                sample.compressed_attribution_available != 0
+                            },
+                        faults = sample.faults,
+                        copyOnWriteFaults = sample.copy_on_write_faults,
+                        machSystemCalls = sample.mach_system_calls,
+                        unixSystemCalls = sample.unix_system_calls,
+                        contextSwitches = sample.context_switches,
+                        threadCount = sample.thread_count,
+                        runningThreadCount = sample.running_thread_count,
                         billedEnergy = sample.billed_energy,
                     ),
                 )
@@ -154,9 +213,78 @@ class DarwinSystemCollector(
                     minutesRemaining = null,
                 )
             },
+            processor = ProcessorCounters(
+                userTicks = processorSample.user_ticks,
+                systemTicks = processorSample.system_ticks,
+                idleTicks = processorSample.idle_ticks,
+                niceTicks = processorSample.nice_ticks,
+            ),
+            loadAverages = LoadAverages(
+                oneMinute = loadAverageSample.one_minute,
+                fiveMinutes = loadAverageSample.five_minutes,
+                fifteenMinutes = loadAverageSample.fifteen_minutes,
+            ),
+            virtualMemory = VirtualMemoryCounters(
+                pageSizeBytes = virtualMemorySample.page_size_bytes,
+                freeBytes = virtualMemorySample.free_bytes,
+                activeBytes = virtualMemorySample.active_bytes,
+                inactiveBytes = virtualMemorySample.inactive_bytes,
+                wiredBytes = virtualMemorySample.wired_bytes,
+                purgeableBytes = virtualMemorySample.purgeable_bytes,
+                compressedBytes = virtualMemorySample.compressed_bytes,
+                uncompressedBytesInCompressor =
+                    virtualMemorySample.uncompressed_bytes_in_compressor,
+                swapBackedUncompressedBytes =
+                    virtualMemorySample.swap_backed_uncompressed_bytes,
+                pageIns = virtualMemorySample.pageins,
+                pageOuts = virtualMemorySample.pageouts,
+                faults = virtualMemorySample.faults,
+                copyOnWriteFaults = virtualMemorySample.copy_on_write_faults,
+                compressions = virtualMemorySample.compressions,
+                decompressions = virtualMemorySample.decompressions,
+                swapIns = virtualMemorySample.swapins,
+                swapOuts = virtualMemorySample.swapouts,
+            ),
+            storage = if (storageRead) {
+                StorageCounters(
+                    available = storageSample.available != 0,
+                    deviceCount = storageSample.device_count,
+                    bytesRead = storageSample.bytes_read,
+                    bytesWritten = storageSample.bytes_written,
+                    readOperations = storageSample.read_operations,
+                    writeOperations = storageSample.write_operations,
+                    readTimeNs = storageSample.read_time_ns,
+                    writeTimeNs = storageSample.write_time_ns,
+                    rootFileSystemTotalBytes =
+                        storageSample.root_filesystem_total_bytes,
+                    rootFileSystemAvailableBytes =
+                        storageSample.root_filesystem_available_bytes,
+                )
+            } else {
+                StorageCounters(
+                    available = false,
+                    deviceCount = 0,
+                    bytesRead = 0u,
+                    bytesWritten = 0u,
+                    readOperations = 0u,
+                    writeOperations = 0u,
+                    readTimeNs = 0u,
+                    writeTimeNs = 0u,
+                    rootFileSystemTotalBytes = 0u,
+                    rootFileSystemAvailableBytes = 0u,
+                )
+            },
             totalProcessCount = totalProcesses.value,
             inaccessibleProcessCount = inaccessibleProcesses.value +
                 (totalProcesses.value - processCount - inaccessibleProcesses.value).coerceAtLeast(0),
+            compressedAttributionProcessCount = processes.count {
+                it.compressedOrPagedOutBytes != null
+            },
+            compressedAttributionFailureCount = (0..<processCount).count { index ->
+                val sample = nativeProcesses[index]
+                sample.compressed_attribution_attempted != 0 &&
+                    sample.compressed_attribution_available == 0
+            },
             processes = processes,
             processIssues = processIssues,
         )
@@ -184,5 +312,6 @@ class DarwinSystemCollector(
     private companion object {
         const val DEFAULT_PROCESS_CAPACITY = 16_384
         const val DEFAULT_ISSUE_CAPACITY = 4_096
+        const val DEFAULT_COMPRESSED_ATTRIBUTION_PROCESS_LIMIT = 256
     }
 }

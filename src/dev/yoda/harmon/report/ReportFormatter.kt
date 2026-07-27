@@ -15,10 +15,28 @@ object ReportFormatter {
         appendLine("Window: ${Format.decimal(usage.elapsedSeconds)}s")
         appendLine("Power: ${powerText(usage.power)}")
         appendLine(
+            "System CPU: ${Format.decimal(usage.processor.totalPercent)}% " +
+                "(user ${Format.decimal(usage.processor.userPercent)}%, " +
+                "system ${Format.decimal(usage.processor.systemPercent)}%); " +
+                "load ${Format.decimal(usage.loadAverages.oneMinute)} / " +
+                "${Format.decimal(usage.loadAverages.fiveMinutes)} / " +
+                Format.decimal(usage.loadAverages.fifteenMinutes),
+        )
+        appendLine(
             "Swap: ${Format.bytes(usage.swap.usedBytes)} used / " +
                 "${Format.bytes(usage.swap.totalBytes)} allocated" +
                 if (usage.swap.encrypted) " (encrypted)" else "",
         )
+        appendLine(
+            "VM: ${Format.bytes(usage.virtualMemory.compressedBytes)} compressor RAM, " +
+                "${Format.bytes(
+                    usage.virtualMemory.swapBackedUncompressedBytes,
+                )} uncompressed memory represented in swap; " +
+                "${Format.bytesPerSecond(usage.virtualMemory.compressionBytesPerSecond)} " +
+                "compress, " +
+                "${Format.bytesPerSecond(usage.virtualMemory.swapOutBytesPerSecond)} swap-out",
+        )
+        appendLine(storageText(usage))
         appendLine(
             "Processes: ${usage.processes.size}/${usage.totalProcessCount} readable, " +
                 "${usage.inaccessibleProcessCount} inaccessible",
@@ -26,6 +44,11 @@ object ReportFormatter {
         appendLine(
             "Applications: ${usage.applications.size} groups from " +
                 "${usage.processes.size} readable processes",
+        )
+        appendLine(
+            "Compressed/paged-out attribution: " +
+                "${usage.compressedAttributionProcessCount} processes measured, " +
+                "${usage.compressedAttributionFailureCount} failed",
         )
 
         appendApplicationTable(
@@ -54,7 +77,47 @@ object ReportFormatter {
                     "${Format.bytesPerSecond(
                         application.diskReadBytesPerSecond +
                             application.diskWriteBytesPerSecond,
-                    )} I/O"
+                    )} I/O" +
+                    if (application.energyWatts > 0.0) {
+                        ", ${Format.power(application.energyWatts)} accounted"
+                    } else {
+                        ""
+                    }
+            },
+        )
+        appendApplicationTable(
+            heading = "Top application storage writes",
+            applications = usage.applications
+                .filter {
+                    it.diskWriteBytesPerSecond > 0.0 ||
+                        it.logicalWriteBytesPerSecond > 0.0
+                }
+                .sortedByDescending {
+                    maxOf(
+                        it.diskWriteBytesPerSecond,
+                        it.logicalWriteBytesPerSecond,
+                    )
+                },
+            limit = report.topProcessCount,
+            metric = { application ->
+                "${Format.bytesPerSecond(
+                    application.diskWriteBytesPerSecond,
+                )} physical (all devices), " +
+                    "${Format.bytesPerSecond(
+                        application.logicalWriteBytesPerSecond,
+                    )} logical (internal)"
+            },
+        )
+        appendApplicationTable(
+            heading = "Top application compressed/paged-out memory",
+            applications = usage.applications
+                .filter { it.compressedAttributionProcessCount > 0 }
+                .sortedByDescending { it.compressedOrPagedOutBytes },
+            limit = report.topProcessCount,
+            metric = { application ->
+                "${Format.bytes(application.compressedOrPagedOutBytes)} proxy " +
+                    "(${application.compressedAttributionProcessCount}/" +
+                    "${application.processCount} processes measured)"
             },
         )
 
@@ -116,6 +179,18 @@ object ReportFormatter {
                 appendLine("- $omittedDetails additional issues exceeded diagnostic capacity")
             }
         }
+
+        appendLine()
+        appendLine("Compressed/paged-out attribution details:")
+        appendLine(
+            "- measured ${report.usage.compressedAttributionProcessCount} of " +
+                "${report.usage.processes.size} readable processes; " +
+                "${report.usage.compressedAttributionFailureCount} attempts failed",
+        )
+        appendLine(
+            "- this is compressor-pager ownership, not exact per-process disk swap; " +
+                "see docs/collection.md",
+        )
     }.trimEnd()
 
     fun notification(report: MonitoringReport): NotificationPayload {
@@ -162,7 +237,11 @@ object ReportFormatter {
     ) {
         appendLine()
         appendLine("$heading:")
-        applications.take(limit).forEachIndexed { index, application ->
+        val selected = applications.take(limit)
+        if (selected.isEmpty()) {
+            appendLine("No matching application activity in this sample.")
+        }
+        selected.forEachIndexed { index, application ->
             appendLine(
                 "${index + 1}. ${application.reportLabel()}: ${metric(application)}",
             )
@@ -201,6 +280,26 @@ object ReportFormatter {
         val application = report.usage.applications.maxByOrNull { it.cpuPercent }
             ?: return "n/a"
         return "${application.name} ${Format.decimal(application.cpuPercent)}%"
+    }
+
+    private fun storageText(usage: dev.yoda.harmon.model.SystemUsage): String {
+        val storage = usage.storage
+        if (!storage.available) {
+            return "Internal storage: counters unavailable" +
+                if (storage.rootFileSystemTotalBytes > 0u) {
+                    "; ${Format.bytes(
+                        storage.rootFileSystemAvailableBytes,
+                    )} filesystem available"
+                } else {
+                    ""
+                }
+        }
+        return "Internal storage: " +
+            "${Format.bytesPerSecond(storage.readBytesPerSecond)} read, " +
+            "${Format.bytesPerSecond(storage.writeBytesPerSecond)} write; " +
+            "${Format.decimal(storage.writeOperationsPerSecond)} writes/s, " +
+            "${Format.decimal(storage.writeServiceTimePercent)}% write service time; " +
+            "${Format.bytes(storage.rootFileSystemAvailableBytes)} filesystem available"
     }
 
     private const val MAX_NOTIFICATION_TEXT = 1_000

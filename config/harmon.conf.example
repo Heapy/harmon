@@ -1,4 +1,5 @@
 # Sampling
+collectorSocket=/var/run/harmon.collector.sock
 intervalSeconds=300
 onceSampleSeconds=2
 topProcessCount=8
@@ -8,7 +9,9 @@ alertCooldownSeconds=1800
 # A zero disables the corresponding alert.
 applicationCpuAlertPercent=150
 applicationMemoryAlertMiB=2048
+applicationDiskWriteAlertMiBPerSecond=50
 swapAlertMiB=1024
+swapOutAlertMiBPerSecond=25
 applicationBatteryImpactAlertScore=100
 batteryLowAlertPercent=20
 

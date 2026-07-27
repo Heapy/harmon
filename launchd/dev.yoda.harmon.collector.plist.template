@@ -3,24 +3,25 @@
 <plist version="1.0">
 <dict>
     <key>Label</key>
-    <string>dev.yoda.harmon</string>
+    <string>dev.yoda.harmon.collector</string>
 
     <key>ProgramArguments</key>
     <array>
-        <string>@HARMON_BINARY@</string>
-        <string>run</string>
-        <string>--config</string>
-        <string>@HARMON_CONFIG@</string>
+        <string>@HARMON_COLLECTOR_BINARY@</string>
+        <string>collector</string>
+        <string>--socket</string>
+        <string>@HARMON_SOCKET@</string>
+        <string>--allowed-uid</string>
+        <string>@HARMON_USER_ID@</string>
+        <string>--allowed-gid</string>
+        <string>@HARMON_GROUP_ID@</string>
     </array>
 
     <key>RunAtLoad</key>
     <true/>
 
     <key>KeepAlive</key>
-    <dict>
-        <key>SuccessfulExit</key>
-        <false/>
-    </dict>
+    <true/>
 
     <key>ProcessType</key>
     <string>Background</string>
@@ -32,19 +33,15 @@
     <integer>5</integer>
 
     <key>ThrottleInterval</key>
-    <integer>30</integer>
-
-    <key>LimitLoadToSessionType</key>
-    <string>Aqua</string>
+    <integer>10</integer>
 
     <key>Umask</key>
-    <integer>63</integer>
+    <integer>7</integer>
 
     <key>StandardOutPath</key>
-    <string>@HARMON_LOG_DIR@/harmon.log</string>
+    <string>/Library/Logs/Harmon/collector.log</string>
 
     <key>StandardErrorPath</key>
-    <string>@HARMON_LOG_DIR@/harmon.error.log</string>
+    <string>/Library/Logs/Harmon/collector.error.log</string>
 </dict>
 </plist>
-

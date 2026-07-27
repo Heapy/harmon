@@ -62,4 +62,22 @@ class AlertAnalyzerTest {
         assertEquals(3, alerts.size)
         assertTrue(alerts.all { "Firefox (2 processes)" in it.message })
     }
+
+    @Test
+    fun alertsOnSustainedPhysicalWritesAndSwapOutTraffic() {
+        val usage = systemUsage(
+            processes = listOf(
+                processUsage(
+                    name = "writer",
+                    diskWriteBytesPerSecond = 60.0 * 1_048_576.0,
+                ),
+            ),
+            swapOutBytesPerSecond = 30.0 * 1_048_576.0,
+        )
+
+        val alerts = AlertAnalyzer().analyze(usage, HarmonConfig())
+
+        assertTrue(alerts.any { it.key.startsWith("disk-write:") })
+        assertTrue(alerts.any { it.key == "swap-out" })
+    }
 }

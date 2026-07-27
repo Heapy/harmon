@@ -1,109 +1,225 @@
-# Agent collection model
+# Collection and metric model
 
-This document describes what the Harmon launchd agent collects, where each
-value comes from, how cumulative counters become interval metrics, and what is
-sent outside the machine.
+This document defines what Harmon collects, how raw counters become interval
+rates, what root access changes, and where the macOS APIs cannot support an
+exact conclusion.
 
-## Collection lifecycle
+## Snapshot lifecycle
 
-Harmon is a long-running user LaunchAgent. It does not continuously inspect the
-system. Instead, it takes discrete snapshots separated by the configured
-interval.
+The root collector is request-driven. The user agent connects once for a
+baseline, sleeps for `intervalSeconds`, and connects again for the current
+snapshot.
 
 ```mermaid
 flowchart LR
-    A[launchd starts Harmon] --> B[Baseline snapshot]
-    B --> C[Sleep intervalSeconds]
-    C --> D[Current snapshot]
-    D --> E[Match processes by PID + start time]
-    E --> F[Calculate counter deltas and rates]
-    F --> G[Resolve application groups]
-    G --> H[Aggregate process metrics]
-    H --> I[Evaluate alert rules]
-    I --> J[Write text report]
-    I --> K{New alerts or notifyEverySample?}
-    K -->|yes| L[System notification / Telegram / webhook]
-    K -->|no| C
-    L --> C
+    A[Agent requests baseline] --> B[Collector scans macOS]
+    B --> C[JSON snapshot]
+    C --> D[Agent sleeps]
+    D --> E[Agent requests current snapshot]
+    E --> F[Collector scans macOS]
+    F --> G[JSON snapshot]
+    G --> H[Match PID + start time]
+    H --> I[Calculate deltas and rates]
+    I --> J[Group application processes]
+    J --> K[Rules, logs, notifications]
 ```
 
-In continuous mode, the first report appears after one complete
-`intervalSeconds` window. In `once` mode, Harmon takes a baseline snapshot,
-waits `onceSampleSeconds`, takes a second snapshot, prints the report, and
-exits. `diagnose` uses the same two-snapshot calculation and appends grouping
-details and the inventory of processes whose resource metrics were unavailable.
+Snapshots are not an atomic kernel transaction. Processes are inspected one at
+a time, followed by global counters. A large process table therefore introduces
+some scan skew. Harmon records a monotonic timestamp and divides by the actual
+time between completed snapshots rather than assuming the configured interval
+was exact.
 
 ## macOS data sources
 
-The Kotlin collector calls a small C interoperability bridge in
+The Kotlin collector calls a small C bridge in
 `cinterop/harmon_native.def`.
 
-| Scope | Source | Values used |
+| Scope | Public source | Values |
 |---|---|---|
-| Process enumeration | `proc_listallpids` | All PIDs returned by the kernel |
+| Process enumeration | `proc_listallpids` | Candidate PIDs |
 | Process identity | `proc_pidinfo(PROC_PIDTBSDINFO)` | Parent PID and UID |
-| Process name | `proc_name`, with `pbi_name`/`pbi_comm` fallback | Display name |
-| Executable location | `proc_pidpath` | Local application grouping and diagnostics |
-| Process resources | `proc_pid_rusage(RUSAGE_INFO_V4)` | CPU time, memory, wakeups, disk I/O, start time and billed energy |
-| SWAP | `sysctlbyname("vm.swapusage")` | Allocated, available and used bytes; encryption flag |
-| Physical memory | `sysctlbyname("hw.memsize")` | Installed physical memory |
-| Power source | IOKit power-source APIs | AC/battery state, charge state and percentage |
-| Remaining battery time | `IOPSGetTimeRemainingEstimate` | Estimated minutes remaining, when available |
-| Wall-clock timestamp | `Clock.System.now()` | Report timestamp |
-| Sampling clock | `clock_gettime(CLOCK_MONOTONIC)` | Stable elapsed time unaffected by wall-clock changes |
+| Process display metadata | `proc_name`, `proc_pidpath` | Name and executable path |
+| Process resource ledger | `proc_pid_rusage(RUSAGE_INFO_V6)` | CPU, memory, wakeups, page-ins, physical disk I/O, logical writes, instructions, cycles, energy, start time |
+| Older-kernel fallback | `proc_pid_rusage(RUSAGE_INFO_V4)` | Same prefix without V6 energy fields |
+| Process task counters | `proc_pidinfo(PROC_PIDTASKINFO)` | Faults, COW faults, Mach/Unix calls, context switches, threads |
+| Process compressor proxy | `proc_pidinfo(PROC_PIDREGIONINFO)` | Per-region `pri_pages_swapped_out` |
+| System CPU | `host_statistics(HOST_CPU_LOAD_INFO)` | User, system, idle, and nice ticks |
+| Load average | `getloadavg` | 1/5/15-minute run-queue load |
+| Virtual memory | `host_statistics64(HOST_VM_INFO64)` | Memory queues, compressor, faults, paging, compression, and swap counters |
+| Allocated swap | `sysctlbyname("vm.swapusage")` | Allocated, used, available, and encryption flag |
+| Installed RAM | `sysctlbyname("hw.memsize")` | Physical memory |
+| Internal storage | IOKit `IOBlockStorageDriver` statistics | Bytes, operations, and nanoseconds spent servicing reads/writes |
+| File-system capacity | `statfs("/")` | Total and available root-file-system bytes |
+| Power | IOKit power-source APIs | AC/battery, charging, percentage, and time estimate |
+| Sampling clock | `clock_gettime(CLOCK_MONOTONIC)` | Stable interval duration |
+| Report clock | `Clock.System.now()` | Human-readable timestamp |
 
-The collector has room for 16,384 readable process records and 4,096 detailed
-collection issues per snapshot. It scans each listed PID once, so collection
-work is proportional to the number of processes.
+The process capacity is 16,384 records. Up to 4,096 detailed process failures
+are retained per snapshot.
 
-## Per-process fields
+## Process identity
 
-For every readable process, the raw snapshot contains:
+A process is matched across snapshots by:
+
+```text
+(pid, proc_start_abstime)
+```
+
+PID alone is unsafe because macOS can reuse it after a process exits. A process
+without a matching baseline has valid point-in-time gauges but receives zero
+rates for that first interval.
+
+## Per-process metrics
+
+### Point-in-time gauges
 
 | Field | Meaning |
 |---|---|
-| `pid` | Process ID at the time of the snapshot |
-| `startedAt` | Darwin absolute process start time |
-| `parentPid` | Parent process ID |
-| `uid` | Effective user ID, or `null` when metadata cannot be read |
-| `name` | Process name, not its full command line |
-| `executablePath` | Full executable path, used locally for application grouping |
-| `userTimeNs` | Cumulative user-mode CPU time |
-| `systemTimeNs` | Cumulative kernel-mode CPU time |
-| `packageIdleWakeups` | Cumulative package-idle wakeups |
-| `interruptWakeups` | Cumulative interrupt wakeups |
-| `diskBytesRead` | Cumulative disk bytes read |
-| `diskBytesWritten` | Cumulative disk bytes written |
-| `residentBytes` | Current resident set size |
-| `physicalFootprintBytes` | Current physical memory footprint |
-| `billedEnergy` | Raw cumulative macOS billed-energy counter |
+| `residentBytes` | Pages currently resident for the task |
+| `wiredBytes` | Wired memory charged to the task |
+| `physicalFootprintBytes` | Current task physical-footprint ledger |
+| `lifetimeMaxPhysicalFootprintBytes` | Lifetime peak physical footprint |
+| `compressedOrPagedOutBytes` | Bounded compressor-pager proxy described below |
+| `virtualMemoryRegionCount` | Regions visited while calculating that proxy |
+| `threadCount` | Current task threads |
+| `runningThreadCount` | Threads currently marked running |
 
-Harmon deliberately identifies a process by `(pid, startedAt)`, not by PID
-alone. This prevents a newly created process from inheriting deltas from an
-older process whose PID was reused.
+Physical footprint is used for normal memory ranking. Summing footprints across
+an application is useful for attribution but may count some shared resources
+more than once.
 
-### Memory interpretation
+### Cumulative counters
 
-`residentBytes` is the process's current resident set. The primary memory value
-used for ranking and alerts is `physicalFootprintBytes`, which is closer to the
-physical-memory pressure attributable to the process.
+| Field | Unit or interpretation |
+|---|---|
+| `userTimeNs`, `systemTimeNs` | Nanoseconds of CPU time |
+| `packageIdleWakeups`, `interruptWakeups` | Wakeup counts |
+| `pageIns` | Actual page-ins charged to the task |
+| `diskBytesRead`, `diskBytesWritten` | Physical I/O bytes charged to the task |
+| `logicalWritesBytes` | Bytes logically written to internal storage before physical writeback/coalescing |
+| `instructions`, `cycles` | Hardware-accounted work where available |
+| `energyNanojoules` | Accounted energy in nJ where macOS supplies it |
+| `billedEnergy` | Older raw billed-energy ledger, retained for compatibility |
+| `faults`, `copyOnWriteFaults` | Task VM fault counters |
+| `machSystemCalls`, `unixSystemCalls` | Task call counters |
+| `contextSwitches` | Task context-switch counter |
 
-Memory values are point-in-time gauges. They do not need two snapshots and are
-available for processes that appeared during the current window.
+Some hardware or protected tasks return zero for optional ledger fields. Zero
+means “no value was charged during the interval or the platform did not expose
+one”; Harmon does not invent a replacement.
 
-## Rate calculations
+The distinction between physical and logical writes is important:
 
-CPU, wakeups, disk I/O and billed energy are cumulative counters. Harmon
-subtracts the previous value from the current value and divides by the actual
-monotonic sampling duration.
+- logical writes explain an application's write workload before cache and
+  file-system coalescing;
+- physical writes are the better per-process signal for actual block-device
+  traffic, but the process ledger is not device-specific;
+- IOKit device totals confirm how much work reached the internal block device,
+  including kernel and unattributed work.
 
-Let:
+## Per-process swap attribution
+
+### What is global
+
+`vm.swapusage.usedBytes` reports the global amount of used swap space.
+
+`HOST_VM_INFO64.swapped_count` is different. XNU increments it by a compressor
+segment's `c_slots_used`, so:
 
 ```text
-elapsedSeconds = (current.monotonicNs - previous.monotonicNs) / 1,000,000,000
+swapBackedUncompressedBytes = swapped_count × pageSize
 ```
 
-Then:
+This is the uncompressed size of original VM pages represented by compressor
+slots currently on disk. It is not the physical number of bytes occupied by
+their compressed representation and can be larger than
+`vm.swapusage.usedBytes`.
+
+`swapins` and `swapouts` are lifetime counters at the compressor swap-I/O
+layer. XNU increments them by the page-rounded byte size actually passed to the
+swap-file I/O path. Their deltas therefore produce system-wide compressor
+swap-I/O rates for the interval. Device-level IOKit totals remain the final
+measure of all traffic that reached internal storage.
+
+### What is only a proxy
+
+`PROC_PIDREGIONINFO` exposes the historically named
+`pri_pages_swapped_out`. In current XNU, a page contributes when it is found in
+the compressor pager or is marked compressed by the pmap. That does not reveal
+whether the compressed data is still in RAM or whether its compressor segment
+has been written to a swap file.
+
+Harmon therefore names the result:
+
+```text
+compressedOrPagedOutBytes
+```
+
+It never labels this value “per-process swap bytes.”
+
+Walking every VM region of every process would make the monitor itself
+expensive. Harmon sorts readable processes by physical footprint and attempts
+region attribution for the largest 256. Each walk is capped at 32,768 regions.
+Reports expose:
+
+- `compressedAttributionProcessCount`;
+- `compressedAttributionFailureCount`;
+- per-application measured-process count.
+
+A process outside that bounded set has `null`, which is distinct from a
+measured value of zero.
+
+### Why root still does not make this exact
+
+Root satisfies the normal same-user policy used by `proc_pid_rusage` and
+`proc_pidinfo`, so it makes many previously denied processes readable.
+Mandatory access-control hooks run separately and may still reject protected
+targets. More importantly, root access does not create a public kernel API that
+maps swapped compressor segments back to individual PIDs.
+
+`TASK_VM_INFO` contains useful compressed-memory and task swap-in ledgers, but
+it requires a task port. `task_for_pid`/task-read access is deliberately
+restricted for hardened and platform processes, so it cannot provide complete
+system-wide attribution even to a normal root daemon. Harmon uses the more
+widely available `libproc` path and reports its limits.
+
+## System virtual-memory metrics
+
+Point-in-time values:
+
+- free, active, inactive, wired, and purgeable bytes;
+- physical bytes occupied by the compressor;
+- logical uncompressed bytes represented in the compressor;
+- used swap space from `vm.swapusage`;
+- uncompressed source bytes represented by compressor slots on disk.
+
+Interval values:
+
+```text
+pageInBytesPerSecond     = delta(pageins)       × pageSize / elapsedSeconds
+pageOutBytesPerSecond    = delta(pageouts)      × pageSize / elapsedSeconds
+compressionBytesPerSecond
+                         = delta(compressions)  × pageSize / elapsedSeconds
+decompressionBytesPerSecond
+                         = delta(decompressions)× pageSize / elapsedSeconds
+swapInBytesPerSecond     = delta(swapins)       × pageSize / elapsedSeconds
+swapOutBytesPerSecond    = delta(swapouts)      × pageSize / elapsedSeconds
+```
+
+Page-in/out includes general VM paging and is not synonymous with swap.
+Swap-in/out specifically refers to page-rounded compressor-segment I/O, not the
+uncompressed size of the pages represented by those segments.
+
+## CPU and process rate calculations
+
+For any monotonic process counter:
+
+```text
+rate = max(current - previous, 0) / elapsedSeconds
+```
+
+CPU percentage is:
 
 ```text
 userCpuPercent =
@@ -113,86 +229,84 @@ systemCpuPercent =
     delta(systemTimeNs) / 1,000,000,000 / elapsedSeconds × 100
 
 cpuPercent = userCpuPercent + systemCpuPercent
-
-wakeupsPerSecond =
-    delta(packageIdleWakeups + interruptWakeups) / elapsedSeconds
-
-diskReadBytesPerSecond = delta(diskBytesRead) / elapsedSeconds
-diskWriteBytesPerSecond = delta(diskBytesWritten) / elapsedSeconds
-billedEnergyPerSecond = delta(billedEnergy) / elapsedSeconds
 ```
 
-Like Activity Monitor, process CPU can exceed 100% when a process uses more
-than one logical core.
+A process can exceed 100% by using multiple logical cores.
 
-If a process has no matching baseline, or a counter unexpectedly moves
-backwards, its rate for that counter is reported as zero. Harmon never treats a
-process's lifetime total as work performed during the current window.
+Energy is converted to average accounted power:
+
+```text
+energyWatts =
+    delta(energyNanojoules) / elapsedSeconds / 1,000,000,000
+```
+
+System CPU uses deltas of the four host tick counters. The total percentage is
+`(user + system + nice) / all ticks × 100`. The collector handles the 32-bit
+tick counter wrapping.
+
+If a cumulative counter moves backward because of reuse, wrap, or an
+unavailable source, Harmon reports zero for that interval rather than treating
+a lifetime total as recent work.
+
+## Internal-storage metrics
+
+Harmon selects `IOBlockStorageDriver` entries with a direct whole, nonremovable,
+nonejectable `IOMedia` child. This targets internal physical media and avoids
+counting detached block drivers and ordinary disk images.
+
+The device counters are cumulative:
+
+```text
+readBytesPerSecond  = delta(deviceBytesRead) / elapsedSeconds
+writeBytesPerSecond = delta(deviceBytesWritten) / elapsedSeconds
+writeOperationsPerSecond
+                    = delta(deviceWriteOperations) / elapsedSeconds
+writeServiceTimePercent
+                    = delta(deviceWriteTimeNs) / elapsedNs × 100
+```
+
+Service-time percentage is an accounting ratio, not a strict utilization
+gauge. It can exceed 100% when devices or operations overlap.
+
+Per-process physical writes are not restricted to the internal device and do
+not necessarily sum to its total. Kernel writeback, metadata, swap, drivers,
+external-device I/O, processes that exited inside the interval, and
+inaccessible processes can create a difference. That difference is itself
+diagnostically useful.
+
+Harmon currently monitors write rate, not SSD wear indicators such as NVMe
+percentage-used or media-error SMART data. Those properties are not uniformly
+available through a stable public macOS user-space API.
 
 ## Application grouping
 
-Reports and alerts operate on application groups rather than individual
-processes. The raw process list remains available for JSON detail and
-diagnostics.
+Rules and primary reports operate on applications, not isolated helper PIDs:
 
-Grouping follows three deterministic rules:
+1. A process inside an `.app` belongs to its outermost application bundle.
+2. An unbundled process inherits the nearest readable ancestor's bundle.
+3. If neither rule resolves a bundle, the process remains its own group.
 
-1. If an executable path is inside a macOS `.app` bundle, the process belongs
-   to the outermost bundle in that path.
-2. If a process has no bundle in its own path, it inherits the bundle of its
-   nearest readable ancestor.
-3. If neither rule resolves a bundle, the process remains a standalone
-   one-process group.
-
-Using the outermost bundle is important for nested helpers. For example, all of
-these resolve to `/Applications/Firefox.app`:
+For example, all of these belong to `/Applications/Firefox.app`:
 
 ```text
 /Applications/Firefox.app/Contents/MacOS/firefox
 /Applications/Firefox.app/Contents/MacOS/crashhelper
-/Applications/Firefox.app/Contents/MacOS/gpu-helper.app/Contents/MacOS/Firefox GPU Helper
 /Applications/Firefox.app/Contents/MacOS/plugin-container.app/Contents/MacOS/plugin-container
 ```
 
-This also captures a helper that has been reparented to launchd, as long as its
-executable remains inside the application bundle. Grouping is deliberately not
-based only on a process name: unrelated commands with the same name must not be
-merged.
+Outermost-bundle matching handles nested helper bundles and reparented helpers
+whose executable remains inside the application. A helper outside the bundle
+and reparented away from a readable ancestor cannot be inferred reliably; a
+future configuration layer may add explicit grouping overrides.
 
-Each rate, counter-derived value, and memory gauge in an application group is
-the sum of its readable member processes:
-
-```text
-application.cpuPercent = Σ process.cpuPercent
-application.physicalFootprintBytes = Σ process.physicalFootprintBytes
-application.wakeupsPerSecond = Σ process.wakeupsPerSecond
-application.batteryImpactScore = Σ process.batteryImpactScore
-```
-
-Summed physical footprints are useful for ranking applications, but they are
-not a perfect measurement of unique RAM because macOS can account shared pages
-in more than one process. Multiple running instances from the same bundle path
-are intentionally treated as one application.
-
-The bundle path is converted to a stable, non-cryptographic identifier for
-JSON and alert keys. The literal path is not sent in the standard webhook
-payload.
-
-There are two important limits:
-
-- a helper outside the `.app` bundle that has also been reparented away from a
-  readable app ancestor remains standalone;
-- a process whose resource record cannot be read contributes no CPU, memory,
-  wakeup, I/O, or energy value to its group.
-
-Supporting the first case comprehensively would require an additional public
-ownership signal or explicit user grouping overrides. Harmon does not depend
-on Activity Monitor's private grouping implementation.
+Rates and gauges are summed across readable members. The application record
+also carries the number of members for which compressed/paged-out attribution
+was actually measured.
 
 ## Battery-impact ranking
 
-Harmon does not claim to reproduce Activity Monitor's private `Energy Impact`
-algorithm. It calculates a transparent ranking score:
+Harmon exports `energyWatts` when the V6 ledger changes. It also keeps a stable
+cross-process heuristic for systems and tasks where energy accounting is zero:
 
 ```text
 I/O MiB/s =
@@ -202,214 +316,118 @@ batteryImpactScore =
     cpuPercent + wakeupsPerSecond × 0.25 + I/O MiB/s × 2
 ```
 
-The score is suitable for relative ranking and alert thresholds, not for
-reporting watts or joules. The raw `billedEnergyPerSecond` value is exported
-separately without assigning it a physical unit.
+The score is calculated on AC and battery so trends remain comparable.
+Battery-impact alerts fire only while on battery.
 
-Harmon always calculates the ranking, including while connected to AC power.
-Battery-impact alerts are emitted only while the Mac is running on battery.
+The score does not directly include GPU engines, network radio activity,
+display brightness, thermal state, or external peripherals.
 
-This model currently does not account directly for GPU work, network traffic,
-display brightness, thermal pressure, or external devices.
+## Alerts
 
-## System-level fields
+| Rule | Default | Critical at |
+|---|---:|---:|
+| Application CPU | 150% | 300% |
+| Application physical footprint | 2,048 MiB | 4,096 MiB |
+| Application physical storage writes | 50 MiB/s | 100 MiB/s |
+| Allocated-swap usage | 1,024 MiB | 2,048 MiB |
+| System swap-out traffic | 25 MiB/s | 50 MiB/s |
+| Application battery-impact score | 100, on battery | 200 |
+| Low battery | 20% | 10% |
 
-Each snapshot also contains:
+Zero disables a threshold. At most `maxAlertsPerCategory` applications are
+selected for each application rule. Delivered alert keys are suppressed for
+`alertCooldownSeconds`; cooldown state resets with the agent.
 
-- installed physical memory;
-- SWAP allocated, available and used bytes;
-- whether SWAP is encrypted;
-- whether an internal battery is present;
-- AC versus battery power;
-- charging state;
-- battery percentage, if provided by IOKit;
-- estimated minutes remaining, if provided by IOKit;
-- total, readable and inaccessible process counts.
-
-SWAP alerts use an absolute used-byte threshold. macOS changes the allocated
-swap pool dynamically, so a percentage of the currently allocated pool would
-be misleading.
-
-## Inaccessible and disappearing processes
+## Access failures
 
 Process inspection can fail because:
 
-- macOS protects the process from the current user;
-- the process exits between enumeration and inspection;
-- metadata is temporarily unavailable;
-- the fixed collector capacity is exceeded.
+- the process exited during the scan;
+- macOS denied the specific information flavor;
+- the process or issue capacity was exceeded;
+- metadata became unavailable between calls.
 
-These cases do not fail the whole snapshot. They increase
-`inaccessibleProcessCount`. For up to 4,096 cases per snapshot, Harmon also
-retains:
-
-- PID and any readable parent PID and UID;
-- process name and executable path when macOS exposes them;
-- a normalized reason: permission denied, exited during collection, resource
-  usage unavailable, or collector capacity;
-- the original `errno`, when applicable.
-
-Run:
+These failures do not abort the snapshot. Run:
 
 ```shell
 harmon diagnose --sample-seconds 2
 ```
 
-to print every multi-process application group and every retained collection
-issue. The normal daemon log only shows coverage counts and does not emit full
-executable paths.
+to print grouped PIDs, compressed-attribution coverage, normalized failure
+reasons, available metadata, and original `errno` values.
 
-A failure to read SWAP or physical-memory information does fail the snapshot,
-because those values are required for a coherent system report. Battery read
-failure is non-fatal and produces `batteryAvailable=false`.
+Required global CPU, VM, swap, and physical-memory failures do abort the
+request. Power and storage are optional and have explicit availability fields.
 
-The user LaunchAgent intentionally runs without root privileges so that it can
-participate in the logged-in Aqua session and display notifications. Complete
-system-wide access would require a separate privileged collector and an IPC
-boundary to the user agent.
+## JSON and privacy
 
-## Alert evaluation
+Collector IPC and notification payloads are encoded by
+`kotlinx.serialization`.
 
-All readable processes participate in grouping. Rules are evaluated against
-the resulting application totals, even though reports include only the
-configured top-N lists.
+The standard `harmon.sample` webhook includes:
 
-| Rule | Default threshold | Critical condition |
-|---|---:|---:|
-| Application CPU | 150% | At least twice the configured threshold |
-| Application physical footprint | 2,048 MiB | At least twice the configured threshold |
-| Used SWAP | 1,024 MiB | At least twice the configured threshold |
-| Application battery-impact score | 100, on battery only | At least twice the configured threshold |
-| Low battery | 20% | 10% or lower |
+- power, swap, system CPU, load, VM, and internal-storage summaries;
+- top applications and processes by CPU, memory, battery impact, physical
+  writes, internal logical writes, compressed/paged-out proxy, and accounted
+  energy;
+- alerts and collection coverage counts.
 
-A threshold is configured through `applicationCpuAlertPercent`,
-`applicationMemoryAlertMiB`, `applicationBatteryImpactAlertScore`,
-`swapAlertMiB`, or `batteryLowAlertPercent`. The former process-oriented names
-remain accepted as compatibility aliases.
+It excludes executable paths and detailed PID collection failures.
 
-A threshold value of zero disables that rule. At most
-`maxAlertsPerCategory` applications are selected for each application rule.
+Harmon does not collect:
 
-Bundle-based alert keys use the stable application-group identifier.
-Standalone-process keys contain the PID and process start time. Delivered
-alerts are suppressed for `alertCooldownSeconds` (30 minutes by default), and
-cooldown state resets when the agent restarts.
-
-## Reporting and external delivery
-
-Every successful interval writes a text report to standard output. Under
-launchd, this becomes:
-
-```text
-~/Library/Logs/Harmon/harmon.log
-```
-
-The text report contains power and SWAP summaries, readable/inaccessible
-counts, application-group counts, the configured top-N applications by CPU,
-memory and battery-impact score, and active alerts.
-
-Notifications are sent when at least one alert is outside its cooldown, or on
-every sample when `notifyEverySample=true`.
-
-### System notifications
-
-The native bridge invokes `/usr/bin/osascript` with a fixed AppleScript and
-passes the title, subtitle and message as separate arguments. Process data is
-not interpolated into executable AppleScript source.
-
-### Webhook
-
-The webhook receives an HTTPS `POST` with `Content-Type: application/json`.
-Loopback HTTP is permitted only for `127.0.0.1` development endpoints. An
-optional bearer token is passed in the `Authorization` header.
-
-The payload is encoded with `kotlinx.serialization` and contains:
-
-```json
-{
-  "event": "harmon.sample",
-  "capturedAt": "2026-07-27T14:53:00.570536Z",
-  "elapsedSeconds": 300.01,
-  "power": {
-    "available": true,
-    "onBattery": true,
-    "charging": false,
-    "percentage": 74,
-    "minutesRemaining": 215
-  },
-  "swap": {
-    "usedBytes": 1073741824,
-    "totalBytes": 2147483648,
-    "encrypted": true
-  },
-  "applications": {
-    "total": 487,
-    "topCpu": [],
-    "topMemory": [],
-    "topBatteryImpact": []
-  },
-  "processes": {
-    "total": 808,
-    "readable": 559,
-    "inaccessible": 249,
-    "topCpu": [],
-    "topMemory": [],
-    "topBatteryImpact": []
-  },
-  "alerts": []
-}
-```
-
-Each exported application entry contains its opaque ID, display name, root PID,
-process count, aggregate CPU percentage, physical footprint, wakeup rate, disk
-rates, billed-energy rate, and battery-impact score. Raw process top-N arrays
-are retained for detailed consumers and contain PID, name, UID, and the same
-per-process metrics. The arrays can contain the same application or process
-because each metric is ranked independently.
-
-Executable paths and collection-issue details are intentionally excluded from
-the standard webhook payload.
-
-### Telegram
-
-Telegram receives a compact text rendering through the Bot API. The request
-body is also generated with `kotlinx.serialization` and is limited to 4,000
-characters.
-
-HTTP delivery is synchronous and bounded by `httpTimeoutSeconds`. Delivery
-errors are written to the error log and do not terminate the collection loop.
-
-## Local diagnostic data and privacy
-
-Harmon reads executable paths because they are the public signal used to map
-helpers back to their outermost `.app` bundle. Paths and collection issues are
-kept only in the current in-memory snapshot. They appear in terminal output
-only when the operator explicitly runs `harmon diagnose`.
-
-The current agent does not collect:
-
-- command-line arguments or environment variables of other processes;
-- open files;
-- per-process network traffic;
-- window titles or document contents;
+- command-line arguments or environments of other processes;
+- open file names or document contents;
+- window titles, screenshots, keystrokes, or clipboard contents;
+- per-process network destinations;
+- file-level write paths;
 - GPU utilization;
-- temperature or fan speed;
-- screenshots, keystrokes, or clipboard data;
-- a persistent history database.
+- temperature or fan sensors;
+- persistent history.
 
-Application and process names and top-N metrics do appear in local logs and
-configured notification destinations. Full executable paths and inaccessible
-PID details do not. Harmon makes no network requests unless Telegram or a
-webhook is configured and a notification is due.
+No network request occurs unless Telegram or a webhook is configured and a
+notification is due.
 
-## Failure and restart behavior
+## Additional macOS signals worth considering
 
-If the initial snapshot fails, Harmon logs the error and retries after 10
-seconds. If a later snapshot fails, the error is logged and the previous valid
-snapshot remains the baseline. The next successful calculation therefore spans
-the full elapsed monotonic window, including the failed interval.
+Public or partly public signals that could improve a future version include:
 
-launchd starts the agent at login and restarts it after an unsuccessful exit.
-Collection and analysis run sequentially on one agent thread. System
-notification delivery may briefly start `/usr/bin/osascript` as a child
-process.
+- Foundation `ProcessInfo.thermalState` and low-power-mode state;
+- per-interface network totals from supported networking APIs;
+- file-system event summaries for user-selected directories;
+- GPU/device utilization where a stable supported API exists;
+- coalition identifiers as an additional application-ownership signal;
+- a bounded history database for trends and baselines.
+
+File-level attribution through Endpoint Security requires Apple entitlement and
+user approval, so it does not belong in the default collector. Private SMC,
+Activity Monitor, `powermetrics`, or undocumented GPU interfaces are
+deliberately excluded.
+
+## Primary references
+
+- Apple XNU
+  [`resource.h`](https://github.com/apple-oss-distributions/xnu/blob/main/bsd/sys/resource.h)
+  defines `RUSAGE_INFO_V6`.
+- Apple XNU
+  [`proc_info.h`](https://github.com/apple-oss-distributions/xnu/blob/main/bsd/sys/proc_info.h)
+  defines task and VM-region records.
+- Apple XNU
+  [`proc_info.c`](https://github.com/apple-oss-distributions/xnu/blob/main/bsd/kern/proc_info.c)
+  shows process-information security checks and region dispatch.
+- Apple XNU
+  [`vm_map.c`](https://github.com/apple-oss-distributions/xnu/blob/main/osfmk/vm/vm_map.c)
+  shows how `pages_swapped_out` is populated from compressor-pager state.
+- Apple XNU
+  [`vm_compressor_backing_store.c`](https://github.com/apple-oss-distributions/xnu/blob/main/osfmk/vm/vm_compressor_backing_store.c)
+  shows the separate slot-count and swap-I/O byte accounting.
+- Apple XNU
+  [`task.c`](https://github.com/apple-oss-distributions/xnu/blob/main/osfmk/kern/task.c)
+  defines logical-write, physical-write, swap-in, and energy ledgers.
+- Apple documents
+  [`vm_statistics64_data_t`](https://developer.apple.com/documentation/kernel/vm_statistics64_data_t)
+  and its swap/compressor fields.
+- Apple documents
+  [`IOBlockStorageDriver` statistics keys](https://developer.apple.com/documentation/iokit/ioblockstoragedriver_h_user-space/defines)
+  and the cumulative
+  [bytes-written counter](https://developer.apple.com/documentation/iokit/kioblockstoragedriverstatisticsbyteswrittenkey).

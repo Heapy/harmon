@@ -3,8 +3,8 @@ package dev.yoda.harmon.runtime
 import dev.yoda.harmon.analysis.AlertAnalyzer
 import dev.yoda.harmon.analysis.AlertCooldown
 import dev.yoda.harmon.config.HarmonConfig
+import dev.yoda.harmon.ipc.CollectorClient
 import dev.yoda.harmon.model.MonitoringReport
-import dev.yoda.harmon.monitor.DarwinSystemCollector
 import dev.yoda.harmon.monitor.SystemCollector
 import dev.yoda.harmon.monitor.UsageCalculator
 import dev.yoda.harmon.nativebridge.hm_sleep_millis
@@ -16,7 +16,7 @@ import kotlin.time.Clock
 
 class HarmonService(
     private val config: HarmonConfig,
-    private val collector: SystemCollector = DarwinSystemCollector(),
+    private val collector: SystemCollector = CollectorClient(config.collectorSocket),
     private val calculator: UsageCalculator = UsageCalculator(),
     private val analyzer: AlertAnalyzer = AlertAnalyzer(),
     private val notifications: NotificationDispatcher =
