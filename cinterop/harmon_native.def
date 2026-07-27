@@ -1,0 +1,530 @@
+package = dev.yoda.harmon.nativebridge
+headerFilter = harmon_native.h
+linkerOpts = -framework IOKit -framework CoreFoundation -lcurl
+
+---
+#ifndef HARMON_NATIVE_H
+#define HARMON_NATIVE_H
+
+#include <CoreFoundation/CoreFoundation.h>
+#include <IOKit/ps/IOPowerSources.h>
+#include <IOKit/ps/IOPSKeys.h>
+#include <curl/curl.h>
+#include <errno.h>
+#include <libproc.h>
+#include <spawn.h>
+#include <stdint.h>
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <sys/sysctl.h>
+#include <sys/wait.h>
+#include <time.h>
+#include <unistd.h>
+
+#ifdef __cplusplus
+extern "C" {
+#endif
+
+#define HM_PROCESS_NAME_SIZE 128
+#define HM_PROCESS_PATH_SIZE PROC_PIDPATHINFO_SIZE
+#define HM_HTTP_ERROR_SIZE 256
+#define HM_PROCESS_ISSUE_RUSAGE 1
+#define HM_PROCESS_ISSUE_CAPACITY 2
+
+typedef struct {
+    int32_t pid;
+    int32_t parent_pid;
+    uint32_t uid;
+    uint64_t started_at;
+    uint64_t user_time_ns;
+    uint64_t system_time_ns;
+    uint64_t package_idle_wakeups;
+    uint64_t interrupt_wakeups;
+    uint64_t disk_bytes_read;
+    uint64_t disk_bytes_written;
+    uint64_t resident_bytes;
+    uint64_t physical_footprint_bytes;
+    uint64_t billed_energy;
+    char name[HM_PROCESS_NAME_SIZE];
+    char executable_path[HM_PROCESS_PATH_SIZE];
+} HMProcessSample;
+
+typedef struct {
+    int32_t pid;
+    int32_t parent_pid;
+    uint32_t uid;
+    int32_t reason;
+    int32_t error_code;
+    char name[HM_PROCESS_NAME_SIZE];
+    char executable_path[HM_PROCESS_PATH_SIZE];
+} HMProcessIssue;
+
+typedef struct {
+    uint64_t total_bytes;
+    uint64_t available_bytes;
+    uint64_t used_bytes;
+    int32_t encrypted;
+} HMSwapSample;
+
+typedef struct {
+    int32_t available;
+    int32_t on_battery;
+    int32_t charging;
+    int32_t percentage;
+    int32_t minutes_remaining;
+} HMBatterySample;
+
+typedef struct {
+    long status_code;
+    int32_t curl_code;
+    char error[HM_HTTP_ERROR_SIZE];
+} HMHttpResult;
+
+static inline uint64_t hm_monotonic_time_ns(void) {
+    struct timespec value;
+    if (clock_gettime(CLOCK_MONOTONIC, &value) != 0) {
+        return 0;
+    }
+    return ((uint64_t)value.tv_sec * 1000000000ULL) + (uint64_t)value.tv_nsec;
+}
+
+static inline void hm_sleep_millis(uint64_t milliseconds) {
+    struct timespec requested = {
+        .tv_sec = (time_t)(milliseconds / 1000ULL),
+        .tv_nsec = (long)((milliseconds % 1000ULL) * 1000000ULL),
+    };
+    struct timespec remaining;
+    while (nanosleep(&requested, &remaining) != 0 && errno == EINTR) {
+        requested = remaining;
+    }
+}
+
+static inline void hm_read_process_metadata(
+    pid_t pid,
+    int32_t *parent_pid,
+    uint32_t *uid,
+    char *name,
+    uint32_t name_size,
+    char *executable_path,
+    uint32_t executable_path_size
+) {
+    if (parent_pid != NULL) {
+        *parent_pid = 0;
+    }
+    if (uid != NULL) {
+        *uid = UINT32_MAX;
+    }
+    if (name != NULL && name_size > 0) {
+        name[0] = '\0';
+    }
+    if (executable_path != NULL && executable_path_size > 0) {
+        executable_path[0] = '\0';
+    }
+
+    struct proc_bsdinfo process_info;
+    memset(&process_info, 0, sizeof(process_info));
+    int info_size = proc_pidinfo(
+        pid,
+        PROC_PIDTBSDINFO,
+        0,
+        &process_info,
+        (int)sizeof(process_info)
+    );
+    if (info_size == (int)sizeof(process_info)) {
+        if (parent_pid != NULL) {
+            *parent_pid = (int32_t)process_info.pbi_ppid;
+        }
+        if (uid != NULL) {
+            *uid = process_info.pbi_uid;
+        }
+    }
+
+    if (name != NULL && name_size > 0) {
+        int name_result = proc_name(pid, name, name_size);
+        if (name_result <= 0 && info_size == (int)sizeof(process_info)) {
+            const char *fallback = process_info.pbi_name[0] != '\0'
+                ? process_info.pbi_name
+                : process_info.pbi_comm;
+            snprintf(name, name_size, "%s", fallback);
+        }
+        name[name_size - 1] = '\0';
+    }
+
+    if (executable_path != NULL && executable_path_size > 0) {
+        if (proc_pidpath(pid, executable_path, executable_path_size) <= 0) {
+            executable_path[0] = '\0';
+        }
+        executable_path[executable_path_size - 1] = '\0';
+    }
+}
+
+static inline int hm_list_processes(
+    HMProcessSample *output,
+    int output_capacity,
+    HMProcessIssue *issues,
+    int issue_capacity,
+    int *total_processes,
+    int *inaccessible_processes,
+    int *written_issues
+) {
+    if (output == NULL || output_capacity <= 0 || issues == NULL || issue_capacity <= 0) {
+        errno = EINVAL;
+        return -1;
+    }
+
+    int capacity = proc_listallpids(NULL, 0);
+    if (capacity <= 0) {
+        return -1;
+    }
+    capacity += 128;
+
+    pid_t *pids = (pid_t *)calloc((size_t)capacity, sizeof(pid_t));
+    if (pids == NULL) {
+        errno = ENOMEM;
+        return -1;
+    }
+
+    int listed = proc_listallpids(pids, capacity * (int)sizeof(pid_t));
+    if (listed < 0) {
+        int saved_errno = errno;
+        free(pids);
+        errno = saved_errno;
+        return -1;
+    }
+
+    if (total_processes != NULL) {
+        *total_processes = listed;
+    }
+
+    int inaccessible = 0;
+    int issue_count = 0;
+    int written = 0;
+    for (int index = 0; index < listed; ++index) {
+        const pid_t pid = pids[index];
+        if (pid < 0) {
+            continue;
+        }
+
+        if (written >= output_capacity) {
+            ++inaccessible;
+            if (issue_count < issue_capacity) {
+                HMProcessIssue *issue = &issues[issue_count++];
+                memset(issue, 0, sizeof(*issue));
+                issue->pid = pid;
+                issue->uid = UINT32_MAX;
+                issue->reason = HM_PROCESS_ISSUE_CAPACITY;
+                hm_read_process_metadata(
+                    pid,
+                    &issue->parent_pid,
+                    &issue->uid,
+                    issue->name,
+                    (uint32_t)sizeof(issue->name),
+                    issue->executable_path,
+                    (uint32_t)sizeof(issue->executable_path)
+                );
+            }
+            continue;
+        }
+
+        struct rusage_info_v4 usage;
+        memset(&usage, 0, sizeof(usage));
+        if (proc_pid_rusage(pid, RUSAGE_INFO_V4, (rusage_info_t *)&usage) != 0) {
+            int usage_errno = errno;
+            ++inaccessible;
+            if (issue_count < issue_capacity) {
+                HMProcessIssue *issue = &issues[issue_count++];
+                memset(issue, 0, sizeof(*issue));
+                issue->pid = pid;
+                issue->uid = UINT32_MAX;
+                issue->reason = HM_PROCESS_ISSUE_RUSAGE;
+                issue->error_code = usage_errno;
+                hm_read_process_metadata(
+                    pid,
+                    &issue->parent_pid,
+                    &issue->uid,
+                    issue->name,
+                    (uint32_t)sizeof(issue->name),
+                    issue->executable_path,
+                    (uint32_t)sizeof(issue->executable_path)
+                );
+            }
+            continue;
+        }
+
+        HMProcessSample *sample = &output[written];
+        memset(sample, 0, sizeof(*sample));
+        sample->pid = pid;
+        sample->uid = UINT32_MAX;
+        sample->started_at = usage.ri_proc_start_abstime;
+        sample->user_time_ns = usage.ri_user_time;
+        sample->system_time_ns = usage.ri_system_time;
+        sample->package_idle_wakeups = usage.ri_pkg_idle_wkups;
+        sample->interrupt_wakeups = usage.ri_interrupt_wkups;
+        sample->disk_bytes_read = usage.ri_diskio_bytesread;
+        sample->disk_bytes_written = usage.ri_diskio_byteswritten;
+        sample->resident_bytes = usage.ri_resident_size;
+        sample->physical_footprint_bytes = usage.ri_phys_footprint;
+        sample->billed_energy = usage.ri_billed_energy;
+        hm_read_process_metadata(
+            pid,
+            &sample->parent_pid,
+            &sample->uid,
+            sample->name,
+            (uint32_t)sizeof(sample->name),
+            sample->executable_path,
+            (uint32_t)sizeof(sample->executable_path)
+        );
+        if (sample->name[0] == '\0') {
+            snprintf(sample->name, sizeof(sample->name), "pid-%d", pid);
+        }
+
+        ++written;
+    }
+
+    free(pids);
+    if (inaccessible_processes != NULL) {
+        *inaccessible_processes = inaccessible;
+    }
+    if (written_issues != NULL) {
+        *written_issues = issue_count;
+    }
+    return written;
+}
+
+static inline int hm_read_swap(HMSwapSample *output) {
+    if (output == NULL) {
+        errno = EINVAL;
+        return -1;
+    }
+
+    struct xsw_usage usage;
+    size_t size = sizeof(usage);
+    memset(&usage, 0, sizeof(usage));
+    if (sysctlbyname("vm.swapusage", &usage, &size, NULL, 0) != 0) {
+        return -1;
+    }
+
+    output->total_bytes = usage.xsu_total;
+    output->available_bytes = usage.xsu_avail;
+    output->used_bytes = usage.xsu_used;
+    output->encrypted = usage.xsu_encrypted ? 1 : 0;
+    return 0;
+}
+
+static inline int hm_read_physical_memory(uint64_t *output) {
+    if (output == NULL) {
+        errno = EINVAL;
+        return -1;
+    }
+
+    size_t size = sizeof(*output);
+    return sysctlbyname("hw.memsize", output, &size, NULL, 0);
+}
+
+static inline int hm_cf_number_to_int(CFTypeRef value, int *output) {
+    if (value == NULL || output == NULL || CFGetTypeID(value) != CFNumberGetTypeID()) {
+        return 0;
+    }
+    return CFNumberGetValue((CFNumberRef)value, kCFNumberIntType, output) ? 1 : 0;
+}
+
+static inline int hm_read_battery(HMBatterySample *output) {
+    if (output == NULL) {
+        errno = EINVAL;
+        return -1;
+    }
+    memset(output, 0, sizeof(*output));
+    output->percentage = -1;
+    output->minutes_remaining = -1;
+
+    CFTypeRef snapshot = IOPSCopyPowerSourcesInfo();
+    if (snapshot == NULL) {
+        return -1;
+    }
+
+    CFStringRef source_type = IOPSGetProvidingPowerSourceType(snapshot);
+    output->on_battery = source_type != NULL &&
+        CFStringCompare(source_type, CFSTR(kIOPMBatteryPowerKey), 0) == kCFCompareEqualTo;
+
+    CFArrayRef sources = IOPSCopyPowerSourcesList(snapshot);
+    if (sources != NULL) {
+        CFIndex count = CFArrayGetCount(sources);
+        for (CFIndex index = 0; index < count; ++index) {
+            CFTypeRef source = CFArrayGetValueAtIndex(sources, index);
+            CFDictionaryRef description = IOPSGetPowerSourceDescription(snapshot, source);
+            if (description == NULL) {
+                continue;
+            }
+
+            CFTypeRef type = CFDictionaryGetValue(description, CFSTR(kIOPSTypeKey));
+            if (type == NULL ||
+                CFGetTypeID(type) != CFStringGetTypeID() ||
+                CFStringCompare(
+                    (CFStringRef)type,
+                    CFSTR(kIOPSInternalBatteryType),
+                    0
+                ) != kCFCompareEqualTo) {
+                continue;
+            }
+
+            output->available = 1;
+            int current = 0;
+            int maximum = 0;
+            hm_cf_number_to_int(
+                CFDictionaryGetValue(description, CFSTR(kIOPSCurrentCapacityKey)),
+                &current
+            );
+            hm_cf_number_to_int(
+                CFDictionaryGetValue(description, CFSTR(kIOPSMaxCapacityKey)),
+                &maximum
+            );
+            if (maximum > 0) {
+                output->percentage = (current * 100) / maximum;
+            }
+
+            CFTypeRef charging = CFDictionaryGetValue(
+                description,
+                CFSTR(kIOPSIsChargingKey)
+            );
+            output->charging = charging == kCFBooleanTrue ? 1 : 0;
+            break;
+        }
+        CFRelease(sources);
+    }
+
+    CFTimeInterval seconds_remaining = IOPSGetTimeRemainingEstimate();
+    if (seconds_remaining >= 0.0) {
+        output->minutes_remaining = (int32_t)(seconds_remaining / 60.0);
+    }
+
+    CFRelease(snapshot);
+    return 0;
+}
+
+extern char **environ;
+
+static inline int hm_post_system_notification(
+    const char *title,
+    const char *subtitle,
+    const char *message
+) {
+    static const char *script =
+        "on run argv\n"
+        "display notification (item 3 of argv) with title (item 1 of argv) "
+        "subtitle (item 2 of argv)\n"
+        "end run";
+
+    char *arguments[] = {
+        "/usr/bin/osascript",
+        "-e",
+        (char *)script,
+        "--",
+        (char *)(title == NULL ? "Harmon" : title),
+        (char *)(subtitle == NULL ? "" : subtitle),
+        (char *)(message == NULL ? "" : message),
+        NULL,
+    };
+
+    pid_t child = 0;
+    int spawn_result = posix_spawn(
+        &child,
+        arguments[0],
+        NULL,
+        NULL,
+        arguments,
+        environ
+    );
+    if (spawn_result != 0) {
+        return spawn_result;
+    }
+
+    int status = 0;
+    if (waitpid(child, &status, 0) < 0) {
+        return errno;
+    }
+    if (!WIFEXITED(status)) {
+        return ECHILD;
+    }
+    return WEXITSTATUS(status);
+}
+
+static inline size_t hm_discard_http_response(
+    char *data,
+    size_t size,
+    size_t count,
+    void *context
+) {
+    (void)data;
+    (void)context;
+    return size * count;
+}
+
+static inline int hm_http_global_init(void) {
+    return (int)curl_global_init(CURL_GLOBAL_DEFAULT);
+}
+
+static inline void hm_http_global_cleanup(void) {
+    curl_global_cleanup();
+}
+
+static inline int hm_http_post_json(
+    const char *url,
+    const char *authorization_header,
+    const char *body,
+    long timeout_seconds,
+    HMHttpResult *output
+) {
+    if (url == NULL || body == NULL || output == NULL) {
+        return EINVAL;
+    }
+
+    memset(output, 0, sizeof(*output));
+    CURL *request = curl_easy_init();
+    if (request == NULL) {
+        snprintf(output->error, sizeof(output->error), "curl_easy_init failed");
+        return ENOMEM;
+    }
+
+    struct curl_slist *headers = NULL;
+    headers = curl_slist_append(headers, "Content-Type: application/json");
+    headers = curl_slist_append(headers, "Accept: application/json");
+    if (authorization_header != NULL && authorization_header[0] != '\0') {
+        headers = curl_slist_append(headers, authorization_header);
+    }
+
+    curl_easy_setopt(request, CURLOPT_URL, url);
+    curl_easy_setopt(request, CURLOPT_POST, 1L);
+    curl_easy_setopt(request, CURLOPT_POSTFIELDS, body);
+    curl_easy_setopt(request, CURLOPT_POSTFIELDSIZE, (long)strlen(body));
+    curl_easy_setopt(request, CURLOPT_HTTPHEADER, headers);
+    curl_easy_setopt(request, CURLOPT_CONNECTTIMEOUT, timeout_seconds);
+    curl_easy_setopt(request, CURLOPT_TIMEOUT, timeout_seconds);
+    curl_easy_setopt(request, CURLOPT_NOSIGNAL, 1L);
+    curl_easy_setopt(request, CURLOPT_USERAGENT, "harmon/0.1.0");
+    curl_easy_setopt(request, CURLOPT_WRITEFUNCTION, hm_discard_http_response);
+    curl_easy_setopt(request, CURLOPT_ERRORBUFFER, output->error);
+
+    CURLcode result = curl_easy_perform(request);
+    output->curl_code = (int32_t)result;
+    if (result == CURLE_OK) {
+        curl_easy_getinfo(request, CURLINFO_RESPONSE_CODE, &output->status_code);
+    } else if (output->error[0] == '\0') {
+        snprintf(
+            output->error,
+            sizeof(output->error),
+            "%s",
+            curl_easy_strerror(result)
+        );
+    }
+
+    curl_slist_free_all(headers);
+    curl_easy_cleanup(request);
+    return result == CURLE_OK ? 0 : (int)result;
+}
+
+#ifdef __cplusplus
+}
+#endif
+
+#endif

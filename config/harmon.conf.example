@@ -1,0 +1,26 @@
+# Sampling
+intervalSeconds=300
+onceSampleSeconds=2
+topProcessCount=8
+maxAlertsPerCategory=3
+alertCooldownSeconds=1800
+
+# A zero disables the corresponding alert.
+applicationCpuAlertPercent=150
+applicationMemoryAlertMiB=2048
+swapAlertMiB=1024
+applicationBatteryImpactAlertScore=100
+batteryLowAlertPercent=20
+
+# Delivery
+systemNotifications=true
+notifyEverySample=false
+httpTimeoutSeconds=15
+
+# Generic JSON webhook. HTTPS is required, except for local 127.0.0.1 testing.
+webhookUrl=
+webhookBearerToken=
+
+# Both Telegram values are required when Telegram delivery is enabled.
+telegramBotToken=
+telegramChatId=
