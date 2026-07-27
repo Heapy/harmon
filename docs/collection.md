@@ -284,7 +284,10 @@ Rules and primary reports operate on applications, not isolated helper PIDs:
 
 1. A process inside an `.app` belongs to its outermost application bundle.
 2. An unbundled process inherits the nearest readable ancestor's bundle.
-3. If neither rule resolves a bundle, the process remains its own group.
+3. `Ghostty.app` and `agterm.app` are terminal boundaries. Their own bundled
+   helpers remain grouped with the terminal, but shells and other external
+   descendants do not inherit the terminal bundle.
+4. If none of these rules resolves a bundle, the process remains its own group.
 
 For example, all of these belong to `/Applications/Firefox.app`:
 
@@ -298,6 +301,11 @@ Outermost-bundle matching handles nested helper bundles and reparented helpers
 whose executable remains inside the application. A helper outside the bundle
 and reparented away from a readable ancestor cannot be inferred reliably; a
 future configuration layer may add explicit grouping overrides.
+
+This boundary keeps a terminal from absorbing an entire interactive process
+tree. An application launched from a terminal still uses its own direct
+`.app` bundle, while an unbundled shell or command remains an independent
+process group.
 
 Rates and gauges are summed across readable members. The application record
 also carries the number of members for which compressed/paged-out attribution

@@ -7,8 +7,9 @@ import dev.yoda.harmon.model.ProcessUsage
  * Resolves a readable process to its outermost macOS application bundle.
  *
  * A process whose executable is outside an `.app` bundle inherits the bundle
- * of its nearest readable ancestor. Processes without an application bundle
- * remain independent groups.
+ * of its nearest readable ancestor, unless that bundle is a terminal
+ * application boundary. Processes without an application bundle remain
+ * independent groups.
  */
 class ApplicationGrouper {
     fun group(processes: List<ProcessUsage>): List<ApplicationUsage> {
@@ -29,6 +30,7 @@ class ApplicationGrouper {
                 return null
             }
             val inheritedBundle = resolveBundlePath(process.parentPid, visiting)
+                ?.takeUnless { it.isTerminalApplicationBundle() }
             visiting.remove(pid)
             bundleByPid[pid] = inheritedBundle
             return inheritedBundle
@@ -133,6 +135,9 @@ class ApplicationGrouper {
     private fun String.applicationName(): String =
         substringAfterLast('/').dropLast(APP_EXTENSION_LENGTH)
 
+    private fun String.isTerminalApplicationBundle(): Boolean =
+        applicationName().lowercase() in TERMINAL_APPLICATION_NAMES
+
     private fun String.stableHash(): String {
         var hash = FNV_OFFSET_BASIS
         encodeToByteArray().forEach { byte ->
@@ -161,5 +166,6 @@ class ApplicationGrouper {
         const val APP_EXTENSION_LENGTH = 4
         const val FNV_OFFSET_BASIS: ULong = 14_695_981_039_346_656_037u
         const val FNV_PRIME: ULong = 1_099_511_628_211u
+        val TERMINAL_APPLICATION_NAMES = setOf("agterm", "ghostty")
     }
 }

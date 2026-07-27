@@ -318,9 +318,11 @@ data class MonitoringReport(
 )
 
 data class NotificationPayload(
+    val identifier: String,
     val title: String,
     val subtitle: String,
     val text: String,
+    val html: String,
     val json: String,
 )
 

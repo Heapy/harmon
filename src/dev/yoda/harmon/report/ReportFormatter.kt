@@ -213,9 +213,15 @@ object ReportFormatter {
         }
 
         return NotificationPayload(
+            identifier = "harmon-${report.usage.capturedAt.toEpochMilliseconds()}",
             title = title,
             subtitle = subtitle,
             text = message,
+            html = ReportHtml.document(
+                title = title,
+                subtitle = subtitle,
+                reportText = text(report),
+            ),
             json = json(report),
         )
     }
@@ -223,9 +229,16 @@ object ReportFormatter {
     fun json(report: MonitoringReport): String = ReportJson.encode(report)
 
     fun testPayload(): NotificationPayload = NotificationPayload(
+        identifier = "harmon-notification-test",
         title = "Harmon",
         subtitle = "Notification test",
         text = "System monitoring notifications are configured correctly.",
+        html = ReportHtml.document(
+            title = "Harmon",
+            subtitle = "Notification test",
+            reportText = "System monitoring notifications are configured correctly.\n\n" +
+                "Clicking a Harmon notification opens the latest local HTML report.",
+        ),
         json = ReportJson.testEvent(),
     )
 

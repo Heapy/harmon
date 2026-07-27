@@ -41,7 +41,8 @@ boundary.
 - root-filesystem capacity;
 - system CPU, 1/5/15-minute load averages, physical memory, and power state;
 - automatic `.app` grouping, including Firefox, Chromium, Electron, and other
-  multi-process applications;
+  multi-process applications, with Ghostty and agterm treated as terminal
+  boundaries rather than owners of every command they launch;
 - alert cooldowns and thresholds for CPU, memory, physical storage writes, swap
   usage, swap-out traffic, likely battery impact, and low battery.
 
@@ -202,6 +203,15 @@ harmon check-config
 harmon test-notifications
 ```
 
+Notification Center delivery uses the background-only Harmon application
+bundle installed under `~/Library/Application Support/Harmon/Harmon.app`.
+Each system notification atomically updates a private local report at
+`~/Library/Application Support/Harmon/Reports/latest.html`. Clicking the
+notification opens that complete report in the default browser. No scripts or
+remote resources are embedded in the HTML, and Script Editor is not involved.
+The launchd agent uses the compatible Notification Center path because current
+macOS releases reject the modern UserNotifications API from a launchd job.
+
 ## Install with launchd
 
 Run the installer as the login user:
@@ -213,7 +223,9 @@ Run the installer as the login user:
 It asks for sudo only for the system-owned collector files and services. It:
 
 - builds the release executable;
-- installs the user CLI at `~/.local/bin/harmon`;
+- installs the background-only agent bundle under
+  `~/Library/Application Support/Harmon/Harmon.app`;
+- links the user CLI at `~/.local/bin/harmon` to the bundled executable;
 - installs a root-owned copy at
   `/Library/PrivilegedHelperTools/dev.yoda.harmon`;
 - registers `dev.yoda.harmon.collector` as a system LaunchDaemon;
@@ -246,7 +258,7 @@ src/
   monitor/     privileged macOS collection and interval calculations
   analysis/    application grouping, alert rules, and cooldowns
   config/      user-agent configuration
-  report/      text and JSON reporting
+  report/      text, local HTML, and kotlinx.serialization JSON reporting
   notify/      Notification Center, webhook, and Telegram delivery
   runtime/     user-agent monitoring loop
 cinterop/      libproc, Mach, sysctl, IOKit, sockets, and libcurl bridge

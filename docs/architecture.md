@@ -13,9 +13,12 @@ root access out of Notification Center, Telegram, webhooks, and future UI code.
 
 The release currently contains all roles in one Kotlin/Native executable.
 Installation places a root-owned copy under `/Library/PrivilegedHelperTools`
-and a user-owned copy under `~/.local/bin`. Command dispatch occurs before user
-configuration is loaded, so the collector does not read notification secrets
-or initiate network delivery.
+and a signed, background-only user application bundle under
+`~/Library/Application Support/Harmon/Harmon.app`; `~/.local/bin/harmon`
+links to that bundled executable. The bundle gives Notification Center a
+stable Harmon identity and routes notification clicks back to the running
+agent. Command dispatch occurs before user configuration is loaded, so the
+collector does not read notification secrets or initiate network delivery.
 
 ## Request lifecycle
 
@@ -98,6 +101,12 @@ intended only for a socket under `/tmp` and does not improve process access.
 - If an agent interval fails, its previous valid snapshot remains the
   baseline. The next successful interval covers the full monotonic duration.
 - Notifications never run in the collector and cannot terminate it.
+- Before a system notification is posted, the agent atomically replaces the
+  private `Reports/latest.html` file. The notification carries only that local
+  path, and its default click action opens the file through macOS.
+- macOS rejects the modern UserNotifications scheduling API from a launchd
+  job. The agent therefore uses the launchd-compatible Notification Center
+  fallback. A future foreground UI component can adopt the modern API.
 
 ## Privilege boundary and residual risk
 

@@ -7,7 +7,7 @@
 
     <key>ProgramArguments</key>
     <array>
-        <string>@HARMON_BINARY@</string>
+        <string>@HARMON_AGENT_BINARY@</string>
         <string>run</string>
         <string>--config</string>
         <string>@HARMON_CONFIG@</string>

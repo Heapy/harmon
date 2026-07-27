@@ -66,4 +66,74 @@ class ApplicationGrouperTest {
         assertEquals(2, applications.size)
         assertNotEquals(applications[0].id, applications[1].id)
     }
+
+    @Test
+    fun terminalApplicationsDoNotClaimExternalDescendants() {
+        val applications = ApplicationGrouper().group(
+            listOf(
+                processUsage(
+                    pid = 300,
+                    name = "ghostty",
+                    executablePath = "/Applications/Ghostty.app/Contents/MacOS/ghostty",
+                ),
+                processUsage(
+                    pid = 301,
+                    parentPid = 300,
+                    name = "ghostty-helper",
+                    executablePath = "/Applications/Ghostty.app/Contents/MacOS/ghostty-helper",
+                ),
+                processUsage(
+                    pid = 302,
+                    parentPid = 300,
+                    name = "zsh",
+                    executablePath = "/bin/zsh",
+                ),
+                processUsage(
+                    pid = 303,
+                    parentPid = 302,
+                    name = "codex",
+                    executablePath = null,
+                ),
+                processUsage(
+                    pid = 304,
+                    parentPid = 302,
+                    name = "firefox",
+                    executablePath = "/Applications/Firefox.app/Contents/MacOS/firefox",
+                ),
+                processUsage(
+                    pid = 305,
+                    parentPid = 304,
+                    name = "firefox-helper",
+                    executablePath = null,
+                ),
+                processUsage(
+                    pid = 400,
+                    name = "agterm",
+                    executablePath = "/Applications/agterm.app/Contents/MacOS/agterm",
+                ),
+                processUsage(
+                    pid = 401,
+                    parentPid = 400,
+                    name = "bash",
+                    executablePath = "/bin/bash",
+                ),
+            ),
+        )
+
+        assertEquals(
+            listOf(300, 301),
+            applications.single { it.name == "Ghostty" }.processIds,
+        )
+        assertEquals(
+            listOf(304, 305),
+            applications.single { it.name == "Firefox" }.processIds,
+        )
+        assertEquals(
+            listOf(400),
+            applications.single { it.name == "agterm" }.processIds,
+        )
+        assertEquals(null, applications.single { it.rootPid == 302 }.bundlePath)
+        assertEquals(null, applications.single { it.rootPid == 303 }.bundlePath)
+        assertEquals(null, applications.single { it.rootPid == 401 }.bundlePath)
+    }
 }

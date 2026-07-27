@@ -16,6 +16,10 @@ INSTALL_BIN_DIR="$HOME/.local/bin"
 INSTALL_CONFIG_DIR="$HOME/.config/harmon"
 INSTALL_LOG_DIR="$HOME/Library/Logs/Harmon"
 LAUNCH_AGENTS_DIR="$HOME/Library/LaunchAgents"
+HARMON_SUPPORT_DIR="$HOME/Library/Application Support/Harmon"
+HARMON_APP="$HARMON_SUPPORT_DIR/Harmon.app"
+HARMON_APP_CONTENTS="$HARMON_APP/Contents"
+HARMON_AGENT_BINARY="$HARMON_APP_CONTENTS/MacOS/harmon"
 
 HARMON_BINARY="$INSTALL_BIN_DIR/harmon"
 HARMON_CONFIG="$INSTALL_CONFIG_DIR/config"
@@ -56,9 +60,26 @@ echo "Checking sudo access for the system LaunchDaemon..."
     "$INSTALL_BIN_DIR" \
     "$INSTALL_CONFIG_DIR" \
     "$INSTALL_LOG_DIR" \
-    "$LAUNCH_AGENTS_DIR"
+    "$LAUNCH_AGENTS_DIR" \
+    "$HARMON_APP_CONTENTS/MacOS"
 
-/usr/bin/install -m 0755 "$BUILT_BINARY" "$HARMON_BINARY"
+/usr/bin/install -m 0755 "$BUILT_BINARY" "$HARMON_AGENT_BINARY"
+/usr/bin/install -m 0644 \
+    "$PROJECT_DIR/launchd/Harmon.Info.plist" \
+    "$HARMON_APP_CONTENTS/Info.plist"
+SIGNING_IDENTITY=$(
+    /usr/bin/security find-identity -v -p codesigning |
+        /usr/bin/awk '/^[[:space:]]*[0-9]+\)/ { print $2; exit }'
+)
+if [ -n "$SIGNING_IDENTITY" ]; then
+    /usr/bin/codesign --force --sign "$SIGNING_IDENTITY" "$HARMON_APP"
+    echo "Signed Harmon.app with a trusted local code-signing identity."
+else
+    /usr/bin/codesign --force --sign - "$HARMON_APP"
+    echo "No trusted code-signing identity found; using an ad-hoc signature."
+fi
+/bin/rm -f "$HARMON_BINARY"
+/bin/ln -s "$HARMON_AGENT_BINARY" "$HARMON_BINARY"
 if [ ! -f "$HARMON_CONFIG" ]; then
     /usr/bin/install -m 0600 \
         "$PROJECT_DIR/config/harmon.conf.example" \
@@ -77,7 +98,7 @@ escape_xml_replacement() {
         -e 's/[&|\\]/\\&/g'
 }
 
-BINARY_XML=$(printf '%s' "$HARMON_BINARY" | escape_xml_replacement)
+AGENT_BINARY_XML=$(printf '%s' "$HARMON_AGENT_BINARY" | escape_xml_replacement)
 CONFIG_XML=$(printf '%s' "$HARMON_CONFIG" | escape_xml_replacement)
 LOG_DIR_XML=$(printf '%s' "$INSTALL_LOG_DIR" | escape_xml_replacement)
 COLLECTOR_BINARY_XML=$(printf '%s' "$HARMON_COLLECTOR_BINARY" | escape_xml_replacement)
@@ -91,7 +112,7 @@ cleanup() {
 trap cleanup EXIT HUP INT TERM
 
 /usr/bin/sed \
-    -e "s|@HARMON_BINARY@|$BINARY_XML|g" \
+    -e "s|@HARMON_AGENT_BINARY@|$AGENT_BINARY_XML|g" \
     -e "s|@HARMON_CONFIG@|$CONFIG_XML|g" \
     -e "s|@HARMON_LOG_DIR@|$LOG_DIR_XML|g" \
     "$PROJECT_DIR/launchd/dev.yoda.harmon.agent.plist.template" >"$AGENT_PLIST_TEMP"
@@ -129,6 +150,11 @@ echo "Installing the privileged collector (sudo is required)..."
 /usr/bin/sudo /bin/launchctl enable "$HARMON_COLLECTOR_SERVICE"
 /usr/bin/sudo /bin/launchctl kickstart -k "$HARMON_COLLECTOR_SERVICE"
 
+LSREGISTER="/System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister"
+if [ -x "$LSREGISTER" ]; then
+    "$LSREGISTER" -f "$HARMON_APP"
+fi
+
 /bin/launchctl bootstrap "gui/$USER_ID" "$HARMON_AGENT_PLIST"
 /bin/launchctl enable "$HARMON_AGENT_SERVICE"
 /bin/launchctl kickstart -k "$HARMON_AGENT_SERVICE"
@@ -136,6 +162,7 @@ echo "Installing the privileged collector (sudo is required)..."
 echo
 echo "Harmon is installed and running."
 echo "Config:           $HARMON_CONFIG"
+echo "Agent app:        $HARMON_APP"
 echo "Agent logs:       $INSTALL_LOG_DIR"
 echo "Collector logs:   /Library/Logs/Harmon"
 echo "Agent status:     launchctl print $HARMON_AGENT_SERVICE"

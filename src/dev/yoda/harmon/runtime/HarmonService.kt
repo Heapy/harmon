@@ -12,6 +12,10 @@ import dev.yoda.harmon.notify.NotificationDispatcher
 import dev.yoda.harmon.report.ReportFormatter
 import dev.yoda.harmon.util.printError
 import kotlinx.cinterop.ExperimentalForeignApi
+import platform.CoreFoundation.CFAbsoluteTimeGetCurrent
+import platform.CoreFoundation.CFRunLoopRunInMode
+import platform.CoreFoundation.kCFRunLoopDefaultMode
+import platform.CoreFoundation.kCFRunLoopRunFinished
 import kotlin.time.Clock
 
 class HarmonService(
@@ -115,10 +119,23 @@ class HarmonService(
 
     @OptIn(ExperimentalForeignApi::class)
     private fun sleepSeconds(seconds: Long) {
-        hm_sleep_millis(seconds.toULong() * 1_000u)
+        val deadline = CFAbsoluteTimeGetCurrent() + seconds.toDouble()
+        while (CFAbsoluteTimeGetCurrent() < deadline) {
+            val remaining = deadline - CFAbsoluteTimeGetCurrent()
+            val result = CFRunLoopRunInMode(
+                mode = kCFRunLoopDefaultMode,
+                seconds = minOf(remaining, RUN_LOOP_SLICE_SECONDS),
+                returnAfterSourceHandled = true,
+            )
+            if (result == kCFRunLoopRunFinished) {
+                hm_sleep_millis(RUN_LOOP_IDLE_MILLISECONDS)
+            }
+        }
     }
 
     private companion object {
         const val INITIAL_RETRY_SECONDS = 10L
+        const val RUN_LOOP_SLICE_SECONDS = 1.0
+        const val RUN_LOOP_IDLE_MILLISECONDS = 10uL
     }
 }

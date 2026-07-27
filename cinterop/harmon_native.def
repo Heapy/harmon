@@ -21,7 +21,6 @@ linkerOpts = -framework IOKit -framework CoreFoundation -lcurl
 #include <mach/mach.h>
 #include <mach/mach_host.h>
 #include <mach/vm_statistics.h>
-#include <spawn.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -32,7 +31,6 @@ linkerOpts = -framework IOKit -framework CoreFoundation -lcurl
 #include <sys/sysctl.h>
 #include <sys/time.h>
 #include <sys/un.h>
-#include <sys/wait.h>
 #include <time.h>
 #include <unistd.h>
 
@@ -1272,53 +1270,6 @@ static inline int hm_read_battery(HMBatterySample *output) {
 
     CFRelease(snapshot);
     return 0;
-}
-
-extern char **environ;
-
-static inline int hm_post_system_notification(
-    const char *title,
-    const char *subtitle,
-    const char *message
-) {
-    static const char *script =
-        "on run argv\n"
-        "display notification (item 3 of argv) with title (item 1 of argv) "
-        "subtitle (item 2 of argv)\n"
-        "end run";
-
-    char *arguments[] = {
-        "/usr/bin/osascript",
-        "-e",
-        (char *)script,
-        "--",
-        (char *)(title == NULL ? "Harmon" : title),
-        (char *)(subtitle == NULL ? "" : subtitle),
-        (char *)(message == NULL ? "" : message),
-        NULL,
-    };
-
-    pid_t child = 0;
-    int spawn_result = posix_spawn(
-        &child,
-        arguments[0],
-        NULL,
-        NULL,
-        arguments,
-        environ
-    );
-    if (spawn_result != 0) {
-        return spawn_result;
-    }
-
-    int status = 0;
-    if (waitpid(child, &status, 0) < 0) {
-        return errno;
-    }
-    if (!WIFEXITED(status)) {
-        return ECHILD;
-    }
-    return WEXITSTATUS(status);
 }
 
 static inline size_t hm_discard_http_response(

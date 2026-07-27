@@ -4,6 +4,7 @@ import dev.yoda.harmon.model.ProcessCollectionIssueReason
 import dev.yoda.harmon.report.ReportFormatter
 import kotlin.test.Test
 import kotlin.test.assertContains
+import kotlin.test.assertFalse
 
 class ReportFormatterTest {
     @Test
@@ -64,5 +65,25 @@ class ReportFormatterTest {
         assertContains(output, "Top application compressed/paged-out memory")
         assertContains(output, "writer")
         assertContains(output, "12.0 mW accounted")
+    }
+
+    @Test
+    fun notificationContainsACompleteEscapedHtmlReport() {
+        val report = MonitoringReport(
+            usage = systemUsage(
+                processes = listOf(
+                    processUsage(name = "browser <helper> & worker"),
+                ),
+            ),
+            alerts = emptyList(),
+            topProcessCount = 5,
+        )
+
+        val payload = ReportFormatter.notification(report)
+
+        assertContains(payload.html, "<!doctype html>")
+        assertContains(payload.html, "Top application CPU")
+        assertContains(payload.html, "browser &lt;helper&gt; &amp; worker")
+        assertFalse("browser <helper> & worker" in payload.html)
     }
 }

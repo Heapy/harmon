@@ -6,14 +6,24 @@ import dev.yoda.harmon.model.NotificationPayload
 import dev.yoda.harmon.nativebridge.HMHttpResult
 import dev.yoda.harmon.nativebridge.hm_http_global_init
 import dev.yoda.harmon.nativebridge.hm_http_post_json
-import dev.yoda.harmon.nativebridge.hm_post_system_notification
 import dev.yoda.harmon.report.ReportFormatter
 import dev.yoda.harmon.report.ReportJson
 import kotlinx.cinterop.ExperimentalForeignApi
+import kotlinx.cinterop.ObjCSignatureOverride
 import kotlinx.cinterop.alloc
 import kotlinx.cinterop.memScoped
 import kotlinx.cinterop.ptr
 import kotlinx.cinterop.toKString
+import platform.AppKit.NSApplication
+import platform.AppKit.NSApplicationActivationPolicy
+import platform.AppKit.NSWorkspace
+import platform.Foundation.NSUserNotification
+import platform.Foundation.NSUserNotificationCenter
+import platform.Foundation.NSUserNotificationCenterDelegateProtocol
+import platform.Foundation.NSURL
+import platform.darwin.NSObject
+
+private const val REPORT_PATH_USER_INFO_KEY = "harmonReportPath"
 
 interface NotificationChannel {
     val name: String
@@ -72,22 +82,71 @@ class NotificationDispatcher(
     }
 }
 
-class SystemNotificationChannel : NotificationChannel {
+@OptIn(ExperimentalForeignApi::class)
+internal class SystemNotificationChannel(
+    private val reportStore: HtmlReportStore = HtmlReportStore(),
+) : NotificationChannel {
     override val name: String = "system"
-
-    @OptIn(ExperimentalForeignApi::class)
-    override fun deliver(payload: NotificationPayload): DeliveryResult = memScoped {
-        val result = hm_post_system_notification(
-            payload.title,
-            payload.subtitle,
-            payload.text,
+    private val center = NSApplication.sharedApplication.let { application ->
+        application.setActivationPolicy(
+            NSApplicationActivationPolicy.NSApplicationActivationPolicyAccessory,
         )
-        DeliveryResult(
+        application.finishLaunching()
+        NSUserNotificationCenter.defaultUserNotificationCenter
+    }
+    private val delegate = ReportNotificationDelegate()
+
+    init {
+        center.delegate = delegate
+    }
+
+    @Suppress("DEPRECATION")
+    override fun deliver(payload: NotificationPayload): DeliveryResult {
+        val reportPath = reportStore.write(payload.html)
+        val notification = NSUserNotification().apply {
+            setIdentifier(payload.identifier)
+            setTitle(payload.title)
+            setSubtitle(payload.subtitle)
+            setInformativeText(payload.text)
+            setHasActionButton(true)
+            setActionButtonTitle("Open report")
+            setUserInfo(mapOf(REPORT_PATH_USER_INFO_KEY to reportPath))
+        }
+        center.deliverNotification(notification)
+        return DeliveryResult(
             channel = name,
-            successful = result == 0,
-            detail = if (result == 0) "delivered" else "osascript exited with $result",
+            successful = true,
+            detail = "delivered via launchd-compatible Notification Center; " +
+                "click opens $reportPath",
         )
     }
+}
+
+@Suppress("DEPRECATION")
+private class ReportNotificationDelegate :
+    NSObject(),
+    NSUserNotificationCenterDelegateProtocol {
+    @ObjCSignatureOverride
+    override fun userNotificationCenter(
+        center: NSUserNotificationCenter,
+        didActivateNotification: NSUserNotification,
+    ) {
+        val reportPath = didActivateNotification
+            .userInfo
+            ?.get(REPORT_PATH_USER_INFO_KEY) as? String
+        if (reportPath != null) {
+            NSWorkspace.sharedWorkspace.openURL(
+                NSURL.fileURLWithPath(reportPath),
+            )
+        }
+        center.removeDeliveredNotification(didActivateNotification)
+    }
+
+    @ObjCSignatureOverride
+    override fun userNotificationCenter(
+        center: NSUserNotificationCenter,
+        shouldPresentNotification: NSUserNotification,
+    ): Boolean = true
 }
 
 @OptIn(ExperimentalForeignApi::class)
