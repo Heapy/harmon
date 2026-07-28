@@ -538,18 +538,48 @@ the build like an error»), которое задача 15 должна попр
 Ожидания сверены с фактическим кодом: `EEXIST` — только для не-сокета или чужого uid.
 
 **Files:**
-- Create: `test/native/socket_test.c`
+- Modify: `test/native/socket_test.c` (заглушка суиты создана досрочно в задаче 4)
+- ➕ Modify: `test/NativeCTest.kt` (список `C_HARNESS_CHECKS`)
 
-- [ ] `socket.rejects-bad-path`: `NULL` и пустая строка дают `EINVAL`; путь длиной ≥ `sizeof(sun_path)` — `ENAMETOOLONG`
-- [ ] `socket.refuses-foreign-occupant`: обычный файл по пути даёт `EEXIST`
-- [ ] `socket.replaces-stale-socket`: протухший сокет **своего** euid переоткрывается успешно (`unlink` + повторный bind)
-- [ ] `socket.mode-is-0660`: права на файл сокета после открытия равны `0660`; ветка `chown` доступна только под root и в скоуп не входит
-- [ ] `socket.connect-to-live-and-missing`: `hm_unix_connect` к живому серверу успешен, к несуществующему пути — ошибка
-- [ ] `socket.accept-returns-peer-credentials`: `hm_unix_accept` отдаёт дескриптор и заполняет uid пира
-- [ ] `socket.accept-rejects-foreign-uid`: подключение к своему же серверу с заведомо чужим `allowed_user_id` даёт **-2 с `EACCES`** — шлюз контроля доступа коллектора
-- [ ] `socket.remove-handles-bad-input`: `hm_remove_socket` на `NULL`, пустой строке и несуществующем пути даёт ошибку без падения
-- [ ] убедиться, что временный каталог убирается за собой при любом исходе
-- [ ] прогнать `./kotlin test`
+- [x] `socket.rejects-bad-path`: `NULL` и пустая строка дают `EINVAL`; путь длиной ≥ `sizeof(sun_path)` — `ENAMETOOLONG`
+- [x] `socket.refuses-foreign-occupant`: обычный файл по пути даёт `EEXIST`
+- [x] `socket.replaces-stale-socket`: протухший сокет **своего** euid переоткрывается успешно (`unlink` + повторный bind)
+- [x] `socket.mode-is-0660`: права на файл сокета после открытия равны `0660`; ветка `chown` доступна только под root и в скоуп не входит
+- [x] `socket.connect-to-live-and-missing`: `hm_unix_connect` к живому серверу успешен, к несуществующему пути — ошибка
+- [x] `socket.accept-returns-peer-credentials`: `hm_unix_accept` отдаёт дескриптор и заполняет uid пира
+- [x] `socket.accept-rejects-foreign-uid`: подключение к своему же серверу с заведомо чужим `allowed_user_id` даёт **-2 с `EACCES`** — шлюз контроля доступа коллектора
+- [x] `socket.remove-handles-bad-input`: `hm_remove_socket` на `NULL`, пустой строке и несуществующем пути даёт ошибку без падения
+- [x] убедиться, что временный каталог убирается за собой при любом исходе
+- [x] прогнать `./kotlin test`
+
+✅ **Проверок девять: сверх плана добавлена `socket.connect-rejects-bad-path`.** Мутация,
+снявшая проверку длины пути в `hm_unix_connect`, проходила зелёной — валидация аргументов
+клиентской стороны не была покрыта ничем. Она зеркалит guard из `hm_unix_server_open`, и
+расхождение копий как раз и есть режим отказа; путь приходит из конфигурации, поэтому незаданный
+ключ доезжает сюда пустой строкой, а слишком длинный — молча усечённым до `sun_path`.
+
+ℹ️ **Все девять проверок подтверждены мутациями `.def`** (каждая правка откачена): снятый guard
+занятости пути роняет `refuses-foreign-occupant`, `chmod 0666` — `mode-is-0660`, снятый `unlink`
+протухшего сокета — `replaces-stale-socket`, инверсия сравнения uid — обе accept-проверки,
+`*peer_user_id = 0` — их же, снятые проверки длины пути — `rejects-bad-path` и
+`connect-rejects-bad-path`, `hm_remove_socket` без валидации — `remove-handles-bad-input`.
+Отдельная находка: полное удаление шлюза доступа `.def` **не компилируется** (`-Werror`,
+`-Wunused-parameter` на `allowed_user_id`), поэтому осмысленная мутация — инверсия условия.
+
+ℹ️ **Временный каталог** создаётся `mkdtemp` под `/tmp`, а не под `TMPDIR`: per-user `TMPDIR` на
+macOS длиной под 50 символов, и путь сокета подошёл бы вплотную к 104 байтам `sun_path` — суита
+падала бы по причине, не имеющей отношения к мосту. Уборка идёт и в конце суиты, и через
+`atexit`, поэтому ранний выход любой проверки каталог не оставляет; после `./kotlin test`
+совпадений по `/tmp/harmon-native-test.*` нет.
+
+ℹ️ **`accept` не блокирует.** Клиент подключается до `hm_unix_accept`: `connect` к слушающему
+unix-сокету завершается, как только соединение поставлено в очередь, поэтому потоков в суите нет,
+а `alarm` из задачи 4 остаётся страховкой, а не механизмом завершения. `getpeereid` на клиентской
+стороне работает до `accept` — проверено, `hm_unix_connect` возвращает дескриптор.
+
+⚠️ **`socket.accept-rejects-foreign-uid` требует не-root euid** и под root сообщает провал с этим
+текстом, а не молчаливый пропуск: uid 0 пропускается шлюзом безусловно, поэтому изображать чужого
+пользователя под root нечем. Прогон тестов от root не предполагается.
 
 ### Task 11: Разорвать дублирование capacity-арифметики
 

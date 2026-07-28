@@ -56,6 +56,15 @@ private val C_HARNESS_CHECKS = setOf(
     "framing.receive-rejects-truncated-payload",
     "framing.receive-assembles-split-payload",
     "framing.send-completes-partial-write",
+    "socket.rejects-bad-path",
+    "socket.refuses-foreign-occupant",
+    "socket.replaces-stale-socket",
+    "socket.mode-is-0660",
+    "socket.connect-rejects-bad-path",
+    "socket.connect-to-live-and-missing",
+    "socket.accept-returns-peer-credentials",
+    "socket.accept-rejects-foreign-uid",
+    "socket.remove-handles-bad-input",
 )
 
 class NativeCTest {
