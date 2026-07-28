@@ -202,7 +202,6 @@ Important defaults:
 ```properties
 collectorSocket=/var/run/harmon.collector.sock
 intervalSeconds=300
-terminalApplications=terminal,iterm2,iterm,alacritty,wezterm,kitty,ghostty,warp,hyper,tabby,agterm
 applicationCpuAlertPercent=150
 applicationMemoryAlertMiB=2048
 applicationDiskWriteAlertMiBPerSecond=50
@@ -217,9 +216,10 @@ notifyEverySample=false
 A threshold of `0` disables that rule. `applicationMemoryAlertMiB` and
 `swapAlertMiB` are capped at 1,048,576 MiB (1 TiB); a larger value is rejected
 and the process exits with status 2. `terminalApplications` is a
-comma-separated list of bundle names without `.app`, matched case-insensitively;
-it replaces the built-in list outright, and an empty value turns the terminal
-boundary off. The old
+comma-separated list of bundle names without `.app`, matched case-insensitively.
+It replaces the built-in list outright — that list is spelled out in
+[config/harmon.conf.example](config/harmon.conf.example) — and an empty value
+turns the terminal boundary off. The old
 `processCpuAlertPercent`, `processMemoryAlertMiB`, and
 `batteryImpactAlertScore` keys remain accepted as compatibility aliases.
 `alertCooldownSeconds` no longer does anything — alerts are pushed when a

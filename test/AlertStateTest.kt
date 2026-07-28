@@ -2,8 +2,6 @@ import dev.yoda.harmon.analysis.AlertState
 import dev.yoda.harmon.analysis.DELIVERY_RETRY_THRESHOLD
 import dev.yoda.harmon.analysis.MAX_DELIVERY_RETRY_SAMPLES
 import dev.yoda.harmon.analysis.deliveryRetryDelaySamples
-import dev.yoda.harmon.model.Alert
-import dev.yoda.harmon.model.Severity
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertTrue
@@ -12,7 +10,7 @@ class AlertStateTest {
     @Test
     fun treatsKeyMissingFromPreviousSampleAsNew() {
         val state = AlertState()
-        val alerts = listOf(stateAlert("cpu:firefox"), stateAlert("memory:chrome"))
+        val alerts = listOf(alert("cpu:firefox"), alert("memory:chrome"))
 
         assertEquals(
             listOf("cpu:firefox", "memory:chrome"),
@@ -23,7 +21,7 @@ class AlertStateTest {
     @Test
     fun stopsReportingKeyOnceDeliveryIsCommitted() {
         val state = AlertState()
-        val alerts = listOf(stateAlert("cpu:firefox"))
+        val alerts = listOf(alert("cpu:firefox"))
 
         state.commit(setOf("cpu:firefox"), setOf("cpu:firefox"))
 
@@ -33,7 +31,7 @@ class AlertStateTest {
     @Test
     fun treatsKeyAsNewAgainAfterItStoppedFiring() {
         val state = AlertState()
-        val alerts = listOf(stateAlert("cpu:firefox"))
+        val alerts = listOf(alert("cpu:firefox"))
 
         state.commit(setOf("cpu:firefox"), setOf("cpu:firefox"))
         state.commit(emptySet(), emptySet())
@@ -44,7 +42,7 @@ class AlertStateTest {
     @Test
     fun keepsKeyNewWhenDeliveryDidNotSucceed() {
         val state = AlertState()
-        val alerts = listOf(stateAlert("cpu:firefox"))
+        val alerts = listOf(alert("cpu:firefox"))
 
         state.commit(setOf("cpu:firefox"), emptySet())
 
@@ -63,8 +61,8 @@ class AlertStateTest {
     @Test
     fun keepsOnlyDeliveredKeysThatStillFire() {
         val state = AlertState()
-        val firefox = listOf(stateAlert("cpu:firefox"))
-        val both = firefox + stateAlert("memory:chrome")
+        val firefox = listOf(alert("cpu:firefox"))
+        val both = firefox + alert("memory:chrome")
 
         state.commit(setOf("cpu:firefox", "memory:chrome"), setOf("cpu:firefox", "memory:chrome"))
         state.commit(setOf("cpu:firefox"), emptySet())
@@ -81,7 +79,7 @@ class AlertStateTest {
     @Test
     fun remembersAFiringKeyThatNoReportCarried() {
         val state = AlertState()
-        val demoted = listOf(stateAlert("cpu:chrome"))
+        val demoted = listOf(alert("cpu:chrome"))
 
         state.commit(setOf("cpu:firefox", "cpu:chrome"), setOf("cpu:firefox", "cpu:chrome"))
         state.commit(setOf("cpu:firefox", "cpu:chrome"), emptySet())
@@ -91,14 +89,14 @@ class AlertStateTest {
     }
 
     /**
-     * A channel that can never succeed — a typo'd webhook URL, a revoked bot token — would push a
-     * fresh banner every interval forever, because Notification Center coalesces nothing. The
+     * A channel that can never succeed — a typo'd webhook URL, a revoked bot token — would push
+     * a fresh banner every interval forever, because Notification Center coalesces nothing. The
      * retries widen instead.
      */
     @Test
     fun spreadsOutRetriesOfAKeyThatNeverGetsDelivered() {
         val state = AlertState()
-        val alerts = listOf(stateAlert("cpu:firefox"))
+        val alerts = listOf(alert("cpu:firefox"))
         val pushedOn = mutableListOf<Int>()
 
         repeat(12) { sample ->
@@ -123,7 +121,7 @@ class AlertStateTest {
     @Test
     fun neverStopsRetryingAStillFiringAlert() {
         val state = AlertState()
-        val alerts = listOf(stateAlert("cpu:firefox"))
+        val alerts = listOf(alert("cpu:firefox"))
         var pushes = 0
         var lastPush = 0
 
@@ -155,7 +153,7 @@ class AlertStateTest {
     @Test
     fun keepsADeferredKeyUnsettledWhileItsRetryIsPostponed() {
         val state = AlertState()
-        val alerts = listOf(stateAlert("cpu:firefox"))
+        val alerts = listOf(alert("cpu:firefox"))
 
         repeat(DELIVERY_RETRY_THRESHOLD) {
             state.commit(setOf("cpu:firefox"), emptySet(), failedKeys = setOf("cpu:firefox"))
@@ -168,7 +166,7 @@ class AlertStateTest {
     @Test
     fun countsADeliveredKeyAsSettledForBothViews() {
         val state = AlertState()
-        val alerts = listOf(stateAlert("cpu:firefox"))
+        val alerts = listOf(alert("cpu:firefox"))
 
         state.commit(setOf("cpu:firefox"), setOf("cpu:firefox"))
 
@@ -180,7 +178,7 @@ class AlertStateTest {
     @Test
     fun releasesADeferredKeyOnceAnotherDeliverySucceeds() {
         val state = AlertState()
-        val firefox = listOf(stateAlert("cpu:firefox"))
+        val firefox = listOf(alert("cpu:firefox"))
         val firing = setOf("cpu:firefox", "memory:chrome")
 
         repeat(DELIVERY_RETRY_THRESHOLD) {
@@ -197,7 +195,7 @@ class AlertStateTest {
     @Test
     fun givesAKeyAFreshRetryBudgetAfterItCleared() {
         val state = AlertState()
-        val alerts = listOf(stateAlert("cpu:firefox"))
+        val alerts = listOf(alert("cpu:firefox"))
 
         repeat(DELIVERY_RETRY_THRESHOLD) {
             state.commit(setOf("cpu:firefox"), emptySet(), failedKeys = setOf("cpu:firefox"))
@@ -232,7 +230,7 @@ class AlertStateTest {
         val state = AlertState()
 
         repeat(1_000) { index ->
-            val alerts = listOf(stateAlert("process:$index:${index}00"))
+            val alerts = listOf(alert("process:$index:${index}00"))
             state.newlyActive(alerts)
             state.commit(
                 alerts.mapTo(mutableSetOf()) { it.key },
@@ -244,10 +242,3 @@ class AlertStateTest {
         }
     }
 }
-
-private fun stateAlert(key: String): Alert = Alert(
-    key = key,
-    severity = Severity.WARNING,
-    title = "title",
-    message = "message",
-)

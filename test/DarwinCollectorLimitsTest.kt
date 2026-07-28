@@ -1,7 +1,6 @@
 import dev.yoda.harmon.monitor.DarwinSystemCollector
 import kotlin.test.Test
 import kotlin.test.assertFailsWith
-import kotlin.test.assertNotNull
 import kotlin.test.assertTrue
 
 class DarwinCollectorLimitsTest {
@@ -36,7 +35,7 @@ class DarwinCollectorLimitsTest {
      */
     @Test
     fun acceptsAZeroRegionBudgetAsAWayToTurnAttributionOff() {
-        assertNotNull(DarwinSystemCollector(attributionRegionBudget = 0))
-        assertNotNull(DarwinSystemCollector(compressedAttributionProcessLimit = 0))
+        DarwinSystemCollector(attributionRegionBudget = 0)
+        DarwinSystemCollector(compressedAttributionProcessLimit = 0)
     }
 }

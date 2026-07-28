@@ -5,6 +5,8 @@ import dev.yoda.harmon.analysis.AlertState
 import dev.yoda.harmon.config.HarmonConfig
 import dev.yoda.harmon.config.SAMPLE_SECONDS_RANGE
 import dev.yoda.harmon.ipc.CollectorClient
+import dev.yoda.harmon.model.Alert
+import dev.yoda.harmon.model.DeliveryResult
 import dev.yoda.harmon.model.MonitoringReport
 import dev.yoda.harmon.model.RawSystemSnapshot
 import dev.yoda.harmon.monitor.SystemCollector
@@ -34,7 +36,7 @@ const val MAX_SLEEP_SLICE_MILLISECONDS = 30_000uL
  * Length of the next sleep slice, in milliseconds, for a sleep with [remainingNs] left to run.
  *
  * A slice never overshoots the deadline and never rounds a non-zero remainder down to a busy
- * zero-length wait. Public so the arithmetic can be tested without sleeping.
+ * zero-length wait.
  */
 fun sleepSliceMillis(remainingNs: ULong): ULong {
     val requested = maxOf(remainingNs / NANOS_PER_MILLISECOND, 1uL)
@@ -46,14 +48,12 @@ fun sleepSliceMillis(remainingNs: ULong): ULong {
  *
  * With [systemNotifications] on, the slice is spent inside the CoreFoundation run loop, which is
  * what makes "Open report" on a delivered notification work. The run loop is re-probed on every
- * slice rather than latched off after the first probe that finds no sources: the dispatcher is
- * built lazily, so AppKit and its run loop sources only exist after the first delivery, and a
- * latch would leave the notification click dead for the rest of the process lifetime.
+ * slice rather than latched off after a probe that finds no sources: the dispatcher is built
+ * lazily, so its sources only exist after the first delivery, and a latch would leave the
+ * notification click dead for the rest of the process lifetime.
  *
- * Only a run that times out actually consumed the slice. Every other return — no sources at all,
- * or a run loop somebody stopped — comes back immediately, so the rest of the slice is spent
- * parked instead; re-entering the run loop there would busy-poll for the whole interval. Public
- * so the run loop branch can be exercised with a millisecond-long slice.
+ * Only a run that times out consumed the slice; every other return comes back immediately, so the
+ * rest of it is spent parked instead of busy-polling the run loop.
  */
 @OptIn(ExperimentalForeignApi::class)
 fun spendSleepSlice(sliceMs: ULong, systemNotifications: Boolean) {
@@ -96,11 +96,9 @@ class HarmonService(
      * One capture-and-handle cycle of the monitoring loop, without the sleep around it, returning
      * the snapshot the next cycle has to diff against.
      *
-     * A failed capture leaves [previous] in place, so the next cycle still has a window to diff
+     * A failed capture leaves [previous] in place so the next cycle still has a window to diff
      * against; a successful one advances it before the sample is handled, so a pair that blows up
-     * is not replayed against every following capture. Both failures are logged and swallowed —
-     * the agent is a daemon and must survive them. Public so the failure paths can be driven from
-     * a test without an endless loop.
+     * is not replayed forever. Both failures are logged and swallowed: this is a daemon.
      */
     fun runCycle(previous: RawSystemSnapshot): RawSystemSnapshot {
         val current = try {
@@ -118,15 +116,11 @@ class HarmonService(
     }
 
     /**
-     * One iteration of the monitoring loop, without the sleeping and capturing around it. Public
-     * so tests can drive a sequence of samples directly.
+     * One iteration of the monitoring loop, without the sleeping and capturing around it.
      *
-     * The alert state is committed for every report that could be built, the samples without a
-     * delivery included: a key that stopped firing has to leave the settled set, otherwise its
-     * next appearance would be mistaken for a repeat and never pushed. That is why the commit
-     * sits in a `finally` — a render or a delivery that throws must not strand the state on the
-     * sample before it. A sample that cannot be turned into a report at all commits nothing;
-     * there are no alerts to commit.
+     * The commit sits in a `finally` because it has to happen for every report that could be
+     * built, deliveries and renders that throw included: a key that stopped firing has to leave
+     * the settled set, or its next appearance is mistaken for a repeat and never pushed.
      */
     fun handleSample(previous: RawSystemSnapshot, current: RawSystemSnapshot) {
         val sampled = createSample(previous, current)
@@ -158,31 +152,25 @@ class HarmonService(
         return createSample(previous, current).report
     }
 
-    fun testNotifications() =
-        notifications.value.deliver(ReportFormatter.testPayload())
+    fun testNotifications(): List<DeliveryResult> =
+        notifications.value.deliver(ReportFormatter.testPayload()).results
 
     /**
      * Pushes [report] as a single one-off notification. [reportText] is accepted already rendered
      * so a caller that also prints the report does not render it twice.
      */
-    fun deliver(
-        report: MonitoringReport,
-        reportText: String = ReportFormatter.text(report),
-    ) = notifications.value.deliver(
-        ReportFormatter.notification(report, reportText = reportText),
-    )
+    fun deliver(report: MonitoringReport, reportText: String): List<DeliveryResult> =
+        notifications.value.deliver(
+            ReportFormatter.notification(report, reportText = reportText),
+        ).results
 
     /**
-     * The report to publish, paired with every key firing in the same sample.
+     * The report to publish, paired with the keys the alert state has to remember.
      *
-     * The report carries at most `maxAlertsPerCategory` alerts per rule so it stays readable, and
-     * names every key the cap left out, so its alert list never understates what is over
-     * threshold and a consumer diffing that list cannot read a dropped alert as a cleared one.
-     *
-     * The alert state is committed with a narrower set. An already-alerting key the cap pushed out
-     * is still firing and forgetting it would make its return look like a fresh alert, while a key
-     * that first crossed its threshold below the cut was never pushed and must not enter the state,
-     * where the lowered clear threshold would keep it alerting long after it settled back.
+     * The two differ: an already-alerting key the per-category cap pushed out of the report is
+     * still firing and forgetting it would make its return look like a fresh alert, while a key
+     * that first crossed its threshold below the cut was never pushed and must not enter the
+     * state, where the lowered clear threshold would keep it alerting long after it settled back.
      */
     private fun createSample(
         previous: RawSystemSnapshot,
@@ -226,60 +214,68 @@ class HarmonService(
         }
 
     /**
-     * Pushes the alerts that crossed their threshold on this sample and reports which keys were
-     * pushed and whether the push was confirmed.
+     * Pushes what [pushPlan] decided this sample is worth pushing and reports which keys were
+     * carried and whether the push was confirmed.
      *
-     * The dispatcher is only touched once this sample is known to need a push. Reading it earlier
-     * — to check [NotificationDispatcher.isEmpty], say — would build the system channel and boot
-     * AppKit on every quiet sample, which is exactly what the lazy holder exists to avoid.
-     *
-     * `notifyEverySample` widens what the push carries, not what counts as new: the payload still
-     * names only the keys that have not been delivered yet, so a consumer can tell a fresh alert
-     * from one that has been firing for an hour.
-     *
-     * That mode pushes whether or not the delivery backoff is deferring a key, so it reads the
-     * unsettled keys rather than the pushable ones — a deferred key rides in the payload, and
-     * leaving it out of the new set would hide it from the consumer for its whole firing episode,
-     * exactly in the flaky-channel case the backoff exists for. For the same reason it records no
-     * failures: nothing can be deferred in a mode that pushes every sample regardless.
+     * The dispatcher is only touched once this sample is known to need a push. Reading it
+     * earlier — to check [NotificationDispatcher.isEmpty], say — would build the system channel
+     * and boot AppKit on every quiet sample, which is what the lazy holder exists to avoid.
      */
     private fun deliverSample(report: MonitoringReport, reportText: String): DeliveryOutcome {
-        val everySample = config.notifications.notifyEverySample
-        val freshAlerts = if (everySample) {
-            alertState.unsettled(report.alerts)
-        } else {
-            alertState.newlyActive(report.alerts)
-        }
-        if (!everySample && freshAlerts.isEmpty()) {
-            return DeliveryOutcome.NONE
-        }
-
+        val plan = pushPlan(report) ?: return DeliveryOutcome.NONE
         val dispatcher = notifications.value
         if (dispatcher.isEmpty) {
             return DeliveryOutcome.NONE
         }
 
-        val highlighted = if (everySample) report.alerts else freshAlerts
-        val results = dispatcher.deliver(
+        val summary = dispatcher.deliver(
             ReportFormatter.notification(
                 report = report,
-                highlighted = highlighted,
-                newAlertKeys = freshAlerts.map { it.key },
+                highlighted = plan.highlighted,
+                newAlertKeys = plan.newAlertKeys,
                 reportText = reportText,
             ),
         )
-        results.forEach { result ->
+        summary.results.forEach { result ->
             val stream = if (result.successful) log else logError
             stream(
                 "${Clock.System.now()} notification ${result.channel}: ${result.detail}",
             )
         }
-        val pushed = highlighted.mapTo(mutableSetOf()) { it.key }
+        val pushed = plan.highlighted.mapTo(mutableSetOf()) { it.key }
         return when {
-            dispatcher.decisiveSuccess(results) ->
-                DeliveryOutcome(delivered = pushed, failed = emptySet())
-            everySample -> DeliveryOutcome.NONE
-            else -> DeliveryOutcome(delivered = emptySet(), failed = pushed)
+            summary.decisiveSuccess -> DeliveryOutcome(delivered = pushed, failed = emptySet())
+            plan.recordsFailures -> DeliveryOutcome(delivered = emptySet(), failed = pushed)
+            else -> DeliveryOutcome.NONE
+        }
+    }
+
+    /**
+     * What this sample should push, or null when it should push nothing.
+     *
+     * `notifyEverySample` widens what the push carries, not what counts as new. It pushes whether
+     * or not the backoff defers a key, so it reads the unsettled keys rather than the pushable
+     * ones: a deferred key rides in the payload, and leaving it out of the new set would hide it
+     * from the consumer for its whole firing episode. For the same reason it records no failures:
+     * nothing can be deferred in a mode that pushes regardless.
+     */
+    private fun pushPlan(report: MonitoringReport): PushPlan? {
+        if (config.notifications.notifyEverySample) {
+            return PushPlan(
+                highlighted = report.alerts,
+                newAlertKeys = alertState.unsettled(report.alerts).map { it.key },
+                recordsFailures = false,
+            )
+        }
+        val fresh = alertState.newlyActive(report.alerts)
+        return if (fresh.isEmpty()) {
+            null
+        } else {
+            PushPlan(
+                highlighted = fresh,
+                newAlertKeys = fresh.map { it.key },
+                recordsFailures = true,
+            )
         }
     }
 
@@ -311,9 +307,17 @@ class HarmonService(
     }
 
     /** One sample's publishable report and the complete key set behind it. */
-    private class SampledAlerts(
+    private data class SampledAlerts(
         val report: MonitoringReport,
         val firingKeys: Set<String>,
+    )
+
+    /** What one sample pushes: the alerts in front of the user, and which of them are new. */
+    private data class PushPlan(
+        val highlighted: List<Alert>,
+        val newAlertKeys: List<String>,
+        /** Whether a failed push defers these keys; the every-sample mode never defers. */
+        val recordsFailures: Boolean,
     )
 
     /** What a single sample's push achieved: the keys it carried, and whether they landed. */

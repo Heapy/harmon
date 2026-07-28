@@ -430,6 +430,11 @@ fun decisiveSuccess(results: List<DeliveryResult>): Boolean {
 ➕ `detail` системного канала: «queued in Notification Center (no delivery confirmation)» — явная
 причина, почему канал best-effort, вместо просто снятого утверждения о доставке.
 
+⚠️ Сопоставление по индексу убрано при разборе код-смеллов: `deliver` возвращает
+`DeliverySummary(results, decisiveSuccess)` и судит каждый результат рядом с каналом, который его
+произвёл. Отдельного `decisiveSuccess(results)` больше нет — вместе с ним ушли `getOrNull`-защита и
+тест на «чужой» список результатов, который существовал только из-за индексного поиска.
+
 ### Task 6: Перевести HarmonService на AlertState и удалить кулдаун
 
 **Files:**

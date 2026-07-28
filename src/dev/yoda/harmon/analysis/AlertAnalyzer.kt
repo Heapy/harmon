@@ -8,20 +8,13 @@ import dev.yoda.harmon.model.SystemUsage
 import dev.yoda.harmon.util.Format
 
 /**
- * What one sample's rules produced: the alerts a report carries, the keys the alert state has to
- * remember, and the keys the per-category cap kept out of the report.
+ * What one sample's rules produced: the capped [alerts] a report carries, every other key over its
+ * threshold in [suppressedKeys], and the [firingKeys] the alert state has to remember.
  *
- * The three differ on purpose. [alerts] is capped per category so a report stays readable.
- * [suppressedKeys] is every key over its threshold that the cap dropped, whether or not it was
- * already alerting, so a report naming them cannot understate what is happening. [firingKeys] is
- * what `AlertState` must remember: the reported keys plus the already-active ones among the
- * suppressed. Dropping an active key from the state because a report had no room for it would look
- * like the alert clearing, and its next appearance in the top slice would push again as new.
- *
- * A key crossing its threshold for the first time below the cut is therefore in [suppressedKeys]
- * but not in [firingKeys]: it was never pushed, and putting it in the state would grade it against
- * the lowered clear threshold from the next sample on, so an application hovering just under the
- * threshold that crossed once would stay alerting indefinitely.
+ * [firingKeys] is the reported keys plus the already-active ones among the suppressed. Dropping an
+ * active key because a report had no room for it would look like the alert clearing; admitting a
+ * key that first crossed below the cut would grade it against the lowered clear threshold from the
+ * next sample on, so an application hovering just under its threshold would stay alerting forever.
  */
 data class AlertOutcome(
     val alerts: List<Alert>,
@@ -32,17 +25,16 @@ data class AlertOutcome(
 /**
  * Turns a usage sample into alerts.
  *
- * [analyze] takes the keys that were already firing on the previous sample. Such a key is
- * compared against a threshold lowered by [CLEAR_RATIO], so a value hovering around the
- * threshold does not flip the alert on and off; severity is still graded against the original
- * threshold. Low battery is excluded: it is the only rule comparing with "less than or equal",
- * where a lower threshold would drop the alert while its condition still holds.
+ * A key that was already firing is compared against a threshold lowered by [CLEAR_RATIO], so a
+ * value hovering around the threshold does not flip the alert on and off; severity is still graded
+ * against the original threshold. Low battery is excluded: it is the only rule comparing with
+ * "less than or equal", where a lower threshold would drop the alert while its condition holds.
  */
 class AlertAnalyzer {
     fun analyze(
         usage: SystemUsage,
         config: HarmonConfig,
-        activeKeys: Set<String> = emptySet(),
+        activeKeys: Set<String>,
     ): AlertOutcome {
         val suppressed = mutableSetOf<String>()
         val alerts = alertsFor(usage, config, activeKeys, suppressed)
@@ -72,10 +64,10 @@ class AlertAnalyzer {
                     threshold = threshold,
                     clearThreshold = threshold.cleared(),
                 )
-                .forEach { application ->
+                .forEach { (key, application) ->
                     add(
                         Alert(
-                            key = "cpu:${application.id}",
+                            key = key,
                             severity = if (application.cpuPercent >= threshold * 2) {
                                 Severity.CRITICAL
                             } else {
@@ -101,10 +93,10 @@ class AlertAnalyzer {
                     threshold = thresholdBytes,
                     clearThreshold = thresholdBytes.cleared(),
                 )
-                .forEach { application ->
+                .forEach { (key, application) ->
                     add(
                         Alert(
-                            key = "memory:${application.id}",
+                            key = key,
                             severity = if (
                                 application.physicalFootprintBytes >= thresholdBytes.doubled()
                             ) {
@@ -132,10 +124,10 @@ class AlertAnalyzer {
                     threshold = thresholdBytesPerSecond,
                     clearThreshold = thresholdBytesPerSecond.cleared(),
                 )
-                .forEach { application ->
+                .forEach { (key, application) ->
                     add(
                         Alert(
-                            key = "disk-write:${application.id}",
+                            key = key,
                             severity = if (
                                 application.diskWriteBytesPerSecond >=
                                 thresholdBytesPerSecond * 2.0
@@ -155,8 +147,9 @@ class AlertAnalyzer {
         }
 
         thresholds.swapUsedMiB?.let { thresholdMiB ->
+            val key = "swap"
             val thresholdBytes = thresholdMiB.mebibytesToBytes()
-            val alertThreshold = if ("swap" in activeKeys) {
+            val alertThreshold = if (key in activeKeys) {
                 thresholdBytes.cleared()
             } else {
                 thresholdBytes
@@ -164,7 +157,7 @@ class AlertAnalyzer {
             if (usage.swap.usedBytes >= alertThreshold) {
                 add(
                     Alert(
-                        key = "swap",
+                        key = key,
                         severity = if (usage.swap.usedBytes >= thresholdBytes.doubled()) {
                             Severity.CRITICAL
                         } else {
@@ -178,8 +171,9 @@ class AlertAnalyzer {
         }
 
         thresholds.swapOutMiBPerSecond?.let { thresholdMiB ->
+            val key = "swap-out"
             val thresholdBytesPerSecond = thresholdMiB * BYTES_PER_MEBIBYTE_DOUBLE
-            val alertThreshold = if ("swap-out" in activeKeys) {
+            val alertThreshold = if (key in activeKeys) {
                 thresholdBytesPerSecond.cleared()
             } else {
                 thresholdBytesPerSecond
@@ -187,7 +181,7 @@ class AlertAnalyzer {
             if (usage.virtualMemory.swapOutBytesPerSecond >= alertThreshold) {
                 add(
                     Alert(
-                        key = "swap-out",
+                        key = key,
                         severity = if (
                             usage.virtualMemory.swapOutBytesPerSecond >=
                             thresholdBytesPerSecond * 2.0
@@ -218,10 +212,10 @@ class AlertAnalyzer {
                         threshold = threshold,
                         clearThreshold = threshold.cleared(),
                     )
-                    .forEach { application ->
+                    .forEach { (key, application) ->
                         add(
                             Alert(
-                                key = "battery-impact:${application.id}",
+                                key = key,
                                 severity = if (
                                     application.batteryImpactScore >= threshold * 2
                                 ) {
@@ -263,14 +257,14 @@ class AlertAnalyzer {
     }
 
     /**
-     * The [maxPerCategory] applications above the threshold with the highest [value].
+     * The [maxPerCategory] applications above the threshold with the highest [value], each paired
+     * with its alert key, so a rule spells that key out once for both the selection and the [Alert]
+     * built from it.
      *
-     * A key that did not survive the cut is collected into [suppressed] instead of being appended
-     * to the result. It stays out of the alert list, where an uncapped tail makes a category
-     * configured for three alerts carry dozens on a busy machine and never shrink, but it is still
-     * over its threshold and the report has to name it — otherwise the overflow the report admits
-     * to is smaller than the overflow that exists. Which of those keys the alert state keeps is
-     * decided in [analyze]: only the ones that were already active.
+     * A key that did not survive the cut goes to [suppressed] instead: an uncapped tail would make
+     * a category configured for three alerts carry dozens on a busy machine, but the key is still
+     * over its threshold and the report has to name it. Which of them the alert state keeps is
+     * decided in [analyze].
      */
     private fun <R : Comparable<R>> List<ApplicationUsage>.selectAlerting(
         maxPerCategory: Int,
@@ -280,17 +274,18 @@ class AlertAnalyzer {
         value: (ApplicationUsage) -> R,
         threshold: R,
         clearThreshold: R,
-    ): List<ApplicationUsage> {
+    ): List<Pair<String, ApplicationUsage>> {
         val ranked = asSequence()
-            .filter { application ->
-                val effective = if (key(application) in activeKeys) clearThreshold else threshold
+            .map { application -> key(application) to application }
+            .filter { (alertKey, application) ->
+                val effective = if (alertKey in activeKeys) clearThreshold else threshold
                 value(application) >= effective
             }
-            .sortedByDescending(value)
+            .sortedByDescending { (_, application) -> value(application) }
             .toList()
         ranked.asSequence()
             .drop(maxPerCategory)
-            .mapTo(suppressed, key)
+            .mapTo(suppressed) { (alertKey, _) -> alertKey }
         return ranked.take(maxPerCategory)
     }
 

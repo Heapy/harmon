@@ -362,8 +362,8 @@ Rules and primary reports operate on applications, not isolated helper PIDs:
    boundaries. Their own bundled helpers remain grouped with the terminal, but
    shells and other external descendants do not inherit the terminal bundle.
    The key holds a comma-separated list of bundle names without `.app`, matched
-   case-insensitively, defaulting to `terminal, iterm2, iterm, alacritty,
-   wezterm, kitty, ghostty, warp, hyper, tabby, agterm`. It replaces the default
+   case-insensitively; the built-in list is spelled out in
+   [config/harmon.conf.example](../config/harmon.conf.example). It replaces that
    list outright; an empty value disables this rule.
 4. If none of these rules resolves a bundle, the process remains its own group.
 
@@ -422,12 +422,10 @@ display brightness, thermal state, or external peripherals.
 
 Zero disables a threshold. For each application rule the analyzer selects at
 most `maxAlertsPerCategory` applications by the rule's metric, and every report
-is capped at that number. Every key over its threshold that did not survive the
-cut is listed in the report's `suppressedAlertKeys` instead, so the reported
-count is never smaller than what is actually over a threshold. Only an
-already-active one also stays in the alert state as firing: forgetting it there
-would look like the alert clearing, and its return to the top slice would push
-again as new. A key crossing its threshold for the first time below the cut was
+is capped at that number; the keys that did not survive the cut are named in
+`suppressedAlertKeys` instead, as described below. Only an already-active one
+also stays in the alert state as firing: forgetting it there would look like the
+alert clearing, and its return to the top slice would push again as new. A key crossing its threshold for the first time below the cut was
 never pushed and does not enter the state, so the next sample compares it
 against the full threshold rather than the lowered one. A push carries only the
 alerts that crossed their threshold on this sample; while the condition holds
@@ -451,8 +449,8 @@ counts and the alert stays pushable. Alert state resets with the agent.
 Only the push text is narrowed that way. The HTML report attached to a system
 notification and the JSON webhook payload both carry the sample's whole reported
 alert list, `newAlertKeys` names the subset the push was about, and
-`suppressedAlertKeys` names every over-threshold key the per-category cap left
-out of the list. With `notifyEverySample=true` the agent sends on every sample
+`suppressedAlertKeys` names what the cap left out of it. With
+`notifyEverySample=true` the agent sends on every sample
 and treats every reported alert as push content; the backoff defers nothing in
 that mode, so `newAlertKeys` there names every alert not yet confirmed as
 delivered, including one whose earlier deliveries failed.
@@ -518,8 +516,7 @@ The standard `harmon.sample` webhook includes:
   writes, internal logical writes, compressed/paged-out proxy, and accounted
   energy;
 - the sample's reported alerts, capped at `maxAlertsPerCategory` per rule, with
-  `newAlertKeys` naming the ones the push was about and `suppressedAlertKeys`
-  naming every over-threshold key the cap left out;
+  `newAlertKeys` and `suppressedAlertKeys` as defined under [Alerts](#alerts);
 - collection coverage counts.
 
 It excludes executable paths and detailed PID collection failures.

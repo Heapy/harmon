@@ -558,11 +558,6 @@ static inline int hm_count_processes(void) {
  * is a genuine mid-walk failure. All of them keep the undercount result: an
  * undercount, and the partial sum of a process that vanished, must never
  * look measured.
- *
- * Verified on this machine with a standalone probe: walking self and a foreign
- * process to the top of the address space both end with result=0 errno=22
- * (EINVAL), while probing a pid that does not exist gives result=0 errno=3
- * (ESRCH).
  */
 static inline int hm_read_compressed_or_paged_out(
     pid_t pid,

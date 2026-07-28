@@ -51,15 +51,14 @@ const val MIN_PROCESS_CAPACITY = 512
 const val PROCESS_CAPACITY_HEADROOM = 256
 
 /**
- * Number of sample slots to reserve for [count] processes, never more than [capacity].
+ * Number of slots to reserve for [count] processes, never more than [capacity]. Both per-process
+ * arrays of a collection are sized with it — the samples and the collection issues — each
+ * against its own [capacity].
  *
- * [count] is the kernel's PID count taken just before the collection and handed to the listing
- * call, so both size themselves from the same number. [PROCESS_CAPACITY_HEADROOM] covers the
- * processes that start between counting and listing, and [MIN_PROCESS_CAPACITY] keeps the
- * reservation on a small machine from tracking its PID count so tightly that an ordinary burst
- * of short-lived processes exhausts it. A non-positive [count] means the kernel refused to
- * answer, so the full [capacity] is reserved as before. Public so the arithmetic can be tested
- * without touching the native bridge.
+ * [PROCESS_CAPACITY_HEADROOM] covers the processes that start between the kernel's PID count and
+ * the listing call, and [MIN_PROCESS_CAPACITY] keeps a small machine from tracking its PID count
+ * so tightly that an ordinary burst of short-lived processes exhausts it. A non-positive [count]
+ * means the kernel refused to answer, so the full [capacity] is reserved as before.
  */
 fun processCapacityFor(count: Int, capacity: Int): Int {
     if (count <= 0) {

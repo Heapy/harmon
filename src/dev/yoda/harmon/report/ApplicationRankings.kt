@@ -5,8 +5,9 @@ import dev.yoda.harmon.model.MonitoringReport
 
 /**
  * The ranked application slices of a single report: one definition of "the top applications by
- * this metric" that the text report and the JSON payload both render, instead of the same filter
- * and sort written out twice, once in each of them.
+ * this metric", computed per renderer, instead of the same filter and sort written out twice —
+ * once in the text report and once in the JSON payload. The JSON payload's process slices stay
+ * inline there because no other renderer shows them.
  *
  * `sortedByDescending` stays the selection mechanism on purpose: a hand-written partial selection
  * would save microseconds and could reorder applications whose metric ties, which is exactly what

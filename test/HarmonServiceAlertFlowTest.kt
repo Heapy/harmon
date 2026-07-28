@@ -2,7 +2,6 @@ import dev.yoda.harmon.analysis.DELIVERY_RETRY_THRESHOLD
 import dev.yoda.harmon.config.HarmonConfig
 import dev.yoda.harmon.config.NotificationConfig
 import dev.yoda.harmon.config.SAMPLE_SECONDS_RANGE
-import dev.yoda.harmon.model.DeliveryResult
 import dev.yoda.harmon.model.NotificationPayload
 import dev.yoda.harmon.model.RawSystemSnapshot
 import dev.yoda.harmon.monitor.SystemCollector
@@ -49,7 +48,7 @@ class HarmonServiceAlertFlowTest {
 
     @Test
     fun retriesTheAlertAfterAFailedDelivery() {
-        val channel = RecordingChannel(successful = false)
+        val channel = RecordingChannel(successful = { false })
         val service = serviceWith(channel)
 
         service.handleSample(snapshot(0uL, ALERTING_FOOTPRINT), snapshot(1uL, ALERTING_FOOTPRINT))
@@ -66,7 +65,7 @@ class HarmonServiceAlertFlowTest {
      */
     @Test
     fun spreadsOutRetriesOfAnAlertWhoseDeliveryNeverSucceeds() {
-        val channel = RecordingChannel(successful = false)
+        val channel = RecordingChannel(successful = { false })
         val errors = mutableListOf<String>()
         val service = HarmonService(
             config = alertConfig(),
@@ -143,7 +142,9 @@ class HarmonServiceAlertFlowTest {
      */
     @Test
     fun notifyEverySamplePushesEverySampleAndNamesTheRecoveredKeyAsNew() {
-        val channel = RecoveringChannel(failures = DELIVERY_RETRY_THRESHOLD)
+        val channel = RecordingChannel(
+            successful = { delivery -> delivery > DELIVERY_RETRY_THRESHOLD },
+        )
         val errors = mutableListOf<String>()
         val service = HarmonService(
             config = alertConfig(notifyEverySample = true),
@@ -403,7 +404,7 @@ class HarmonServiceAlertFlowTest {
                 NotificationDispatcher(
                     listOf(
                         RecordingChannel(name = "good"),
-                        RecordingChannel(name = "bad", successful = false),
+                        RecordingChannel(name = "bad", successful = { false }),
                     ),
                 ),
             ),
@@ -578,32 +579,5 @@ private class FlakyCollector(private val snapshot: RawSystemSnapshot) : SystemCo
             error("collector socket refused the connection")
         }
         return snapshot
-    }
-}
-
-/** Down for its first [failures] deliveries, the way a webhook endpoint being restarted is. */
-private class RecoveringChannel(private val failures: Int) : NotificationChannel {
-    override val name: String = "recovering"
-    val payloads = mutableListOf<NotificationPayload>()
-
-    override fun deliver(payload: NotificationPayload): DeliveryResult {
-        payloads += payload
-        return DeliveryResult(
-            channel = name,
-            successful = payloads.size > failures,
-            detail = "recorded",
-        )
-    }
-}
-
-private class RecordingChannel(
-    override val name: String = "recording",
-    private val successful: Boolean = true,
-) : NotificationChannel {
-    val payloads = mutableListOf<NotificationPayload>()
-
-    override fun deliver(payload: NotificationPayload): DeliveryResult {
-        payloads += payload
-        return DeliveryResult(channel = name, successful = successful, detail = "recorded")
     }
 }

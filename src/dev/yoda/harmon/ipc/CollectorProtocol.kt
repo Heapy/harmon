@@ -38,10 +38,9 @@ object CollectorProtocol {
     /**
      * Decodes a frame in a single strict pass, and only re-reads it when that pass failed.
      *
-     * The strict decoder is what rejects a frame whose shape does not match, but its error names
-     * the offending field, which is misleading when the real cause is a peer speaking another
-     * version of the protocol: a newer collector's extra field would be reported as invalid JSON.
-     * So a failure is re-read once, purely to see whether a version mismatch explains it.
+     * The strict decoder names the offending field, which is misleading when the real cause is a
+     * peer speaking another version: a newer collector's extra field would be reported as invalid
+     * JSON. So a failure is re-read once, purely to see whether a version mismatch explains it.
      */
     fun decode(payload: String): RawSystemSnapshot {
         val envelope = try {
@@ -81,9 +80,8 @@ object CollectorProtocol {
             "Unsupported collector protocol $version; expected $VERSION"
         }
 
-    // a quoted, fractional or absent version says nothing about which protocol the peer speaks,
-    // so it is left to the strict decoder, which names the offending field instead of reporting a
-    // version nobody sent
+    // only a bare integer is read as a version here: a fractional one is not a version to truncate
+    // towards, and the strict decoder's own error describes it better than a version nobody sent
     private fun protocolVersionOf(element: JsonElement): Int? {
         val field = (element as? JsonObject)?.get(PROTOCOL_VERSION_FIELD) as? JsonPrimitive
             ?: return null
@@ -91,16 +89,17 @@ object CollectorProtocol {
     }
 
     private const val PROTOCOL_VERSION_FIELD = "protocolVersion"
-
-    /**
-     * Stands in for a frame that carries no version field at all. A peer that dropped or renamed
-     * it is a protocol mismatch, not malformed JSON, and has to be reported as one.
-     */
-    private const val MISSING_PROTOCOL_VERSION = 0
 }
+
+/**
+ * Stands in for a frame that carries no version field at all. A peer that dropped or renamed it is
+ * a protocol mismatch, not malformed JSON, and has to be reported as one — which only works while
+ * this is also what [CollectorEnvelope] defaults to.
+ */
+private const val MISSING_PROTOCOL_VERSION = 0
 
 @Serializable
 private data class CollectorEnvelope(
-    val protocolVersion: Int = 0,
+    val protocolVersion: Int = MISSING_PROTOCOL_VERSION,
     val snapshot: RawSystemSnapshot,
 )

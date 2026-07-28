@@ -26,7 +26,9 @@ class ReportJsonTest {
             topProcessCount = 5,
         )
 
-        val payload = Json.parseToJsonElement(ReportJson.encode(report)).jsonObject
+        val payload = Json
+            .parseToJsonElement(ReportJson.encode(report, newAlertKeys = emptyList()))
+            .jsonObject
 
         assertEquals("harmon.sample", payload.getValue("event").jsonPrimitive.content)
         assertTrue(payload.getValue("applications").jsonObject.containsKey("topCpu"))
@@ -49,7 +51,9 @@ class ReportJsonTest {
             .jsonObject
         assertTrue(virtualMemory.containsKey("swapBackedUncompressedBytes"))
         assertFalse(virtualMemory.containsKey("swappedBytes"))
-        assertFalse("/Applications/Private.app" in ReportJson.encode(report))
+        assertFalse(
+            "/Applications/Private.app" in ReportJson.encode(report, newAlertKeys = emptyList()),
+        )
     }
 
     @Test
@@ -89,27 +93,13 @@ class ReportJsonTest {
             suppressedAlertKeys = listOf("memory:demoted"),
         )
 
-        val payload = Json.parseToJsonElement(ReportJson.encode(report)).jsonObject
+        val payload = Json
+            .parseToJsonElement(ReportJson.encode(report, newAlertKeys = emptyList()))
+            .jsonObject
 
         assertEquals(
             listOf("memory:demoted"),
             payload.getValue("suppressedAlertKeys").jsonArray.map { it.jsonPrimitive.content },
-        )
-    }
-
-    @Test
-    fun treatsEveryAlertAsNewWhenTheCallerDoesNotSayOtherwise() {
-        val report = MonitoringReport(
-            usage = systemUsage(processes = listOf(processUsage())),
-            alerts = listOf(alert(key = "swap")),
-            topProcessCount = 5,
-        )
-
-        val payload = Json.parseToJsonElement(ReportJson.encode(report)).jsonObject
-
-        assertEquals(
-            listOf("swap"),
-            payload.getValue("newAlertKeys").jsonArray.map { it.jsonPrimitive.content },
         )
     }
 
@@ -125,7 +115,7 @@ class ReportJsonTest {
     fun selectsEveryRankedSliceByItsOwnMetric() {
         assertEquals(
             EXPECTED_RANKED_SLICES,
-            rankedSliceSummary(ReportJson.encode(rankingReport())),
+            rankedSliceSummary(ReportJson.encode(rankingReport(), newAlertKeys = emptyList())),
         )
     }
 

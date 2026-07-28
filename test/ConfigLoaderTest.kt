@@ -153,7 +153,10 @@ class ConfigLoaderTest {
         val config = ConfigLoader.parse(lines = emptySequence(), environment = emptyMap())
 
         assertEquals(DEFAULT_TERMINAL_APPLICATIONS, config.terminalApplications)
-        assertContains(config.redactedDescription(), "terminalApplications=terminal,iterm2")
+        assertContains(
+            config.redactedDescription(),
+            "terminalApplications=" + DEFAULT_TERMINAL_APPLICATIONS.joinToString(","),
+        )
     }
 
     @Test

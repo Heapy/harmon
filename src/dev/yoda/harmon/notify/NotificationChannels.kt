@@ -28,11 +28,8 @@ private const val REPORT_PATH_USER_INFO_KEY = "harmonReportPath"
 /**
  * Whether the macOS Notification Center channel is best-effort. It is: `deliverNotification`
  * queues a notification and never reports back whether it was shown, so the channel cannot decide
- * that a sample was delivered.
- *
- * Public because `SystemNotificationChannel` is internal and constructing it boots AppKit, which
- * a test suite cannot do — without this constant the override below would have no observable
- * form at all and could be deleted with a green suite.
+ * that a sample was delivered. Named rather than inlined because `SystemNotificationChannel`
+ * cannot be constructed outside a running app.
  */
 const val SYSTEM_CHANNEL_BEST_EFFORT = true
 
@@ -48,43 +45,46 @@ interface NotificationChannel {
     fun deliver(payload: NotificationPayload): DeliveryResult
 }
 
+/** What one dispatch achieved: what each channel reported, and whether the sample was delivered. */
+data class DeliverySummary(
+    val results: List<DeliveryResult>,
+    val decisiveSuccess: Boolean,
+)
+
 class NotificationDispatcher(
     private val channels: List<NotificationChannel>,
 ) {
-    fun deliver(payload: NotificationPayload): List<DeliveryResult> =
-        channels.map { channel ->
-            try {
-                channel.deliver(payload)
-            } catch (failure: Throwable) {
-                DeliveryResult(
-                    channel = channel.name,
-                    successful = false,
-                    detail = failureDescription(failure),
-                )
-            }
-        }
-
     /**
-     * Results come from [deliver], so their order matches [channels] and best-effort channels can
-     * be recognised by index.
+     * Delivers [payload] through every channel, deciding on the way whether the sample counts as
+     * delivered — each result is judged next to the channel that produced it.
      *
-     * Only the *optimistic* success of a best-effort channel is discounted. A best-effort channel
-     * that reported an outright failure — the system channel cannot write its HTML report on a
-     * full disk or a read-only home — observed something, and that observation counts: with
-     * Notification Center as the only configured channel, such a failure has to keep the alert
-     * pushable instead of settling it as delivered. With every configured channel silent about the
-     * outcome the delivery counts as successful, because nothing contradicts it.
-     *
-     * A result without a matching channel — a list this dispatcher did not produce — is treated
-     * as decisive rather than indexed blindly, so a caller's mistake cannot be read as a silent
-     * success.
+     * Only the *optimistic* success of a best-effort channel is discounted. One that reported an
+     * outright failure — the system channel cannot write its HTML report on a full disk —
+     * observed something, and with Notification Center as the only channel that failure has to
+     * keep the alert pushable. With every channel silent the delivery counts as successful,
+     * because nothing contradicts it.
      */
-    fun decisiveSuccess(results: List<DeliveryResult>): Boolean {
-        val observed = results.filterIndexed { index, result ->
-            channels.getOrNull(index)?.bestEffort != true || !result.successful
-        }
-        return observed.isEmpty() || observed.any { it.successful }
+    fun deliver(payload: NotificationPayload): DeliverySummary {
+        val delivered = channels.map { channel -> channel to channel.resultFor(payload) }
+        val observed = delivered
+            .filter { (channel, result) -> !channel.bestEffort || !result.successful }
+            .map { (_, result) -> result }
+        return DeliverySummary(
+            results = delivered.map { (_, result) -> result },
+            decisiveSuccess = observed.isEmpty() || observed.any { it.successful },
+        )
     }
+
+    private fun NotificationChannel.resultFor(payload: NotificationPayload): DeliveryResult =
+        try {
+            deliver(payload)
+        } catch (failure: Throwable) {
+            DeliveryResult(
+                channel = name,
+                successful = false,
+                detail = failureDescription(failure),
+            )
+        }
 
     val isEmpty: Boolean
         get() = channels.isEmpty()

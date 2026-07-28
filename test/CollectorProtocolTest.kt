@@ -6,7 +6,7 @@ import kotlin.test.assertEquals
 import kotlin.test.assertFailsWith
 import kotlin.test.assertNotNull
 
-private const val CURRENT_VERSION_FIELD = "\"protocolVersion\":2"
+private val CURRENT_VERSION_FIELD = "\"protocolVersion\":${CollectorProtocol.VERSION}"
 
 class CollectorProtocolTest {
     @Test

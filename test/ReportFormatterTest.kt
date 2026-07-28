@@ -244,8 +244,8 @@ class ReportFormatterTest {
 
     /**
      * The capped alert list is only honest if the keys it dropped are still named somewhere. A
-     * reader of the text report — and of the HTML built from it — has to see that the list is not
-     * everything that crossed a threshold.
+     * reader of the text report — and of the HTML built from it — has to see that the list is
+     * not everything that crossed a threshold.
      */
     @Test
     fun namesTheOverThresholdKeysTheCappedAlertListLeftOut() {

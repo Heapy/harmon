@@ -21,10 +21,8 @@ object ReportJson {
      * over its threshold but did not fit it, so a consumer diffing the list cannot mistake an
      * alert the cap dropped for a cleared one.
      */
-    fun encode(
-        report: MonitoringReport,
-        newAlertKeys: List<String> = report.alerts.map { it.key },
-    ): String = json.encodeToString(report.toDto(newAlertKeys))
+    fun encode(report: MonitoringReport, newAlertKeys: List<String>): String =
+        json.encodeToString(report.toDto(newAlertKeys))
 
     fun testEvent(): String =
         json.encodeToString(

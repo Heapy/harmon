@@ -22,7 +22,7 @@ class AlertAnalyzerTest {
             batteryPercentage = 15,
         )
 
-        val alerts = AlertAnalyzer().analyze(usage, HarmonConfig()).alerts
+        val alerts = AlertAnalyzer().analyze(usage, HarmonConfig(), activeKeys = emptySet()).alerts
         val keys = alerts.map { it.key.substringBefore(':') }.toSet()
 
         assertEquals(5, alerts.size)
@@ -59,7 +59,7 @@ class AlertAnalyzerTest {
             ),
         )
 
-        val alerts = AlertAnalyzer().analyze(usage, HarmonConfig()).alerts
+        val alerts = AlertAnalyzer().analyze(usage, HarmonConfig(), activeKeys = emptySet()).alerts
 
         assertEquals(3, alerts.size)
         assertTrue(alerts.all { "Firefox (2 processes)" in it.message })
@@ -77,7 +77,7 @@ class AlertAnalyzerTest {
             swapOutBytesPerSecond = 30.0 * 1_048_576.0,
         )
 
-        val alerts = AlertAnalyzer().analyze(usage, HarmonConfig()).alerts
+        val alerts = AlertAnalyzer().analyze(usage, HarmonConfig(), activeKeys = emptySet()).alerts
 
         assertTrue(alerts.any { it.key.startsWith("disk-write:") })
         assertTrue(alerts.any { it.key == "swap-out" })
@@ -96,7 +96,7 @@ class AlertAnalyzerTest {
     fun doesNotRaiseAlertBelowThresholdWhenKeyIsNotActive() {
         val usage = systemUsage(processes = listOf(processUsage(cpuPercent = 140.0)))
 
-        val alerts = AlertAnalyzer().analyze(usage, HarmonConfig()).alerts
+        val alerts = AlertAnalyzer().analyze(usage, HarmonConfig(), activeKeys = emptySet()).alerts
 
         assertTrue(alerts.isEmpty())
     }
@@ -145,11 +145,7 @@ class AlertAnalyzerTest {
         assertEquals(emptyList(), alerts.filter { it.key.startsWith("battery") })
     }
 
-    /**
-     * The two system-wide rules spell their hysteresis out by hand, with the alert key repeated
-     * as a literal next to the `Alert(key = …)` it has to match. Nothing but a test notices when
-     * the two drift apart.
-     */
+    /** The two system-wide rules spell their hysteresis out by hand, one rule at a time. */
     @Test
     fun holdsTheSwapAlertBetweenItsClearRatioAndItsThresholdOnlyWhileActive() {
         val usage = systemUsage(
@@ -162,7 +158,11 @@ class AlertAnalyzerTest {
             listOf("swap"),
             analyzer.analyze(usage, HarmonConfig(), setOf("swap")).alerts.map { it.key },
         )
-        assertTrue(analyzer.analyze(usage, HarmonConfig()).alerts.none { it.key == "swap" })
+        assertTrue(
+            analyzer.analyze(usage, HarmonConfig(), activeKeys = emptySet())
+                .alerts
+                .none { it.key == "swap" },
+        )
     }
 
     @Test
@@ -177,7 +177,11 @@ class AlertAnalyzerTest {
             listOf("swap-out"),
             analyzer.analyze(usage, HarmonConfig(), setOf("swap-out")).alerts.map { it.key },
         )
-        assertTrue(analyzer.analyze(usage, HarmonConfig()).alerts.none { it.key == "swap-out" })
+        assertTrue(
+            analyzer.analyze(usage, HarmonConfig(), activeKeys = emptySet())
+                .alerts
+                .none { it.key == "swap-out" },
+        )
     }
 
     @Test
@@ -197,7 +201,7 @@ class AlertAnalyzerTest {
             batteryPercentage = 8,
         )
 
-        val alerts = AlertAnalyzer().analyze(usage, HarmonConfig()).alerts
+        val alerts = AlertAnalyzer().analyze(usage, HarmonConfig(), activeKeys = emptySet()).alerts
 
         assertEquals(
             listOf(
@@ -261,7 +265,7 @@ class AlertAnalyzerTest {
         )
         val rankedOutKey = "cpu:process:4:4"
 
-        val outcome = AlertAnalyzer().analyze(usage, HarmonConfig())
+        val outcome = AlertAnalyzer().analyze(usage, HarmonConfig(), activeKeys = emptySet())
 
         assertEquals(3, outcome.alerts.size)
         assertEquals(setOf(rankedOutKey), outcome.suppressedKeys)
@@ -300,7 +304,9 @@ class AlertAnalyzerTest {
     fun treatsANegativeMemoryThresholdAsZeroRatherThanAsUnreachable() {
         val usage = systemUsage(processes = listOf(processUsage()))
 
-        val alerts = AlertAnalyzer().analyze(usage, onlyMemoryThreshold(-1)).alerts
+        val alerts = AlertAnalyzer()
+            .analyze(usage, onlyMemoryThreshold(-1), activeKeys = emptySet())
+            .alerts
 
         assertEquals(listOf("memory:process:42:42"), alerts.map { it.key })
     }
@@ -313,11 +319,16 @@ class AlertAnalyzerTest {
 
         assertEquals(
             listOf("memory:process:42:42"),
-            analyzer.analyze(usage, onlyMemoryThreshold(256)).alerts.map { it.key },
+            analyzer
+                .analyze(usage, onlyMemoryThreshold(256), activeKeys = emptySet())
+                .alerts
+                .map { it.key },
         )
         assertEquals(
             emptyList(),
-            analyzer.analyze(usage, onlyMemoryThreshold(OVERFLOWING_MIB)).alerts,
+            analyzer
+                .analyze(usage, onlyMemoryThreshold(OVERFLOWING_MIB), activeKeys = emptySet())
+                .alerts,
         )
     }
 
@@ -332,11 +343,16 @@ class AlertAnalyzerTest {
 
         assertEquals(
             listOf("swap"),
-            analyzer.analyze(usage, onlySwapThreshold(1_024)).alerts.map { it.key },
+            analyzer
+                .analyze(usage, onlySwapThreshold(1_024), activeKeys = emptySet())
+                .alerts
+                .map { it.key },
         )
         assertEquals(
             emptyList(),
-            analyzer.analyze(usage, onlySwapThreshold(OVERFLOWING_MIB)).alerts,
+            analyzer
+                .analyze(usage, onlySwapThreshold(OVERFLOWING_MIB), activeKeys = emptySet())
+                .alerts,
         )
     }
 
@@ -344,7 +360,9 @@ class AlertAnalyzerTest {
     fun doesNotOverflowTheDoubledThresholdWhenGradingSeverity() {
         val usage = systemUsage(processes = listOf(processUsage(footprint = 1uL shl 63)))
 
-        val alerts = AlertAnalyzer().analyze(usage, onlyMemoryThreshold(1L shl 43)).alerts
+        val alerts = AlertAnalyzer()
+            .analyze(usage, onlyMemoryThreshold(1L shl 43), activeKeys = emptySet())
+            .alerts
 
         assertEquals(Severity.WARNING, alerts.single().severity)
     }

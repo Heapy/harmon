@@ -1,7 +1,5 @@
 import dev.yoda.harmon.config.NotificationConfig
-import dev.yoda.harmon.model.DeliveryResult
 import dev.yoda.harmon.model.NotificationPayload
-import dev.yoda.harmon.notify.NotificationChannel
 import dev.yoda.harmon.notify.NotificationDispatcher
 import dev.yoda.harmon.notify.SYSTEM_CHANNEL_BEST_EFFORT
 import kotlin.test.Test
@@ -14,46 +12,46 @@ class NotificationDispatcherTest {
     fun bestEffortSuccessDoesNotCoverForAFailedDecisiveChannel() {
         val dispatcher = NotificationDispatcher(
             listOf(
-                fakeChannel("system", successful = true, bestEffort = true),
-                fakeChannel("webhook", successful = false),
+                RecordingChannel("system", bestEffort = true),
+                RecordingChannel("webhook", successful = { false }),
             ),
         )
 
-        val results = dispatcher.deliver(fakePayload())
+        val summary = dispatcher.deliver(fakePayload())
 
-        assertEquals(listOf(true, false), results.map { it.successful })
-        assertFalse(dispatcher.decisiveSuccess(results))
+        assertEquals(listOf(true, false), summary.results.map { it.successful })
+        assertFalse(summary.decisiveSuccess)
     }
 
     @Test
     fun bestEffortChannelAloneCountsAsSuccess() {
         val dispatcher = NotificationDispatcher(
-            listOf(fakeChannel("system", successful = true, bestEffort = true)),
+            listOf(RecordingChannel("system", bestEffort = true)),
         )
 
-        assertTrue(dispatcher.decisiveSuccess(dispatcher.deliver(fakePayload())))
+        assertTrue(dispatcher.deliver(fakePayload()).decisiveSuccess)
     }
 
     /**
      * The default configuration has Notification Center and nothing else. Its optimistic success
      * is discounted, but an outright failure — `HtmlReportStore.write` on a full disk or a
-     * read-only home — is something it did observe, and it must keep the alert pushable instead of
-     * settling it as delivered.
+     * read-only home — is something it did observe, and it must keep the alert pushable instead
+     * of settling it as delivered.
      */
     @Test
     fun aBestEffortChannelFailingOnItsOwnIsAFailedDelivery() {
         val dispatcher = NotificationDispatcher(
-            listOf(fakeChannel("system", successful = false, bestEffort = true)),
+            listOf(RecordingChannel("system", bestEffort = true, successful = { false })),
         )
 
-        assertFalse(dispatcher.decisiveSuccess(dispatcher.deliver(fakePayload())))
+        assertFalse(dispatcher.deliver(fakePayload()).decisiveSuccess)
     }
 
     @Test
     fun aThrowingBestEffortChannelAloneIsAFailedDelivery() {
         val dispatcher = NotificationDispatcher(
             listOf(
-                fakeChannel(
+                RecordingChannel(
                     "system",
                     bestEffort = true,
                     failure = IllegalStateException("read-only file system"),
@@ -61,61 +59,49 @@ class NotificationDispatcherTest {
             ),
         )
 
-        assertFalse(dispatcher.decisiveSuccess(dispatcher.deliver(fakePayload())))
+        assertFalse(dispatcher.deliver(fakePayload()).decisiveSuccess)
     }
 
     @Test
     fun oneSucceedingDecisiveChannelIsEnough() {
         val dispatcher = NotificationDispatcher(
             listOf(
-                fakeChannel("webhook", successful = true),
-                fakeChannel("telegram", successful = false),
+                RecordingChannel("webhook"),
+                RecordingChannel("telegram", successful = { false }),
             ),
         )
 
-        assertTrue(dispatcher.decisiveSuccess(dispatcher.deliver(fakePayload())))
+        assertTrue(dispatcher.deliver(fakePayload()).decisiveSuccess)
     }
 
     @Test
     fun everyDecisiveChannelFailingIsAFailure() {
         val dispatcher = NotificationDispatcher(
             listOf(
-                fakeChannel("webhook", successful = false),
-                fakeChannel("telegram", successful = false),
+                RecordingChannel("webhook", successful = { false }),
+                RecordingChannel("telegram", successful = { false }),
             ),
         )
 
-        assertFalse(dispatcher.decisiveSuccess(dispatcher.deliver(fakePayload())))
+        assertFalse(dispatcher.deliver(fakePayload()).decisiveSuccess)
     }
 
     /**
-     * The system channel cannot be built here — it is internal and constructing it boots AppKit —
-     * so the flag it overrides is asserted directly, and then the behaviour that depends on it.
+     * The system channel cannot be built here — it is internal and constructing it boots AppKit
+     * — so the flag it overrides is asserted directly, and then the behaviour that depends on it.
      * Without this the override could be deleted with a fully green suite.
      */
     @Test
     fun theSystemChannelIsBestEffortAndCannotConfirmADelivery() {
         val dispatcher = NotificationDispatcher(
             listOf(
-                fakeChannel("system", successful = true, bestEffort = SYSTEM_CHANNEL_BEST_EFFORT),
-                fakeChannel("webhook", successful = false),
+                RecordingChannel("system", bestEffort = SYSTEM_CHANNEL_BEST_EFFORT),
+                RecordingChannel("webhook", successful = { false }),
             ),
         )
 
         assertTrue(SYSTEM_CHANNEL_BEST_EFFORT)
-        assertFalse(dispatcher.decisiveSuccess(dispatcher.deliver(fakePayload())))
-    }
-
-    /** A results list this dispatcher did not produce must not index past its channels. */
-    @Test
-    fun aResultWithoutAChannelIsTreatedAsDecisiveRatherThanIndexedBlindly() {
-        val dispatcher = NotificationDispatcher(
-            listOf(fakeChannel("system", successful = true, bestEffort = true)),
-        )
-        val strayResults = dispatcher.deliver(fakePayload()) +
-            DeliveryResult(channel = "stray", successful = false, detail = "not ours")
-
-        assertFalse(dispatcher.decisiveSuccess(strayResults))
+        assertFalse(dispatcher.deliver(fakePayload()).decisiveSuccess)
     }
 
     @Test
@@ -164,35 +150,16 @@ class NotificationDispatcherTest {
     @Test
     fun throwingChannelIsReportedAsAFailedDelivery() {
         val dispatcher = NotificationDispatcher(
-            listOf(fakeChannel("webhook", failure = IllegalStateException("socket closed"))),
+            listOf(RecordingChannel("webhook", failure = IllegalStateException("socket closed"))),
         )
 
-        val results = dispatcher.deliver(fakePayload())
+        val summary = dispatcher.deliver(fakePayload())
 
-        assertEquals(1, results.size)
-        assertEquals("webhook", results.single().channel)
-        assertFalse(results.single().successful)
-        assertEquals("socket closed", results.single().detail)
-        assertFalse(dispatcher.decisiveSuccess(results))
-    }
-}
-
-private fun fakeChannel(
-    name: String,
-    successful: Boolean = false,
-    bestEffort: Boolean = false,
-    failure: Throwable? = null,
-): NotificationChannel = FakeNotificationChannel(name, successful, bestEffort, failure)
-
-private class FakeNotificationChannel(
-    override val name: String,
-    private val successful: Boolean,
-    override val bestEffort: Boolean,
-    private val failure: Throwable?,
-) : NotificationChannel {
-    override fun deliver(payload: NotificationPayload): DeliveryResult {
-        failure?.let { throw it }
-        return DeliveryResult(channel = name, successful = successful, detail = "fake")
+        assertEquals(1, summary.results.size)
+        assertEquals("webhook", summary.results.single().channel)
+        assertFalse(summary.results.single().successful)
+        assertEquals("socket closed", summary.results.single().detail)
+        assertFalse(summary.decisiveSuccess)
     }
 }
 

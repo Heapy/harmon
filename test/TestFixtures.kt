@@ -1,7 +1,9 @@
 import dev.yoda.harmon.analysis.ApplicationGrouper
 import dev.yoda.harmon.model.Alert
+import dev.yoda.harmon.model.DeliveryResult
 import dev.yoda.harmon.model.LoadAverages
 import dev.yoda.harmon.model.MonitoringReport
+import dev.yoda.harmon.model.NotificationPayload
 import dev.yoda.harmon.model.PowerState
 import dev.yoda.harmon.model.ProcessorCounters
 import dev.yoda.harmon.model.ProcessorUsage
@@ -16,6 +18,7 @@ import dev.yoda.harmon.model.SwapUsage
 import dev.yoda.harmon.model.SystemUsage
 import dev.yoda.harmon.model.VirtualMemoryCounters
 import dev.yoda.harmon.model.VirtualMemoryUsage
+import dev.yoda.harmon.notify.NotificationChannel
 import kotlin.time.Instant
 
 fun rawProcess(
@@ -328,3 +331,29 @@ fun alert(
     title = title,
     message = message,
 )
+
+/**
+ * A notification channel that keeps everything it was handed.
+ *
+ * [successful] is asked once per delivery, with the number of that delivery starting at one, so a
+ * channel that is down until its third push is a lambda rather than another stub. A [failure]
+ * throws instead of answering at all, the way a channel that dies inside `deliver` does.
+ */
+class RecordingChannel(
+    override val name: String = "recording",
+    override val bestEffort: Boolean = false,
+    private val failure: Throwable? = null,
+    private val successful: (Int) -> Boolean = { true },
+) : NotificationChannel {
+    val payloads = mutableListOf<NotificationPayload>()
+
+    override fun deliver(payload: NotificationPayload): DeliveryResult {
+        failure?.let { throw it }
+        payloads += payload
+        return DeliveryResult(
+            channel = name,
+            successful = successful(payloads.size),
+            detail = "recorded",
+        )
+    }
+}

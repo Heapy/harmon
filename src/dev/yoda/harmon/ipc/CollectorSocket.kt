@@ -53,8 +53,6 @@ val REJECTION_LOG_INTERVAL: Duration = 60.seconds
  *
  * A clock that jumped backwards ends the window rather than extending it: the point is a bound on
  * how often a line is written, and a wall-clock adjustment must not turn that into silence.
- *
- * The clock is a parameter rather than a field so the coalescing can be tested without waiting.
  */
 class RejectionLog(private val interval: Duration = REJECTION_LOG_INTERVAL) {
     private var loggedAt: Instant? = null
@@ -92,15 +90,13 @@ enum class AcceptDecision {
 
 /**
  * Decides what an `hm_unix_accept` [result] means for a collector that has now seen
- * [consecutiveFailures] failed accepts in a row, the current one included.
+ * [consecutiveFailures] failed accepts in a row, the current one included — so the caller updates
+ * its counter through [consecutiveFailuresAfter] first and passes the new value here.
  *
  * A rejected peer is a normal event and does not count as a failure, so an unprivileged user
  * cannot bring the daemon down by connecting in a loop. Only genuine `accept` errors count, and
  * only [CONSECUTIVE_ACCEPT_FAILURE_LIMIT] of them in a row — a transient one must not kill a root
  * daemon.
- *
- * Pure on purpose: no socket, no logging, no sleeping. The caller does those, and keeps the
- * counter itself, which is what keeps the policy testable without a listening socket.
  */
 fun acceptDecision(result: Int, consecutiveFailures: Int): AcceptDecision = when {
     result >= 0 -> AcceptDecision.SERVE
@@ -183,11 +179,11 @@ class CollectorServer(
             while (true) {
                 val attempt = acceptClient(serverDescriptor)
                 consecutiveFailures = consecutiveFailuresAfter(
-                    attempt.result,
+                    attempt.resultOrDescriptor,
                     consecutiveFailures,
                 )
-                when (acceptDecision(attempt.result, consecutiveFailures)) {
-                    AcceptDecision.SERVE -> serveClient(attempt.result)
+                when (acceptDecision(attempt.resultOrDescriptor, consecutiveFailures)) {
+                    AcceptDecision.SERVE -> serveClient(attempt.resultOrDescriptor)
                     AcceptDecision.REJECT ->
                         rejectionLog.record(attempt.peerUserId, Clock.System.now())?.let(logError)
                     AcceptDecision.RETRY -> {
@@ -238,12 +234,17 @@ class CollectorServer(
             allowedUserId,
             peerUserId.ptr,
         )
-        AcceptAttempt(result = result, peerUserId = peerUserId.value)
+        AcceptAttempt(resultOrDescriptor = result, peerUserId = peerUserId.value)
     }
 }
 
+/**
+ * One `hm_unix_accept` call. [resultOrDescriptor] is the client descriptor when it is
+ * non-negative and an error code otherwise, which is why only [AcceptDecision.SERVE] may hand it
+ * to a call expecting a descriptor.
+ */
 private data class AcceptAttempt(
-    val result: Int,
+    val resultOrDescriptor: Int,
     val peerUserId: UInt,
 )
 
