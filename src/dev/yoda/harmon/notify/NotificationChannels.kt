@@ -6,8 +6,8 @@ import dev.yoda.harmon.model.NotificationPayload
 import dev.yoda.harmon.nativebridge.HMHttpResult
 import dev.yoda.harmon.nativebridge.hm_http_global_init
 import dev.yoda.harmon.nativebridge.hm_http_post_json
-import dev.yoda.harmon.report.ReportFormatter
 import dev.yoda.harmon.report.ReportJson
+import dev.yoda.harmon.util.failureDescription
 import kotlinx.cinterop.ExperimentalForeignApi
 import kotlinx.cinterop.ObjCSignatureOverride
 import kotlinx.cinterop.alloc
@@ -24,6 +24,17 @@ import platform.Foundation.NSURL
 import platform.darwin.NSObject
 
 private const val REPORT_PATH_USER_INFO_KEY = "harmonReportPath"
+
+/**
+ * Whether the macOS Notification Center channel is best-effort. It is: `deliverNotification`
+ * queues a notification and never reports back whether it was shown, so the channel cannot decide
+ * that a sample was delivered.
+ *
+ * Public because `SystemNotificationChannel` is internal and constructing it boots AppKit, which
+ * a test suite cannot do — without this constant the override below would have no observable
+ * form at all and could be deleted with a green suite.
+ */
+const val SYSTEM_CHANNEL_BEST_EFFORT = true
 
 interface NotificationChannel {
     val name: String
@@ -48,7 +59,7 @@ class NotificationDispatcher(
                 DeliveryResult(
                     channel = channel.name,
                     successful = false,
-                    detail = failure.message ?: failure::class.simpleName.orEmpty(),
+                    detail = failureDescription(failure),
                 )
             }
         }
@@ -56,9 +67,15 @@ class NotificationDispatcher(
     /**
      * Results come from [deliver], so their order matches [channels] and best-effort channels can
      * be excluded by index. With no decisive channel configured the delivery counts as successful.
+     *
+     * A result without a matching channel — a list this dispatcher did not produce — is treated
+     * as decisive rather than indexed blindly, so a caller's mistake cannot be read as a silent
+     * success.
      */
     fun decisiveSuccess(results: List<DeliveryResult>): Boolean {
-        val decisive = results.filterIndexed { index, _ -> !channels[index].bestEffort }
+        val decisive = results.filterIndexed { index, _ ->
+            channels.getOrNull(index)?.bestEffort != true
+        }
         return decisive.isEmpty() || decisive.any { it.successful }
     }
 
@@ -102,7 +119,7 @@ internal class SystemNotificationChannel(
     private val reportStore: HtmlReportStore = HtmlReportStore(),
 ) : NotificationChannel {
     override val name: String = "system"
-    override val bestEffort: Boolean = true
+    override val bestEffort: Boolean = SYSTEM_CHANNEL_BEST_EFFORT
     private val center = NSApplication.sharedApplication.let { application ->
         application.setActivationPolicy(
             NSApplicationActivationPolicy.NSApplicationActivationPolicyAccessory,

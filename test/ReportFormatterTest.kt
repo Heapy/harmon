@@ -2,7 +2,6 @@ import dev.yoda.harmon.model.MonitoringReport
 import dev.yoda.harmon.model.ProcessCollectionIssue
 import dev.yoda.harmon.model.ProcessCollectionIssueReason
 import dev.yoda.harmon.model.Severity
-import dev.yoda.harmon.report.ApplicationRankings
 import dev.yoda.harmon.report.ReportFormatter
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.jsonArray
@@ -12,7 +11,6 @@ import kotlin.test.Test
 import kotlin.test.assertContains
 import kotlin.test.assertEquals
 import kotlin.test.assertFalse
-import kotlin.test.assertSame
 
 class ReportFormatterTest {
     @Test
@@ -175,35 +173,73 @@ class ReportFormatterTest {
         assertFalse("Harmon sample at" in payload.html)
     }
 
+    /**
+     * `alpha` and `bravo` tie on CPU in the fixture, so a selection that reorders equal metrics
+     * — anything but a stable sort — shows up here as a swapped pair. The expected order is
+     * written out rather than derived from the fixture: computing it with the expression the
+     * renderer uses would make the two fail only together.
+     */
     @Test
-    fun ranksTiedApplicationsExactlyAsASortedByDescendingSliceWould() {
-        val report = rankingReport()
-        val expected = report.usage.applications
-            .sortedByDescending { it.cpuPercent }
-            .take(report.topProcessCount)
-            .map { it.name }
+    fun ranksTiedApplicationsInTheOrderTheyWereSampled() {
+        val output = ReportFormatter.text(rankingReport())
 
-        val output = ReportFormatter.text(report)
-
-        assertEquals(expected, rankedNames(output, "Top application CPU"))
         assertEquals(
-            listOf("alpha", "bravo"),
-            expected.take(2),
-            "the fixture has to keep a tie, otherwise the order proves nothing",
+            listOf("alpha", "bravo", "echo"),
+            rankedNames(output, "Top application CPU"),
+        )
+        assertEquals(
+            listOf("charlie", "echo", "alpha"),
+            rankedNames(output, "Top application memory"),
+        )
+        assertEquals(
+            listOf("alpha", "charlie", "echo"),
+            rankedNames(output, "Top application compressed/paged-out memory"),
         )
     }
 
+    /** The quiet sample: no alert to name, so the push carries a state-of-the-machine line. */
     @Test
-    fun keepsTheRenderedTextIdenticalToTheGoldenSample() {
-        assertEquals(TEXT_GOLDEN, ReportFormatter.text(rankingReport()))
+    fun aNotificationWithoutAlertsCarriesThePowerStateAndTheTopCpuApplication() {
+        val payload = ReportFormatter.notification(rankingReport().copy(alerts = emptyList()))
+
+        assertEquals("Harmon: system sample", payload.title)
+        assertEquals("battery 75%, 3h 0m remaining", payload.subtitle)
+        assertEquals("Swap 0 B; top CPU alpha 12.0%", payload.text)
     }
 
     @Test
-    fun ranksASliceOnceAndHandsTheSameListToEveryReader() {
-        val rankings = ApplicationRankings(rankingReport())
+    fun aNotificationWithoutAnyApplicationReportsTheTopCpuAsUnavailable() {
+        val report = MonitoringReport(
+            usage = systemUsage(processes = emptyList()),
+            alerts = emptyList(),
+            topProcessCount = 5,
+        )
 
-        assertSame(rankings.topCpu, rankings.topCpu)
-        assertSame(rankings.topCompressedOrPagedOut, rankings.topCompressedOrPagedOut)
+        val payload = ReportFormatter.notification(report)
+
+        assertContains(payload.text, "top CPU n/a")
+    }
+
+    /**
+     * `notifyEverySample` widens what the push shows, not what counts as new, so the caller has
+     * to be able to push every active alert while still naming only the fresh ones.
+     */
+    @Test
+    fun namesTheNewKeysIndependentlyOfTheAlertsThePushCarries() {
+        val report = alertingReport()
+
+        val payload = ReportFormatter.notification(
+            report = report,
+            highlighted = report.alerts,
+            newAlertKeys = listOf("alert-3"),
+        )
+        val json = Json.parseToJsonElement(payload.json).jsonObject
+
+        assertEquals("5 alerts", payload.subtitle)
+        assertEquals(
+            listOf("alert-3"),
+            json.getValue("newAlertKeys").jsonArray.map { it.jsonPrimitive.content },
+        )
     }
 
     private fun rankedNames(output: String, heading: String): List<String> = output
@@ -223,48 +259,3 @@ class ReportFormatterTest {
         topProcessCount = 5,
     )
 }
-
-/**
- * The text report of [rankingReport] as it was rendered before the ranked slices became shared
- * between the text and JSON renderers. The refactor is not allowed to move a single character.
- */
-private val TEXT_GOLDEN = """
-    Harmon sample at 1970-01-01T00:01:40Z
-    Window: 2.0s
-    Power: battery 75%, 3h 0m remaining
-    System CPU: 40.0% (user 30.0%, system 10.0%); load 1.0 / 0.8 / 0.5
-    Swap: 0 B used / 4.0 GiB allocated (encrypted)
-    VM: 2.0 GiB compressor RAM, 0 B uncompressed memory represented in swap; 0 B/s compress, 0 B/s swap-out
-    Internal storage: 0 B/s read, 0 B/s write; 0.0 writes/s, 0.0% write service time; 465.7 GiB filesystem available
-    Processes: 5/5 readable, 0 inaccessible
-    Applications: 5 groups from 5 readable processes
-    Compressed/paged-out attribution: 3 processes measured, 0 failed
-
-    Top application CPU:
-    1. alpha (PID 11): 12.0%
-    2. bravo (PID 12): 12.0%
-    3. echo (PID 15): 7.0%
-
-    Top application memory:
-    1. charlie (PID 13): 4.0 GiB
-    2. echo (PID 15): 3.0 GiB
-    3. alpha (PID 11): 2.0 GiB
-
-    Likely application battery impact:
-    1. alpha (PID 11): score 4.0, 4.0 wakeups/s, 8.0 MiB/s I/O, 900.0 mW accounted
-    2. bravo (PID 12): score 4.0, 4.0 wakeups/s, 0 B/s I/O
-    3. echo (PID 15): score 2.0, 2.0 wakeups/s, 4.0 MiB/s I/O, 50.0 mW accounted
-
-    Top application storage writes:
-    1. alpha (PID 11): 8.0 MiB/s physical (all devices), 2.0 MiB/s logical (internal)
-    2. bravo (PID 12): 0 B/s physical (all devices), 6.0 MiB/s logical (internal)
-    3. echo (PID 15): 4.0 MiB/s physical (all devices), 4.0 MiB/s logical (internal)
-
-    Top application compressed/paged-out memory:
-    1. alpha (PID 11): 512.0 MiB proxy (1/1 processes measured)
-    2. charlie (PID 13): 128.0 MiB proxy (1/1 processes measured)
-    3. echo (PID 15): 64.0 MiB proxy (1/1 processes measured)
-
-    Alerts:
-    - warning: message of cpu:alpha
-""".trimIndent()

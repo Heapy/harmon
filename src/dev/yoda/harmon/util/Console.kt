@@ -11,3 +11,11 @@ fun printError(message: String) {
     fflush(stderr)
 }
 
+/**
+ * What an error log says about [failure]: its message, or its class name when it carries none.
+ *
+ * A daemon logs a lot of caught throwables and an empty line helps nobody diagnose a launchd log.
+ */
+fun failureDescription(failure: Throwable): String =
+    failure.message ?: failure::class.simpleName.orEmpty()
+

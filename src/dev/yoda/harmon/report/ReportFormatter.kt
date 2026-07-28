@@ -10,15 +10,9 @@ import dev.yoda.harmon.model.Severity
 import dev.yoda.harmon.util.Format
 
 object ReportFormatter {
-    /**
-     * [rankings] is accepted so a caller that renders both the text and the JSON payload of the
-     * same report ranks its applications once instead of once per renderer.
-     */
-    fun text(
-        report: MonitoringReport,
-        rankings: ApplicationRankings = ApplicationRankings(report),
-    ): String = buildString {
+    fun text(report: MonitoringReport): String = buildString {
         val usage = report.usage
+        val rankings = ApplicationRankings(report)
         appendLine("Harmon sample at ${usage.capturedAt}")
         appendLine("Window: ${Format.decimal(usage.elapsedSeconds)}s")
         appendLine("Power: ${powerText(usage.power)}")
@@ -181,16 +175,17 @@ object ReportFormatter {
     }.trimEnd()
 
     /**
-     * The push itself carries only [highlighted] — the alerts that crossed their threshold on
-     * this sample — while the attached HTML and JSON carry the whole [report], so the reader
-     * still sees the full picture. [reportText] is accepted already rendered to avoid a second
-     * pass over the same report.
+     * The push itself carries only [highlighted] — the alerts the caller decided to put in front
+     * of the user — while the attached HTML and JSON carry the whole [report], so the reader
+     * still sees the full picture. [newAlertKeys] is separate from [highlighted] because a caller
+     * pushing every active alert on every sample must still be able to say which of them are new.
+     * [reportText] is accepted already rendered to avoid a second pass over the same report.
      */
     fun notification(
         report: MonitoringReport,
         highlighted: List<Alert> = report.alerts,
-        rankings: ApplicationRankings = ApplicationRankings(report),
-        reportText: String = text(report, rankings),
+        newAlertKeys: List<String> = highlighted.map { it.key },
+        reportText: String = text(report),
     ): NotificationPayload {
         val title = when {
             highlighted.any { it.severity == Severity.CRITICAL } -> "Harmon: critical alert"
@@ -219,15 +214,9 @@ object ReportFormatter {
                 subtitle = subtitle,
                 reportText = reportText,
             ),
-            json = json(report, highlighted.map { it.key }, rankings),
+            json = ReportJson.encode(report, newAlertKeys),
         )
     }
-
-    fun json(
-        report: MonitoringReport,
-        newAlertKeys: List<String> = report.alerts.map { it.key },
-        rankings: ApplicationRankings = ApplicationRankings(report),
-    ): String = ReportJson.encode(report, newAlertKeys, rankings)
 
     fun testPayload(): NotificationPayload = NotificationPayload(
         identifier = "harmon-notification-test",

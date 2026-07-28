@@ -953,7 +953,7 @@ HTTP 200 с `alerts: []` и `newAlertKeys: []`; конфиг без канало
 - [x] проверить, что в README и `docs/collection.md` не осталось упоминаний кулдауна
 - [x] обновить `docs/architecture.md`, если изменился поток алертов
 - [x] создать `CLAUDE.md`, если по ходу работы выявились неочевидные конвенции проекта
-- [x] (moved by the harness after review phases) переместить этот план в `docs/plans/completed/`
+- [ ] (moved by the harness after review phases) переместить этот план в `docs/plans/completed/`
 
 Документация сверена с кодом, а не с чеклистами предыдущих задач. Новая секция
 `## Alerts and notifications` в `README.md` описывает событийную семантику: пуш на переход через
@@ -1007,8 +1007,17 @@ behavior добавлены исход отказа `accept` (16 подряд, �
 - проверить на машине с Chrome/Firefox, что сбор не выходит за таймаут сокета (30 с) после задачи 16.
 
 **External system updates**:
-- переустановить launchd-сервисы (`scripts/install.sh`) — бинарь агента и коллектора меняются оба,
-  версии протокола совместимы, но обновлять их лучше вместе;
+- изменился учёт CPU: `hm_mach_time_to_ns` в `cinterop/harmon_native.def` переводит счётчики
+  `proc_pid_rusage` из mach absolute time в реальные наносекунды, поэтому на Apple Silicon все
+  проценты CPU по процессам и приложениям и все производные от них `batteryImpactScore` становятся
+  примерно в 41.7 раза выше, чем раньше (старые значения были занижены во столько же раз; Intel с
+  таймбазой 1:1 не затронут). Пороги, подобранные под старые числа
+  (`applicationCpuAlertPercent`, `applicationBatteryImpactAlertScore`), надо перенастроить, иначе
+  они будут срабатывать почти на каждом сэмпле;
+- переустановить launchd-сервисы (`scripts/install.sh`) обязательно целиком, коллектор и агент —
+  строго парные: `CollectorProtocol.VERSION` поднят с 1 до 2, потому что изменился смысл
+  `userTimeNs`/`systemTimeNs` на проводе. Несовпадающая пара падает явно с
+  «Unsupported collector protocol 1; expected 2», а не показывает CPU в ~41 раз ниже;
 - потребители webhook получают новое поле `newAlertKeys` — поле аддитивное, ломать ничего не должно;
 - у пользователей со старым конфигом `alertCooldownSeconds` появится предупреждение в stderr агента,
   видимое в логах launchd.

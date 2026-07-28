@@ -163,11 +163,20 @@ It never labels this value “per-process swap bytes.”
 
 Walking every VM region of every process would make the monitor itself
 expensive. Harmon sorts readable processes by physical footprint and attempts
-region attribution for the largest 256. Three limits bound the work:
+region attribution for the largest 256. Two limits bound the work:
 
-- a per-process limit of 8,192 regions;
-- a sample-wide budget of 100,000 regions shared by all attempted processes;
-- `HM_MAX_VM_REGIONS` (32,768) as the absolute safety stop.
+- a per-process limit of 8,192 regions (`HM_ATTRIBUTION_REGION_LIMIT`);
+- a sample-wide budget of 100,000 regions shared by all attempted processes.
+
+The budget is shared, not first-come. Candidates are visited in descending
+physical-footprint order and each one is given an equal split of whatever is
+left of the budget, capped by the per-process limit, so a few large processes
+can no longer starve the tail of the candidate list. A walk spends only the
+regions it actually read, so an unspent share stays available to later
+candidates. A share below `HM_ATTRIBUTION_MIN_REGION_SHARE` (64 regions) buys
+nothing but a truncated walk, so it is raised to that minimum while the budget
+still affords one and the loop stops once it does not. A candidate skipped that
+way is left unattempted rather than counted as an attribution failure.
 
 Reports expose:
 
@@ -180,15 +189,17 @@ measured value of zero.
 
 The counters mean exactly what they say:
 
-- a walk cut short by the per-process limit or by the exhausted budget is *not*
-  reported as measured. Its partial sum is discarded and
-  `compressedOrPagedOutBytes` stays `null`, because an undercount must never
-  look like a measurement;
+- only a walk that reached the end of the address space produces a measured
+  value; libproc reports that by answering `ESRCH` for the address above the
+  last region. A walk cut short by its region share, and a walk that stopped on
+  a read error partway through, are both undercounts: the partial sum is
+  discarded and `compressedOrPagedOutBytes` stays `null`, because an undercount
+  must never look like a measurement;
 - such a truncated walk is counted in `compressedAttributionFailureCount`: it
   was attempted and it did not produce a usable value;
-- a process the budget never reached is not counted at all — neither attempted
-  nor failed. It is simply outside the bounded set, like every process below
-  the top 256.
+- a candidate the remaining budget could not afford is not counted at all —
+  neither attempted nor failed. It is simply outside the bounded set, like
+  every process below the top 256.
 
 A walk that ends exactly on the last allowed region is reported as truncated
 even when the address space happened to end there too. The bias is deliberate
@@ -196,11 +207,13 @@ and one-directional: a missed measurement is recoverable on the next sample, a
 fabricated one is not.
 
 On a workstation running an IDE, a browser, and a virtual machine the budget,
-not the 256-process limit, is what actually ends attribution: the largest tens
-of processes consume it, and coverage settles near 55 measured processes rather
-than 256. That is the intended trade. Attribution is a bounded proxy, and the
-bound now costs a predictable number of system calls per sample instead of up
-to 8.4 million.
+not the 256-process limit, is what actually ends attribution, so coverage stays
+well below 256 measured processes. Sharing the budget changes which processes
+are covered rather than how much work a sample costs: the largest processes are
+truncated at their share instead of consuming the whole budget, and the tail of
+the candidate list is still attempted. That is the intended trade. Attribution
+is a bounded proxy, and the bound costs a predictable number of system calls
+per sample instead of up to 8.4 million.
 
 ### Why root still does not make this exact
 
@@ -383,15 +396,19 @@ display brightness, thermal state, or external peripherals.
 | Application battery-impact score | 100, on battery | 200 |
 | Low battery | 20% | 10% |
 
-Zero disables a threshold. At most `maxAlertsPerCategory` applications are
-selected for each application rule. A push carries only the alerts that crossed
-their threshold on this sample; while the condition holds there is no repeat,
-and a key becomes pushable again only after it stops firing. Delivery has to
-succeed for a key to count as pushed, so a failed webhook or Telegram call is
-retried on the next sample instead of being silently dropped. Notification
-Center does not count towards that success: macOS returns no synchronous
-confirmation to a launchd agent, so the channel is treated as best-effort.
-Alert state resets with the agent.
+Zero disables a threshold. For each application rule the analyzer selects at
+most `maxAlertsPerCategory` applications by the rule's metric, and additionally
+retains every already-active key that is still above its cleared threshold but
+did not survive that cut. A category can therefore carry more than
+`maxAlertsPerCategory` alerts; the extra ones were already firing and already
+delivered, so they never produce a new push. A push carries only the alerts that
+crossed their threshold on this sample; while the condition holds there is no
+repeat, and a key becomes pushable again only after it stops firing. Delivery
+has to succeed for a key to count as pushed, so a failed webhook or Telegram
+call is retried on the next sample instead of being silently dropped.
+Notification Center does not count towards that success: macOS returns no
+synchronous confirmation to a launchd agent, so the channel is treated as
+best-effort. Alert state resets with the agent.
 
 Only the push text is narrowed that way. The HTML report attached to a system
 notification and the JSON webhook payload both carry every alert active in the
@@ -410,10 +427,11 @@ threshold, so the lowered bound never turns a warning into a critical. Low
 battery is exempt: it is the only rule comparing with "less than or equal", and
 a lowered bound there would drop the alert while the battery is still low.
 
-An application whose alert is already firing stays in the list even when a
-noisier application pushes it out of the per-category top slice, so a category
-holds up to `2 × maxAlertsPerCategory` alerts. Without that, eviction would look
-like the alert clearing and the alert would be reported as new again on return.
+An application whose alert is already firing stays in the list even when
+noisier applications push it out of the per-category top slice, however many of
+them there are, so a category can hold more than `maxAlertsPerCategory` alerts.
+Without that, eviction would look like the alert clearing and the alert would be
+reported as new again on return.
 
 ## Access failures
 

@@ -1,5 +1,4 @@
 import dev.yoda.harmon.analysis.ApplicationGrouper
-import dev.yoda.harmon.config.ConfigLoader
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertNotEquals
@@ -208,14 +207,24 @@ class ApplicationGrouperTest {
         assertEquals(null, applications.single { it.rootPid == 601 }.bundlePath)
     }
 
+    /**
+     * The bundle name is lower-cased before the lookup, so a set written the way a user writes an
+     * application name has to match anyway. A list built in code — rather than parsed out of a
+     * config file, which already lower-cases it — would otherwise match nothing at all and
+     * silently drop the terminal boundary.
+     */
+    @Test
+    fun matchesTheTerminalListRegardlessOfItsCase() {
+        val applications = ApplicationGrouper(setOf("Terminal"))
+            .group(shellUnder(TERMINAL_APP))
+
+        assertEquals(listOf(600), applications.single { it.name == "Terminal" }.processIds)
+        assertEquals(null, applications.single { it.rootPid == 601 }.bundlePath)
+    }
+
     @Test
     fun aConfiguredListReplacesTheDefaultTerminalsOutright() {
-        val config = ConfigLoader.parse(
-            lines = sequenceOf("terminalApplications=foo,bar"),
-            environment = emptyMap(),
-        )
-
-        val applications = ApplicationGrouper(config.terminalApplications)
+        val applications = ApplicationGrouper(setOf("foo", "bar"))
             .group(shellUnder(TERMINAL_APP) + shellUnder("/Applications/Foo.app", pid = 700))
 
         assertEquals(
@@ -228,12 +237,7 @@ class ApplicationGrouperTest {
 
     @Test
     fun anEmptyConfiguredListTurnsOffTheTerminalBoundary() {
-        val config = ConfigLoader.parse(
-            lines = sequenceOf("terminalApplications="),
-            environment = emptyMap(),
-        )
-
-        val applications = ApplicationGrouper(config.terminalApplications)
+        val applications = ApplicationGrouper(emptySet())
             .group(shellUnder(TERMINAL_APP))
 
         assertEquals(

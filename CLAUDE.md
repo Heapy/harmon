@@ -40,6 +40,30 @@ function itself does not call into the bridge. `processCapacityFor` in
 native layer (`cinterop/harmon_native.def`) is verified by running
 `harmon diagnose` on a real machine, not by unit tests.
 
+The recipe, without installing launchd services: start a local unprivileged
+collector on a development socket,
+
+```shell
+build/tasks/_harmon_linkMacosArm64Debug/harmon.kexe collector \
+  --allow-unprivileged \
+  --socket /tmp/harmon-dev.sock \
+  --allowed-uid "$(id -u)" \
+  --allowed-gid "$(id -g)"
+```
+
+point the agent at that socket through the `collectorSocket` config key or the
+`HARMON_COLLECTOR_SOCKET` environment variable, and diagnose through it:
+
+```shell
+HARMON_COLLECTOR_SOCKET=/tmp/harmon-dev.sock \
+  build/tasks/_harmon_linkMacosArm64Debug/harmon.kexe \
+  diagnose --sample-seconds 2
+```
+
+Such a collector sees only what the login user can see, not what root can. To
+A/B a native change, run two collectors on two separate sockets — one binary
+built before the change, one after — and diagnose against each.
+
 ## Layout
 
 ```text
@@ -52,6 +76,8 @@ src/dev/yoda/harmon/
   notify/     Notification Center, webhook, Telegram delivery
   runtime/    user-agent monitoring loop
 test/         flat directory, kotlin.test, shared fixtures in TestFixtures.kt
+cinterop/     the whole C bridge inline in one .def file, compiled by the
+              Kotlin/Native cinterop tool
 ```
 
 Dependency injection is through constructor parameters with default values

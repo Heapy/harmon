@@ -224,9 +224,15 @@ class AlertAnalyzer {
     }
 
     /**
-     * Applications above the threshold, ranked by [value] and cut to [maxPerCategory], plus the
-     * applications whose key is already active but did not survive the cut. The result holds at
-     * most `2 × maxPerCategory` entries.
+     * Applications above the threshold, ranked by [value] and cut to [maxPerCategory], plus every
+     * application whose key is already active but did not survive the cut.
+     *
+     * The retained tail is deliberately uncapped. Dropping an active key would look like the
+     * alert clearing, so the key would leave the alert state and its next appearance would push
+     * again as new — the exact repeat the retention rule exists to prevent. The extra entries can
+     * only be keys that were already firing and already delivered, so they never produce a push
+     * of their own, and the list still cannot outgrow the number of applications over the
+     * threshold.
      */
     private fun <R : Comparable<R>> List<ApplicationUsage>.selectAlerting(
         maxPerCategory: Int,
@@ -247,20 +253,28 @@ class AlertAnalyzer {
             .asSequence()
             .drop(maxPerCategory)
             .filter { key(it) in activeKeys }
-            .take(maxPerCategory)
         return ranked.take(maxPerCategory) + retained
     }
 
-    private fun Double.cleared(): Double = this * CLEAR_RATIO
+    private fun Double.cleared(): Double =
+        this * CLEAR_NUMERATOR.toDouble() / CLEAR_DENOMINATOR.toDouble()
 
-    private fun ULong.cleared(): ULong = this / CLEAR_DIVISOR * CLEAR_MULTIPLIER
+    /** Dividing first keeps the product from overflowing. */
+    private fun ULong.cleared(): ULong = this / CLEAR_DENOMINATOR * CLEAR_NUMERATOR
 
     /**
      * MiB to bytes, saturating at [ULong.MAX_VALUE]. Wrapping would turn a huge threshold into a
      * small one — at 2^44 MiB it wraps to zero and every application alerts as critical.
      * `ConfigLoader` keeps configured values far below that; this covers thresholds built in code.
+     *
+     * A non-positive threshold means every application is over it. It is folded to zero rather
+     * than reinterpreted as unsigned, where -1 MiB would saturate instead and silently switch the
+     * rule off — a nonsensical threshold has to be loud, not invisible.
      */
     private fun Long.mebibytesToBytes(): ULong {
+        if (this <= 0L) {
+            return 0uL
+        }
         val mebibytes = toULong()
         return if (mebibytes > ULong.MAX_VALUE / BYTES_PER_MEBIBYTE) {
             ULong.MAX_VALUE
@@ -283,10 +297,12 @@ class AlertAnalyzer {
     private companion object {
         const val BYTES_PER_MEBIBYTE: ULong = 1_048_576u
         const val BYTES_PER_MEBIBYTE_DOUBLE = 1_048_576.0
-        const val CLEAR_RATIO = 0.9
 
-        /** Integer form of [CLEAR_RATIO]; dividing first keeps the product from overflowing. */
-        const val CLEAR_DIVISOR: ULong = 10u
-        const val CLEAR_MULTIPLIER: ULong = 9u
+        /**
+         * The hysteresis factor, as a fraction so the integer and the floating-point form cannot
+         * drift apart: an active alert only clears below nine tenths of its threshold.
+         */
+        const val CLEAR_NUMERATOR: ULong = 9u
+        const val CLEAR_DENOMINATOR: ULong = 10u
     }
 }

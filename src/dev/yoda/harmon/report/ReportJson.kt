@@ -17,15 +17,12 @@ object ReportJson {
 
     /**
      * [newAlertKeys] tells the consumer which of the reported alerts crossed their threshold on
-     * this sample; `alerts` stays the complete list. [rankings] is accepted so the application
-     * slices this payload shares with the text report are ranked once per report, not once per
-     * renderer.
+     * this sample; `alerts` stays the complete list.
      */
     fun encode(
         report: MonitoringReport,
         newAlertKeys: List<String> = report.alerts.map { it.key },
-        rankings: ApplicationRankings = ApplicationRankings(report),
-    ): String = json.encodeToString(report.toDto(newAlertKeys, rankings))
+    ): String = json.encodeToString(report.toDto(newAlertKeys))
 
     fun testEvent(): String =
         json.encodeToString(
@@ -42,11 +39,9 @@ object ReportJson {
             ),
         )
 
-    private fun MonitoringReport.toDto(
-        newAlertKeys: List<String>,
-        rankings: ApplicationRankings,
-    ): ReportEventDto {
+    private fun MonitoringReport.toDto(newAlertKeys: List<String>): ReportEventDto {
         val usage = usage
+        val rankings = ApplicationRankings(this)
         return ReportEventDto(
             capturedAt = usage.capturedAt.toString(),
             elapsedSeconds = usage.elapsedSeconds,

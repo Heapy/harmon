@@ -4,15 +4,16 @@ import dev.yoda.harmon.model.ApplicationUsage
 import dev.yoda.harmon.model.MonitoringReport
 
 /**
- * The ranked application slices of a single report, computed once and shared by the text and the
- * JSON renderer instead of being sorted again inside each of them.
+ * The ranked application slices of a single report: one definition of "the top applications by
+ * this metric" that the text report and the JSON payload both render, instead of the same filter
+ * and sort written out twice, once in each of them.
  *
  * `sortedByDescending` stays the selection mechanism on purpose: a hand-written partial selection
  * would save microseconds and could reorder applications whose metric ties, which is exactly what
  * the report must not do. Every slice is lazy, so rendering the text report alone still does not
  * pay for the slices only the JSON payload needs.
  */
-class ApplicationRankings(private val report: MonitoringReport) {
+internal class ApplicationRankings(private val report: MonitoringReport) {
     val topCpu: List<ApplicationUsage> by lazy { rank { it.cpuPercent } }
 
     val topMemory: List<ApplicationUsage> by lazy { rank { it.physicalFootprintBytes } }

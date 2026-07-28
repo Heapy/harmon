@@ -53,10 +53,12 @@ const val PROCESS_CAPACITY_HEADROOM = 256
 /**
  * Number of sample slots to reserve for [count] processes, never more than [capacity].
  *
- * [count] is the kernel's PID count taken just before the collection; [PROCESS_CAPACITY_HEADROOM]
- * covers processes that start between counting and listing, and [MIN_PROCESS_CAPACITY] keeps a
- * small machine from re-sizing on every sample. A non-positive [count] means the kernel refused
- * to answer, so the full [capacity] is reserved as before. Public so the arithmetic can be tested
+ * [count] is the kernel's PID count taken just before the collection and handed to the listing
+ * call, so both size themselves from the same number. [PROCESS_CAPACITY_HEADROOM] covers the
+ * processes that start between counting and listing, and [MIN_PROCESS_CAPACITY] keeps the
+ * reservation on a small machine from tracking its PID count so tightly that an ordinary burst
+ * of short-lived processes exhausts it. A non-positive [count] means the kernel refused to
+ * answer, so the full [capacity] is reserved as before. Public so the arithmetic can be tested
  * without touching the native bridge.
  */
 fun processCapacityFor(count: Int, capacity: Int): Int {
@@ -106,6 +108,7 @@ class DarwinSystemCollector(
             sampleSlots,
             nativeIssues,
             issueSlots,
+            pidCount,
             compressedAttributionProcessLimit,
             attributionRegionBudget,
             totalProcesses.ptr,

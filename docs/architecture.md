@@ -72,6 +72,14 @@ envelope contains a protocol version and a `RawSystemSnapshot`. Unknown fields
 are rejected so a version mismatch fails explicitly instead of silently
 changing metric meaning.
 
+The current version is 2. It was raised from 1 when the CPU counters changed
+units: `userTimeNs` and `systemTimeNs` used to carry raw mach absolute ticks
+under a nanosecond name, and the collector now converts them to real
+nanoseconds. The agent refuses a snapshot from any other version with
+`Unsupported collector protocol 1; expected 2` rather than deriving CPU
+percentages from ticks. Collector and agent are therefore a matched pair and
+have to be upgraded together.
+
 No request body or mutation command exists. Connecting only asks for a fresh
 snapshot.
 

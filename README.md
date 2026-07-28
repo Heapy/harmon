@@ -97,6 +97,29 @@ CPU % + wakeups/s × 0.25 + physical disk I/O MiB/s × 2
 
 The score is useful for ranking and alerting, not as a wattmeter.
 
+## Upgrading from an earlier build
+
+This release corrects CPU accounting in the native bridge. `proc_pid_rusage`
+returns CPU time in mach absolute time, and Harmon reported those ticks as if
+they were nanoseconds. On Apple Silicon one tick is 125/3 ns, so every
+per-process and per-application CPU percentage, and every battery-impact score
+derived from CPU, is now about 41.7 times higher than the value Harmon printed
+before: the old numbers were understated by that factor. Intel Macs have a 1:1
+timebase and are unaffected.
+
+Thresholds tuned against the old numbers must be retuned.
+`applicationCpuAlertPercent` and `applicationBatteryImpactAlertScore` lowered
+to compensate for the understated values now fire on almost every sample; the
+same keys left at a level the old numbers could never reach begin alerting for
+the first time.
+
+Because the meaning of the CPU counters on the wire changed, the collector
+protocol version is now 2. The collector (root LaunchDaemon) and the agent
+(user LaunchAgent) are a matched pair and have to be reinstalled together with
+`./scripts/install.sh`. A mismatched pair now fails explicitly with
+`Unsupported collector protocol 1; expected 2` instead of silently reporting
+CPU that is roughly 41 times too low.
+
 ## Requirements
 
 - Apple Silicon Mac;
@@ -159,6 +182,11 @@ Harmon starts the user-agent loop. `once` takes two collector snapshots and
 prints one report. `diagnose` also prints grouping, attribution coverage, and
 process-access failures.
 
+`--sample-seconds` is the gap between those two snapshots and accepts 1 to 300
+seconds inclusive. A value outside that range, or one that is not an integer,
+is rejected with exit status 2; the same bounds apply to the
+`onceSampleSeconds` configuration key.
+
 ## Configuration
 
 Harmon reads `~/.config/harmon/config`. The installer creates it from
@@ -182,7 +210,9 @@ systemNotifications=true
 notifyEverySample=false
 ```
 
-A threshold of `0` disables that rule. `terminalApplications` is a
+A threshold of `0` disables that rule. `applicationMemoryAlertMiB` and
+`swapAlertMiB` are capped at 1,048,576 MiB (1 TiB); a larger value is rejected
+and the process exits with status 2. `terminalApplications` is a
 comma-separated list of bundle names without `.app`, matched case-insensitively;
 it replaces the built-in list outright, and an empty value turns the terminal
 boundary off. The old
@@ -234,6 +264,11 @@ report and the JSON webhook payload both carry every alert active in the sample,
 and the payload adds `newAlertKeys` listing the ones the push was about. With
 `notifyEverySample=true` the agent sends on every sample and treats the whole
 alert list as push content.
+
+Edge detection across samples exists only in the long-running `harmon run`
+agent. `harmon once --notify` starts with a fresh, empty alert state, so every
+alert active in its single sample counts as new: all of them are pushed, and
+`newAlertKeys` lists all of them.
 
 Notification Center delivery uses the background-only Harmon application
 bundle installed under `~/Library/Application Support/Harmon/Harmon.app`.

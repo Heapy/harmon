@@ -1,5 +1,7 @@
+import dev.yoda.harmon.analysis.MAX_DELIVERY_ATTEMPTS
 import dev.yoda.harmon.config.HarmonConfig
 import dev.yoda.harmon.config.NotificationConfig
+import dev.yoda.harmon.config.SAMPLE_SECONDS_RANGE
 import dev.yoda.harmon.model.DeliveryResult
 import dev.yoda.harmon.model.NotificationPayload
 import dev.yoda.harmon.model.RawSystemSnapshot
@@ -7,10 +9,19 @@ import dev.yoda.harmon.monitor.SystemCollector
 import dev.yoda.harmon.notify.NotificationChannel
 import dev.yoda.harmon.notify.NotificationDispatcher
 import dev.yoda.harmon.runtime.HarmonService
+import kotlinx.serialization.json.Json
+import kotlinx.serialization.json.jsonArray
+import kotlinx.serialization.json.jsonObject
+import kotlinx.serialization.json.jsonPrimitive
 import kotlin.test.Test
+import kotlin.test.assertContains
 import kotlin.test.assertEquals
+import kotlin.test.assertFailsWith
 import kotlin.test.assertFalse
+import kotlin.test.assertNotNull
 import kotlin.test.assertTrue
+import kotlin.time.Duration.Companion.seconds
+import kotlin.time.TimeSource
 
 private const val MIB = 1_048_576uL
 
@@ -47,6 +58,35 @@ class HarmonServiceAlertFlowTest {
         assertEquals(2, channel.payloads.size)
     }
 
+    /**
+     * A channel that can never succeed — a typo'd webhook URL, a revoked token — must not turn
+     * Notification Center into an endless banner loop. Each push carries a fresh identifier, so
+     * nothing coalesces them: the retries have to be bounded here instead.
+     */
+    @Test
+    fun stopsRePushingAnAlertWhoseDeliveryNeverSucceeds() {
+        val channel = RecordingChannel(successful = false)
+        val errors = mutableListOf<String>()
+        val service = HarmonService(
+            config = alertConfig(),
+            collector = UnusedCollector,
+            notifications = lazyOf(NotificationDispatcher(listOf(channel))),
+            log = {},
+            logError = { errors += it },
+        )
+
+        repeat(MAX_DELIVERY_ATTEMPTS + 3) { index ->
+            val started = index.toULong()
+            service.handleSample(
+                snapshot(started, ALERTING_FOOTPRINT),
+                snapshot(started + 1uL, ALERTING_FOOTPRINT),
+            )
+        }
+
+        assertEquals(MAX_DELIVERY_ATTEMPTS, channel.payloads.size)
+        assertTrue(errors.any { "giving up on alert" in it }, errors.toString())
+    }
+
     @Test
     fun pushesAgainAfterTheAlertClearedOnASampleWithoutDeliveries() {
         val channel = RecordingChannel()
@@ -72,6 +112,24 @@ class HarmonServiceAlertFlowTest {
         assertTrue(channel.payloads[0].text.endsWith("memory"))
         assertTrue(channel.payloads[1].text.endsWith("memory"))
         assertEquals("Harmon: system sample", channel.payloads[2].title)
+    }
+
+    /**
+     * `notifyEverySample` widens what the push shows, not what counts as new. A consumer reading
+     * the payload still has to be able to tell a fresh alert from one that has been firing for an
+     * hour, so the edge detection keeps running underneath.
+     */
+    @Test
+    fun notifyEverySampleStillNamesOnlyTheAlertsThatAreNewOnThisSample() {
+        val channel = RecordingChannel()
+        val service = serviceWith(channel, notifyEverySample = true)
+
+        service.handleSample(snapshot(0uL, ALERTING_FOOTPRINT), snapshot(1uL, ALERTING_FOOTPRINT))
+        service.handleSample(snapshot(1uL, ALERTING_FOOTPRINT), snapshot(2uL, ALERTING_FOOTPRINT))
+
+        assertEquals(1, newAlertKeysOf(channel.payloads[0]).size)
+        assertEquals(emptyList(), newAlertKeysOf(channel.payloads[1]))
+        assertTrue(channel.payloads[1].text.endsWith("memory"), "the push still carries it")
     }
 
     /**
@@ -121,12 +179,69 @@ class HarmonServiceAlertFlowTest {
     }
 
     /**
-     * Building the dispatcher builds the system channel, and that boots AppKit. Commands that
-     * never push must not pay for it, so the holder has to stay untouched — even on a sample that
-     * would have alerted.
+     * The agent loop is a daemon: a collector that is down for one interval must not end it, and
+     * the window must stay where it was, so the next capture still has something to diff against.
      */
     @Test
-    fun sampleOnceNeverBuildsTheDispatcher() {
+    fun aFailedCaptureIsLoggedAndLeavesTheWindowWhereItWas() {
+        val reports = mutableListOf<String>()
+        val errors = mutableListOf<String>()
+        val first = snapshot(0uL, ALERTING_FOOTPRINT)
+        val second = snapshot(1uL, ALERTING_FOOTPRINT)
+        val service = HarmonService(
+            config = alertConfig(),
+            collector = FlakyCollector(second),
+            notifications = lazyOf(NotificationDispatcher(emptyList())),
+            log = { reports += it },
+            logError = { errors += it },
+        )
+
+        val afterFailure = service.runCycle(first)
+        val afterSuccess = service.runCycle(afterFailure)
+
+        assertEquals(first, afterFailure)
+        assertEquals(second, afterSuccess)
+        assertContains(errors.single(), "collection failed")
+        assertEquals(1, reports.size)
+        assertTrue(reports.single().contains("Alerts:"))
+    }
+
+    /**
+     * A pair that cannot be turned into a usage window still advances the window, otherwise the
+     * broken snapshot would be replayed against every following capture and the agent would log
+     * the same failure forever.
+     */
+    @Test
+    fun aSampleThatBlowsUpIsNotReplayedAgainstTheNextCapture() {
+        val reports = mutableListOf<String>()
+        val errors = mutableListOf<String>()
+        val service = HarmonService(
+            config = alertConfig(),
+            collector = ScriptedCollector(
+                snapshot(1uL, QUIET_FOOTPRINT),
+                snapshot(2uL, QUIET_FOOTPRINT),
+            ),
+            notifications = lazyOf(NotificationDispatcher(emptyList())),
+            log = { reports += it },
+            logError = { errors += it },
+        )
+
+        // a previous snapshot from the future: the monotonic clock cannot go backwards
+        val afterFailure = service.runCycle(snapshot(5uL, QUIET_FOOTPRINT))
+        service.runCycle(afterFailure)
+
+        assertContains(errors.single(), "sample handling failed")
+        assertEquals(1, reports.size)
+    }
+
+    /**
+     * Building the dispatcher builds the system channel, and that boots AppKit. Commands that
+     * never push must not pay for it, so the holder has to stay untouched — even on a sample that
+     * would have alerted. The window is also the one thing `sampleOnce` measures, so the second
+     * it spends waiting is asserted rather than merely endured.
+     */
+    @Test
+    fun sampleOnceWaitsOutItsWindowWithoutBuildingTheDispatcher() {
         var initializations = 0
         val service = HarmonService(
             config = alertConfig(),
@@ -141,10 +256,83 @@ class HarmonServiceAlertFlowTest {
             log = {},
             logError = {},
         )
+        val started = TimeSource.Monotonic.markNow()
 
         service.sampleOnce(sampleSeconds = 1)
 
+        assertTrue(started.elapsedNow() >= 1.seconds, "the sample window was not waited out")
         assertEquals(0, initializations)
+    }
+
+    @Test
+    fun rejectsASampleWindowOutsideTheSharedRange() {
+        val service = serviceWith(RecordingChannel())
+
+        listOf(SAMPLE_SECONDS_RANGE.first - 1, SAMPLE_SECONDS_RANGE.last + 1).forEach { seconds ->
+            val failure = assertFailsWith<IllegalArgumentException> {
+                service.sampleOnce(seconds)
+            }
+
+            assertContains(assertNotNull(failure.message), "sampleSeconds must be between")
+        }
+    }
+
+    /**
+     * `once --notify` runs with fresh state, so every active alert is new and the payload has to
+     * say so. It also accepts the already rendered text, so the report is not rendered twice.
+     */
+    @Test
+    fun deliverPushesTheWholeReportAndTreatsEveryAlertAsNew() {
+        val channel = RecordingChannel()
+        val service = serviceWith(channel)
+        val report = rankingReport()
+
+        val results = service.deliver(report, reportText = "already rendered elsewhere")
+
+        assertEquals(listOf(true), results.map { it.successful })
+        assertContains(channel.payloads.single().html, "already rendered elsewhere")
+        assertEquals(report.alerts.map { it.key }, newAlertKeysOf(channel.payloads.single()))
+    }
+
+    @Test
+    fun testNotificationsPushesTheFixedTestPayload() {
+        val channel = RecordingChannel()
+        val service = serviceWith(channel)
+
+        val results = service.testNotifications()
+
+        assertEquals(listOf(true), results.map { it.successful })
+        assertEquals("Notification test", channel.payloads.single().subtitle)
+    }
+
+    /**
+     * launchd splits an agent's stdout and stderr into two files. A channel that failed belongs
+     * in the error one, otherwise nobody reading the logs after a silent night finds it.
+     */
+    @Test
+    fun logsAFailedChannelToTheErrorStreamAndASucceedingOneToTheNormalOne() {
+        val messages = mutableListOf<String>()
+        val errors = mutableListOf<String>()
+        val service = HarmonService(
+            config = alertConfig(),
+            collector = UnusedCollector,
+            notifications = lazyOf(
+                NotificationDispatcher(
+                    listOf(
+                        RecordingChannel(name = "good"),
+                        RecordingChannel(name = "bad", successful = false),
+                    ),
+                ),
+            ),
+            log = { messages += it },
+            logError = { errors += it },
+        )
+
+        service.handleSample(snapshot(0uL, ALERTING_FOOTPRINT), snapshot(1uL, ALERTING_FOOTPRINT))
+
+        assertTrue(messages.any { "notification good:" in it }, messages.toString())
+        assertTrue(errors.any { "notification bad:" in it }, errors.toString())
+        assertTrue(messages.none { "notification bad:" in it }, messages.toString())
     }
 
     @Test
@@ -242,6 +430,13 @@ class HarmonServiceAlertFlowTest {
     }
 }
 
+private fun newAlertKeysOf(payload: NotificationPayload): List<String> =
+    Json.parseToJsonElement(payload.json)
+        .jsonObject
+        .getValue("newAlertKeys")
+        .jsonArray
+        .map { it.jsonPrimitive.content }
+
 private fun serviceWith(
     channel: NotificationChannel,
     notifyEverySample: Boolean = false,
@@ -275,10 +470,23 @@ private class ScriptedCollector(vararg snapshots: RawSystemSnapshot) : SystemCol
     override fun capture(): RawSystemSnapshot = remaining.removeFirst()
 }
 
+/** Down for exactly one capture, the way a collector restarting under launchd is. */
+private class FlakyCollector(private val snapshot: RawSystemSnapshot) : SystemCollector {
+    private var attempts = 0
+
+    override fun capture(): RawSystemSnapshot {
+        attempts += 1
+        if (attempts == 1) {
+            error("collector socket refused the connection")
+        }
+        return snapshot
+    }
+}
+
 private class RecordingChannel(
+    override val name: String = "recording",
     private val successful: Boolean = true,
 ) : NotificationChannel {
-    override val name: String = "recording"
     val payloads = mutableListOf<NotificationPayload>()
 
     override fun deliver(payload: NotificationPayload): DeliveryResult {

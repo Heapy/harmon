@@ -1,6 +1,7 @@
 import dev.yoda.harmon.config.ConfigException
 import dev.yoda.harmon.config.ConfigLoader
 import dev.yoda.harmon.config.DEFAULT_TERMINAL_APPLICATIONS
+import dev.yoda.harmon.config.SAMPLE_SECONDS_RANGE
 import kotlin.test.Test
 import kotlin.test.assertContains
 import kotlin.test.assertEquals
@@ -68,6 +69,22 @@ class ConfigLoaderTest {
         assertEquals(1, warnings.size)
         assertContains(warnings.single(), "alertCooldownSeconds")
         assertContains(warnings.single(), "line 1")
+    }
+
+    /**
+     * `onceSampleSeconds`, `--sample-seconds` and `HarmonService.sampleOnce` share one range, so
+     * a config file cannot set a window the other two would reject.
+     */
+    @Test
+    fun rejectsASampleWindowOutsideTheSharedRange() {
+        val failure = assertFailsWith<ConfigException> {
+            ConfigLoader.parse(
+                lines = sequenceOf("onceSampleSeconds=${SAMPLE_SECONDS_RANGE.last + 1}"),
+                environment = emptyMap(),
+            )
+        }
+
+        assertContains(failure.message.orEmpty(), "onceSampleSeconds must be between")
     }
 
     @Test

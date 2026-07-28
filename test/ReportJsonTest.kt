@@ -92,41 +92,23 @@ class ReportJsonTest {
         )
     }
 
-    @Test
-    fun ranksTiedApplicationsExactlyAsASortedByDescendingSliceWould() {
-        val report = rankingReport()
-        val expected = report.usage.applications
-            .sortedByDescending { it.cpuPercent }
-            .take(report.topProcessCount)
-            .map { it.name }
-
-        val payload = Json.parseToJsonElement(ReportJson.encode(report)).jsonObject
-
-        assertEquals(
-            expected,
-            payload
-                .getValue("applications")
-                .jsonObject
-                .getValue("topCpu")
-                .jsonArray
-                .map { it.jsonObject.getValue("name").jsonPrimitive.content },
-        )
-        assertEquals(
-            listOf("alpha", "bravo"),
-            expected.take(2),
-            "the fixture has to keep a tie, otherwise the order proves nothing",
-        )
-    }
-
-    @Test
-    fun keepsEveryRankedSliceIdenticalToTheGoldenSample() {
-        assertEquals(SLICES_GOLDEN, rankedSliceSummary(ReportJson.encode(rankingReport())))
-    }
-
     /**
-     * Every ranked slice of the payload, as an ordered list of the names it selected: the shape
-     * the ranking refactor could change, without a ten-kilobyte golden blob of DTO fields.
+     * Every ranked slice at once, each pinned to the names it must select and the order it must
+     * select them in. `alpha` and `bravo` tie on CPU and on battery impact, so a selection that
+     * reorders equal metrics shows up as a swapped pair; the filtered slices drop `delta`, which
+     * has no activity at all. The expectation is written out rather than derived from the
+     * fixture: computing it with the expressions the encoder uses would make the two fail only
+     * together.
      */
+    @Test
+    fun selectsEveryRankedSliceByItsOwnMetric() {
+        assertEquals(
+            EXPECTED_RANKED_SLICES,
+            rankedSliceSummary(ReportJson.encode(rankingReport())),
+        )
+    }
+
+    /** Every ranked slice of the payload, as an ordered list of the names it selected. */
     private fun rankedSliceSummary(payload: String): String {
         val root = Json.parseToJsonElement(payload).jsonObject
         return listOf("applications", "processes").joinToString(separator = "\n") { section ->
@@ -158,11 +140,8 @@ class ReportJsonTest {
     }
 }
 
-/**
- * Every ranked slice of [rankingReport] as the payload carried it before the ranked slices became
- * shared between the text and JSON renderers.
- */
-private val SLICES_GOLDEN = """
+/** The slices [rankingReport] has to produce, one line per slice, in selection order. */
+private val EXPECTED_RANKED_SLICES = """
     applications.topCpu=alpha, bravo, echo
     applications.topMemory=charlie, echo, alpha
     applications.topBatteryImpact=alpha, bravo, echo

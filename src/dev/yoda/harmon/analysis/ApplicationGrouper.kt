@@ -9,13 +9,20 @@ import dev.yoda.harmon.model.ProcessUsage
  *
  * A process whose executable is outside an `.app` bundle inherits the bundle
  * of its nearest readable ancestor, unless that bundle is one of
- * [terminalApplications] — bundle names in lower case, an empty set meaning no
- * terminal boundaries at all. Processes without an application bundle remain
- * independent groups.
+ * [terminalApplications] — bundle names matched case-insensitively, an empty
+ * set meaning no terminal boundaries at all. Processes without an application
+ * bundle remain independent groups.
  */
 class ApplicationGrouper(
-    private val terminalApplications: Set<String> = DEFAULT_TERMINAL_APPLICATIONS,
+    terminalApplications: Set<String> = DEFAULT_TERMINAL_APPLICATIONS,
 ) {
+    /**
+     * Folded here rather than trusted from the caller: the comparison below is against a
+     * lower-cased bundle name, so a set built in code — `setOf("Ghostty")` — would otherwise
+     * match nothing at all and silently drop the terminal boundary.
+     */
+    private val terminalApplications = terminalApplications.mapTo(mutableSetOf()) { it.lowercase() }
+
     fun group(processes: List<ProcessUsage>): List<ApplicationUsage> {
         val processesByPid = processes.associateBy { it.identity.pid }
         val bundleByPid = mutableMapOf<Int, String?>()

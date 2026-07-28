@@ -145,6 +145,78 @@ class AlertAnalyzerTest {
         assertEquals(emptyList(), alerts.filter { it.key.startsWith("battery") })
     }
 
+    /**
+     * The two system-wide rules spell their hysteresis out by hand, with the alert key repeated
+     * as a literal next to the `Alert(key = …)` it has to match. Nothing but a test notices when
+     * the two drift apart.
+     */
+    @Test
+    fun holdsTheSwapAlertBetweenItsClearRatioAndItsThresholdOnlyWhileActive() {
+        val usage = systemUsage(
+            processes = emptyList(),
+            swapUsed = 980uL * 1_048_576uL,
+        )
+        val analyzer = AlertAnalyzer()
+
+        assertEquals(
+            listOf("swap"),
+            analyzer.analyze(usage, HarmonConfig(), setOf("swap")).map { it.key },
+        )
+        assertTrue(analyzer.analyze(usage, HarmonConfig()).none { it.key == "swap" })
+    }
+
+    @Test
+    fun holdsTheSwapOutAlertBetweenItsClearRatioAndItsThresholdOnlyWhileActive() {
+        val usage = systemUsage(
+            processes = emptyList(),
+            swapOutBytesPerSecond = 23.0 * 1_048_576.0,
+        )
+        val analyzer = AlertAnalyzer()
+
+        assertEquals(
+            listOf("swap-out"),
+            analyzer.analyze(usage, HarmonConfig(), setOf("swap-out")).map { it.key },
+        )
+        assertTrue(analyzer.analyze(usage, HarmonConfig()).none { it.key == "swap-out" })
+    }
+
+    @Test
+    fun gradesEveryRuleAsCriticalAtTwiceItsThreshold() {
+        val usage = systemUsage(
+            processes = listOf(
+                processUsage(
+                    name = "runaway",
+                    cpuPercent = 320.0,
+                    footprint = 5_000uL * 1_048_576uL,
+                    diskWriteBytesPerSecond = 120.0 * 1_048_576.0,
+                    impact = 260.0,
+                ),
+            ),
+            swapUsed = 4uL * 1_073_741_824uL,
+            swapOutBytesPerSecond = 60.0 * 1_048_576.0,
+            batteryPercentage = 8,
+        )
+
+        val alerts = AlertAnalyzer().analyze(usage, HarmonConfig())
+
+        assertEquals(
+            listOf(
+                "battery-impact",
+                "battery-low",
+                "cpu",
+                "disk-write",
+                "memory",
+                "swap",
+                "swap-out",
+            ),
+            alerts.map { it.key.substringBefore(':') }.sorted(),
+        )
+        assertTrue(
+            alerts.all { it.severity == Severity.CRITICAL },
+            alerts.filterNot { it.severity == Severity.CRITICAL }.toString(),
+        )
+    }
+
     @Test
     fun keepsActiveKeyThatFellOutOfTheTopSlice() {
         val usage = systemUsage(
@@ -164,6 +236,42 @@ class AlertAnalyzerTest {
         assertEquals(4, keys.size)
         assertEquals(keys.size, keys.toSet().size)
         assertTrue(demotedKey in keys)
+    }
+
+    /**
+     * The retained tail has no ceiling of its own. Capping it would drop an active key exactly
+     * when a category is busiest, and a dropped key leaves the alert state, so its next sample
+     * looks new and pushes again — the repeat the retention rule exists to prevent.
+     */
+    @Test
+    fun keepsEveryActiveKeyThatFellOutOfTheTopSliceHoweverManyThereAre() {
+        val alerting = (1..7).map { index ->
+            processUsage(pid = index, cpuPercent = 400.0 - index * 10.0)
+        }
+        val usage = systemUsage(processes = alerting)
+        val demoted = (4..7).map { pid -> "cpu:process:$pid:$pid" }.toSet()
+
+        val keys = AlertAnalyzer()
+            .analyze(usage, HarmonConfig(maxAlertsPerCategory = 3), demoted)
+            .map { it.key }
+
+        assertEquals(7, keys.size)
+        assertEquals(keys.size, keys.toSet().size)
+        assertTrue(keys.containsAll(demoted), keys.toString())
+    }
+
+    /**
+     * `ConfigLoader` rejects a negative threshold from a file, but one built in code reaches this
+     * conversion directly. Reinterpreting it as unsigned would saturate and switch the rule off
+     * without a word; folding it to zero makes the mistake fire instead of vanish.
+     */
+    @Test
+    fun treatsANegativeMemoryThresholdAsZeroRatherThanAsUnreachable() {
+        val usage = systemUsage(processes = listOf(processUsage()))
+
+        val alerts = AlertAnalyzer().analyze(usage, onlyMemoryThreshold(-1))
+
+        assertEquals(listOf("memory:process:42:42"), alerts.map { it.key })
     }
 
     @Test

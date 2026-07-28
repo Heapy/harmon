@@ -13,9 +13,9 @@ import dev.yoda.harmon.model.VirtualMemoryUsage
 
 class UsageCalculator(
     terminalApplications: Set<String> = DEFAULT_TERMINAL_APPLICATIONS,
-    private val applicationGrouper: ApplicationGrouper =
-        ApplicationGrouper(terminalApplications),
 ) {
+    private val applicationGrouper = ApplicationGrouper(terminalApplications)
+
     fun calculate(
         previous: RawSystemSnapshot,
         current: RawSystemSnapshot,

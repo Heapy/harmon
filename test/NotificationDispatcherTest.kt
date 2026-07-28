@@ -1,7 +1,9 @@
+import dev.yoda.harmon.config.NotificationConfig
 import dev.yoda.harmon.model.DeliveryResult
 import dev.yoda.harmon.model.NotificationPayload
 import dev.yoda.harmon.notify.NotificationChannel
 import dev.yoda.harmon.notify.NotificationDispatcher
+import dev.yoda.harmon.notify.SYSTEM_CHANNEL_BEST_EFFORT
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFalse
@@ -56,12 +58,77 @@ class NotificationDispatcherTest {
         assertFalse(dispatcher.decisiveSuccess(dispatcher.deliver(fakePayload())))
     }
 
+    /**
+     * The system channel cannot be built here — it is internal and constructing it boots AppKit —
+     * so the flag it overrides is asserted directly, and then the behaviour that depends on it.
+     * Without this the override could be deleted with a fully green suite.
+     */
     @Test
-    fun emptyDispatcherIsNotTreatedAsAFailedDelivery() {
-        val dispatcher = NotificationDispatcher(emptyList())
+    fun theSystemChannelIsBestEffortAndCannotConfirmADelivery() {
+        val dispatcher = NotificationDispatcher(
+            listOf(
+                fakeChannel("system", successful = true, bestEffort = SYSTEM_CHANNEL_BEST_EFFORT),
+                fakeChannel("webhook", successful = false),
+            ),
+        )
+
+        assertTrue(SYSTEM_CHANNEL_BEST_EFFORT)
+        assertFalse(dispatcher.decisiveSuccess(dispatcher.deliver(fakePayload())))
+    }
+
+    /** A results list this dispatcher did not produce must not index past its channels. */
+    @Test
+    fun aResultWithoutAChannelIsTreatedAsDecisiveRatherThanIndexedBlindly() {
+        val dispatcher = NotificationDispatcher(
+            listOf(fakeChannel("system", successful = true, bestEffort = true)),
+        )
+        val strayResults = dispatcher.deliver(fakePayload()) +
+            DeliveryResult(channel = "stray", successful = false, detail = "not ours")
+
+        assertFalse(dispatcher.decisiveSuccess(strayResults))
+    }
+
+    @Test
+    fun buildsNoChannelWhenNothingIsConfigured() {
+        val dispatcher = NotificationDispatcher.from(
+            NotificationConfig(systemEnabled = false),
+        )
 
         assertTrue(dispatcher.isEmpty)
-        assertTrue(dispatcher.decisiveSuccess(dispatcher.deliver(fakePayload())))
+    }
+
+    @Test
+    fun buildsAWebhookChannelFromAUrlAlone() {
+        val dispatcher = NotificationDispatcher.from(
+            NotificationConfig(
+                systemEnabled = false,
+                webhookUrl = "https://example.invalid/hook",
+            ),
+        )
+
+        assertFalse(dispatcher.isEmpty)
+    }
+
+    /** Telegram needs both halves; half a configuration must not produce a channel. */
+    @Test
+    fun buildsATelegramChannelOnlyWhenBothTokenAndChatIdAreSet() {
+        val tokenOnly = NotificationDispatcher.from(
+            NotificationConfig(systemEnabled = false, telegramBotToken = "token"),
+        )
+        val chatOnly = NotificationDispatcher.from(
+            NotificationConfig(systemEnabled = false, telegramChatId = "chat"),
+        )
+        val both = NotificationDispatcher.from(
+            NotificationConfig(
+                systemEnabled = false,
+                telegramBotToken = "token",
+                telegramChatId = "chat",
+            ),
+        )
+
+        assertTrue(tokenOnly.isEmpty)
+        assertTrue(chatOnly.isEmpty)
+        assertFalse(both.isEmpty)
     }
 
     @Test

@@ -1,7 +1,8 @@
 import dev.yoda.harmon.ipc.AcceptDecision
 import dev.yoda.harmon.ipc.CONSECUTIVE_ACCEPT_FAILURE_LIMIT
 import dev.yoda.harmon.ipc.UNAUTHORIZED_CLIENT
-import dev.yoda.harmon.ipc.classifyAccept
+import dev.yoda.harmon.ipc.acceptDecision
+import dev.yoda.harmon.ipc.consecutiveFailuresAfter
 import kotlin.test.Test
 import kotlin.test.assertEquals
 
@@ -10,26 +11,26 @@ private const val ACCEPT_FAILED = -1
 class CollectorAcceptOutcomeTest {
     @Test
     fun servesAnAcceptedDescriptorAndForgetsEarlierFailures() {
-        val outcome = classifyAccept(result = 7, consecutiveFailures = 3)
+        val failures = consecutiveFailuresAfter(result = 7, consecutiveFailures = 3)
 
-        assertEquals(AcceptDecision.SERVE, outcome.decision)
-        assertEquals(0, outcome.consecutiveFailures)
+        assertEquals(0, failures)
+        assertEquals(AcceptDecision.SERVE, acceptDecision(result = 7, consecutiveFailures = 0))
     }
 
     @Test
     fun rejectsAnUnauthorizedPeerWithoutCountingItAsAFailure() {
-        val outcome = classifyAccept(UNAUTHORIZED_CLIENT, consecutiveFailures = 2)
+        val failures = consecutiveFailuresAfter(UNAUTHORIZED_CLIENT, consecutiveFailures = 2)
 
-        assertEquals(AcceptDecision.REJECT, outcome.decision)
-        assertEquals(2, outcome.consecutiveFailures)
+        assertEquals(2, failures)
+        assertEquals(AcceptDecision.REJECT, acceptDecision(UNAUTHORIZED_CLIENT, failures))
     }
 
     @Test
     fun retriesAFailedAcceptAndCountsIt() {
-        val outcome = classifyAccept(ACCEPT_FAILED, consecutiveFailures = 0)
+        val failures = consecutiveFailuresAfter(ACCEPT_FAILED, consecutiveFailures = 0)
 
-        assertEquals(AcceptDecision.RETRY, outcome.decision)
-        assertEquals(1, outcome.consecutiveFailures)
+        assertEquals(1, failures)
+        assertEquals(AcceptDecision.RETRY, acceptDecision(ACCEPT_FAILED, failures))
     }
 
     @Test
@@ -37,9 +38,8 @@ class CollectorAcceptOutcomeTest {
         var failures = 0
 
         repeat(CONSECUTIVE_ACCEPT_FAILURE_LIMIT * 10) {
-            val outcome = classifyAccept(UNAUTHORIZED_CLIENT, failures)
-            failures = outcome.consecutiveFailures
-            assertEquals(AcceptDecision.REJECT, outcome.decision)
+            failures = consecutiveFailuresAfter(UNAUTHORIZED_CLIENT, failures)
+            assertEquals(AcceptDecision.REJECT, acceptDecision(UNAUTHORIZED_CLIENT, failures))
         }
 
         assertEquals(0, failures)
@@ -50,27 +50,26 @@ class CollectorAcceptOutcomeTest {
         var failures = 0
 
         repeat(CONSECUTIVE_ACCEPT_FAILURE_LIMIT - 1) {
-            val outcome = classifyAccept(ACCEPT_FAILED, failures)
-            failures = outcome.consecutiveFailures
-            assertEquals(AcceptDecision.RETRY, outcome.decision)
+            failures = consecutiveFailuresAfter(ACCEPT_FAILED, failures)
+            assertEquals(AcceptDecision.RETRY, acceptDecision(ACCEPT_FAILED, failures))
         }
-        val fatal = classifyAccept(ACCEPT_FAILED, failures)
+        failures = consecutiveFailuresAfter(ACCEPT_FAILED, failures)
 
-        assertEquals(AcceptDecision.FATAL, fatal.decision)
-        assertEquals(CONSECUTIVE_ACCEPT_FAILURE_LIMIT, fatal.consecutiveFailures)
+        assertEquals(CONSECUTIVE_ACCEPT_FAILURE_LIMIT, failures)
+        assertEquals(AcceptDecision.FATAL, acceptDecision(ACCEPT_FAILED, failures))
     }
 
     @Test
     fun oneServedClientBuysTheWholeFailureBudgetBack() {
         var failures = 0
         repeat(CONSECUTIVE_ACCEPT_FAILURE_LIMIT - 1) {
-            failures = classifyAccept(ACCEPT_FAILED, failures).consecutiveFailures
+            failures = consecutiveFailuresAfter(ACCEPT_FAILED, failures)
         }
 
-        failures = classifyAccept(result = 9, consecutiveFailures = failures).consecutiveFailures
-        val afterServing = classifyAccept(ACCEPT_FAILED, failures)
+        failures = consecutiveFailuresAfter(result = 9, consecutiveFailures = failures)
+        failures = consecutiveFailuresAfter(ACCEPT_FAILED, failures)
 
-        assertEquals(0, failures)
-        assertEquals(AcceptDecision.RETRY, afterServing.decision)
+        assertEquals(1, failures)
+        assertEquals(AcceptDecision.RETRY, acceptDecision(ACCEPT_FAILED, failures))
     }
 }

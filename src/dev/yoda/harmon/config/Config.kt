@@ -131,13 +131,10 @@ object ConfigLoader {
     )
 
     /**
-     * Keys that no longer do anything but must not fail an existing config file on agent start.
-     * They are reported once and dropped.
+     * The one retired key. It no longer does anything, but it must not fail an existing config
+     * file on agent start, so it is reported once and dropped.
      */
-    private val deprecatedKeys = mapOf(
-        "alertCooldownSeconds" to
-            "alerts now fire when a threshold is crossed, so repeats are not timed",
-    )
+    private const val DEPRECATED_COOLDOWN_KEY = "alertCooldownSeconds"
 
     private val knownKeys = setOf(
         "intervalSeconds",
@@ -191,9 +188,10 @@ object ConfigLoader {
 
             val key = line.substring(0, separator).trim()
             val value = line.substring(separator + 1).trim()
-            deprecatedKeys[key]?.let { reason ->
+            if (key == DEPRECATED_COOLDOWN_KEY) {
                 warn(
-                    "Ignoring deprecated config key '$key' on line ${index + 1}: $reason",
+                    "Ignoring deprecated config key '$key' on line ${index + 1}: alerts now " +
+                        "fire when a threshold is crossed, so repeats are not timed",
                 )
                 return@forEachIndexed
             }

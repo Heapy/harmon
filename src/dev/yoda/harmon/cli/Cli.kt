@@ -32,9 +32,10 @@ object HarmonApplication {
             is Command.Once -> withConfig(command.configPath) { config ->
                 val service = HarmonService(config)
                 val report = service.sampleOnce(command.sampleSeconds ?: config.onceSampleSeconds)
-                println(ReportFormatter.text(report))
+                val reportText = ReportFormatter.text(report)
+                println(reportText)
                 if (command.notify) {
-                    val results = service.deliver(report)
+                    val results = service.deliver(report, reportText)
                     printDeliveryResults(results)
                     if (results.any { !it.successful }) {
                         exitProcess(1)
@@ -236,6 +237,9 @@ object CliParser {
           harmon test-notifications [--config PATH]
           harmon --help
           harmon --version
+
+        --sample-seconds N is the window a single sample measures over, and
+        takes ${SAMPLE_SECONDS_RANGE.first} to ${SAMPLE_SECONDS_RANGE.last} seconds.
 
         launchd runs `collector` as root and `run` as the logged-in user. With
         no command, Harmon starts the user agent. If --config is omitted and

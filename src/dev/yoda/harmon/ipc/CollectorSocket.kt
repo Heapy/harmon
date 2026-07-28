@@ -14,6 +14,7 @@ import dev.yoda.harmon.nativebridge.hm_sleep_millis
 import dev.yoda.harmon.nativebridge.hm_unix_accept
 import dev.yoda.harmon.nativebridge.hm_unix_connect
 import dev.yoda.harmon.nativebridge.hm_unix_server_open
+import dev.yoda.harmon.util.failureDescription
 import dev.yoda.harmon.util.printError
 import kotlinx.cinterop.ExperimentalForeignApi
 import kotlinx.cinterop.UIntVar
@@ -33,7 +34,7 @@ const val UNAUTHORIZED_CLIENT = -2
 const val CONSECUTIVE_ACCEPT_FAILURE_LIMIT = 16
 
 /** Pause after a failed `accept`, so a permanently broken listener cannot spin the CPU. */
-const val ACCEPT_FAILURE_PAUSE_MILLISECONDS = 100uL
+private const val ACCEPT_FAILURE_PAUSE_MILLISECONDS = 100uL
 
 /** What the collector loop should do with the outcome of a single `accept` call. */
 enum class AcceptDecision {
@@ -50,29 +51,34 @@ enum class AcceptDecision {
     FATAL,
 }
 
-data class AcceptOutcome(
-    val decision: AcceptDecision,
-    val consecutiveFailures: Int,
-)
+/**
+ * Decides what an `hm_unix_accept` [result] means for a collector that has now seen
+ * [consecutiveFailures] failed accepts in a row, the current one included.
+ *
+ * A rejected peer is a normal event and does not count as a failure, so an unprivileged user
+ * cannot bring the daemon down by connecting in a loop. Only genuine `accept` errors count, and
+ * only [CONSECUTIVE_ACCEPT_FAILURE_LIMIT] of them in a row — a transient one must not kill a root
+ * daemon.
+ *
+ * Pure on purpose: no socket, no logging, no sleeping. The caller does those, and keeps the
+ * counter itself, which is what keeps the policy testable without a listening socket.
+ */
+fun acceptDecision(result: Int, consecutiveFailures: Int): AcceptDecision = when {
+    result >= 0 -> AcceptDecision.SERVE
+    result == UNAUTHORIZED_CLIENT -> AcceptDecision.REJECT
+    consecutiveFailures >= CONSECUTIVE_ACCEPT_FAILURE_LIMIT -> AcceptDecision.FATAL
+    else -> AcceptDecision.RETRY
+}
 
 /**
- * Decides what an `hm_unix_accept` [result] means for a collector that has already seen
- * [consecutiveFailures] failed accepts in a row, and how many failures stand after it.
- *
- * A rejected peer is a normal event and leaves the failure count untouched, so an unprivileged
- * user cannot bring the daemon down by connecting in a loop. Only genuine `accept` errors count,
- * and only [CONSECUTIVE_ACCEPT_FAILURE_LIMIT] of them in a row — a transient one must not kill a
- * root daemon.
- *
- * Pure on purpose: no socket, no logging, no sleeping. The caller does those, which is what keeps
- * the policy testable without a listening socket.
+ * The consecutive-failure count a collector that stood at [consecutiveFailures] carries after an
+ * `hm_unix_accept` returning [result]: a served client clears it, a rejected peer leaves it, and
+ * only a genuine error raises it.
  */
-fun classifyAccept(result: Int, consecutiveFailures: Int): AcceptOutcome = when {
-    result >= 0 -> AcceptOutcome(AcceptDecision.SERVE, consecutiveFailures = 0)
-    result == UNAUTHORIZED_CLIENT -> AcceptOutcome(AcceptDecision.REJECT, consecutiveFailures)
-    consecutiveFailures + 1 >= CONSECUTIVE_ACCEPT_FAILURE_LIMIT ->
-        AcceptOutcome(AcceptDecision.FATAL, consecutiveFailures + 1)
-    else -> AcceptOutcome(AcceptDecision.RETRY, consecutiveFailures + 1)
+fun consecutiveFailuresAfter(result: Int, consecutiveFailures: Int): Int = when {
+    result >= 0 -> 0
+    result == UNAUTHORIZED_CLIENT -> consecutiveFailures
+    else -> consecutiveFailures + 1
 }
 
 class CollectorClient(
@@ -135,9 +141,11 @@ class CollectorServer(
             var consecutiveFailures = 0
             while (true) {
                 val attempt = acceptClient(serverDescriptor)
-                val outcome = classifyAccept(attempt.result, consecutiveFailures)
-                consecutiveFailures = outcome.consecutiveFailures
-                when (outcome.decision) {
+                consecutiveFailures = consecutiveFailuresAfter(
+                    attempt.result,
+                    consecutiveFailures,
+                )
+                when (acceptDecision(attempt.result, consecutiveFailures)) {
                     AcceptDecision.SERVE -> serveClient(attempt.result)
                     AcceptDecision.REJECT -> logError(
                         "${Clock.System.now()} rejected collector client UID=" +
@@ -176,7 +184,7 @@ class CollectorServer(
         } catch (failure: Throwable) {
             logError(
                 "${Clock.System.now()} collector request failed: " +
-                    (failure.message ?: failure::class.simpleName),
+                    failureDescription(failure),
             )
         } finally {
             hm_close_descriptor(clientDescriptor)
