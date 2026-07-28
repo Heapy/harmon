@@ -49,6 +49,15 @@ extern "C" {
 #define HM_ATTRIBUTION_TAIL_REGION_SHARE 128
 #define HM_ATTRIBUTION_TAIL_BUDGET_DIVISOR 4
 #define HM_MAX_JSON_FRAME_SIZE (32U * 1024U * 1024U)
+/*
+ * Sizing of the intermediate PID list in hm_list_processes. Mirrors PROCESS_CAPACITY_HEADROOM
+ * and MIN_PROCESS_CAPACITY in DarwinSystemCollector.kt: the caller reserves its sample slots
+ * with the same headroom, so this list is never the narrower of the two. HM_MAX_PROCESS_LIST is
+ * an absolute guard against a byte size that would overflow the int proc_listallpids takes.
+ */
+#define HM_PROCESS_LIST_HEADROOM 256
+#define HM_MIN_PROCESS_LIST 512
+#define HM_MAX_PROCESS_LIST (1 << 20)
 
 typedef struct {
     int32_t pid;
@@ -751,17 +760,25 @@ static inline int hm_list_processes(
     }
 
     /*
-     * `pid_count` is the caller's own proc_listallpids(NULL, 0), the very count it sized
-     * `output_capacity` from. Counting again here would open a window between the two reads
-     * in which the kernel lists more PIDs than the caller reserved slots for, and the excess
-     * would be reported as a capacity limit rather than as the race it is. A non-positive
-     * count means the caller could not read one, so it is read here instead.
+     * The PID list is sized from a fresh count plus the same headroom the caller reserved for
+     * `output_capacity` (HM_PROCESS_LIST_HEADROOM / HM_MIN_PROCESS_LIST mirror the Kotlin
+     * constants). proc_listallpids reports only what it copied once the buffer is full, so a
+     * list narrower than the caller's arrays would drop the processes started in the race
+     * window silently — out of the sample and out of `total_processes` alike — instead of
+     * reporting them as the capacity limit the caller can see. `pid_count` is the caller's own
+     * count and serves as a floor: it covers a fresh count that failed and one that shrank.
      */
-    int capacity = pid_count > 0 ? pid_count : proc_listallpids(NULL, 0);
+    int counted = proc_listallpids(NULL, 0);
+    int capacity = counted > pid_count ? counted : pid_count;
     if (capacity <= 0) {
         return -1;
     }
-    capacity += 128;
+    capacity = capacity > HM_MAX_PROCESS_LIST - HM_PROCESS_LIST_HEADROOM
+        ? HM_MAX_PROCESS_LIST
+        : capacity + HM_PROCESS_LIST_HEADROOM;
+    if (capacity < HM_MIN_PROCESS_LIST) {
+        capacity = HM_MIN_PROCESS_LIST;
+    }
 
     pid_t *pids = (pid_t *)calloc((size_t)capacity, sizeof(pid_t));
     if (pids == NULL) {

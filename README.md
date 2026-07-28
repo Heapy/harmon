@@ -262,15 +262,19 @@ drop the alert while the battery is still low.
 
 A key counts as pushed only once a channel confirmed it. Notification Center is
 best-effort — macOS gives the launchd agent no synchronous delivery
-confirmation — so its success does not settle an alert, though a failure it does
-report, such as being unable to write the HTML report, still counts. A sample
-whose webhook and Telegram calls both failed is retried on the next sample
-instead of being silently dropped. An alert whose condition still holds is never
-given up on, but after three consecutive failed deliveries its retries widen
-from two samples up to thirty-two, so a permanently broken channel cannot turn
-Notification Center into an endless banner loop. Any confirmed delivery clears
-that backoff at once. Alert state lives in the agent process and resets when it
-restarts.
+confirmation — so its optimistic success is discounted whenever a decisive
+channel, a webhook or Telegram, is configured: then only that channel settles an
+alert. With Notification Center as the only channel there is nothing to discount
+it against, so its success does settle the alert; otherwise such an install
+could never settle anything. A failure it does report, such as being unable to
+write the HTML report, is an observation either way and keeps the alert
+pushable. A sample whose webhook and Telegram calls both failed is retried on
+the next sample instead of being silently dropped. An alert whose condition
+still holds is never given up on, but after three consecutive failed deliveries
+its retries widen from two samples up to thirty-two, so a permanently broken
+channel cannot turn Notification Center into an endless banner loop. Any
+confirmed delivery clears that backoff at once. Alert state lives in the agent
+process and resets when it restarts.
 
 The push text names only the alerts that fired on this sample. The attached HTML
 report and the JSON webhook payload both carry the sample's whole reported alert

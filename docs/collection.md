@@ -440,11 +440,15 @@ into an endless banner loop, and a channel that comes back finds the alert
 waiting. Any confirmed delivery clears every deferral at once, because one
 channel answering again is evidence the outage is over.
 
-Notification Center does not count towards that success: macOS returns no
-synchronous confirmation to a launchd agent, so the channel is treated as
-best-effort. Only its optimistic success is discounted — if it reports an
-outright failure, such as being unable to write the HTML report, that failure
-counts and the alert stays pushable. Alert state resets with the agent.
+Notification Center is treated as best-effort: macOS returns no synchronous
+confirmation to a launchd agent. Its optimistic success is discounted only
+against a decisive channel — with a webhook or Telegram configured, only that
+channel's result settles the alert. An install whose one channel is Notification
+Center has nothing to discount it against, so there its optimistic success does
+settle the alert; the alternative is an install that can never settle anything.
+An outright failure the channel reports, such as being unable to write the HTML
+report, is an observation either way: it counts, and the alert stays pushable.
+Alert state resets with the agent.
 
 Only the push text is narrowed that way. The HTML report attached to a system
 notification and the JSON webhook payload both carry the sample's whole reported

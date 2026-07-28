@@ -59,6 +59,11 @@ const val PROCESS_CAPACITY_HEADROOM = 256
  * the listing call, and [MIN_PROCESS_CAPACITY] keeps a small machine from tracking its PID count
  * so tightly that an ordinary burst of short-lived processes exhausts it. A non-positive [count]
  * means the kernel refused to answer, so the full [capacity] is reserved as before.
+ *
+ * `hm_list_processes` sizes its own intermediate PID list with the same headroom and minimum
+ * (`HM_PROCESS_LIST_HEADROOM`, `HM_MIN_PROCESS_LIST`), so that list is never the narrower of the
+ * two: processes beyond what these arrays hold are reported as capacity issues rather than
+ * vanishing from a truncated listing.
  */
 fun processCapacityFor(count: Int, capacity: Int): Int {
     if (count <= 0) {

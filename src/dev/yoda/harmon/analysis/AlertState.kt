@@ -3,10 +3,10 @@ package dev.yoda.harmon.analysis
 import dev.yoda.harmon.model.Alert
 
 /**
- * How many consecutive failed deliveries a key is retried on every sample before its retries start
- * backing off. Notification Center coalesces nothing, so a permanently broken decisive channel —
- * a typo'd webhook URL, a revoked bot token — would otherwise mean a fresh banner every interval
- * forever.
+ * The consecutive-failure count at which a key's retries start backing off: every failure below it
+ * is retried on the very next sample; this one and each later one is deferred. Notification Center
+ * coalesces nothing, so a permanently broken decisive channel — a typo'd webhook URL, a revoked
+ * bot token — would otherwise mean a fresh banner every interval forever.
  */
 const val DELIVERY_RETRY_THRESHOLD = 3
 
@@ -17,10 +17,11 @@ const val MAX_DELIVERY_RETRY_SAMPLES = 32L
  * How many samples a key whose delivery failed [consecutiveFailures] times in a row waits before it
  * is pushed again.
  *
- * The first [DELIVERY_RETRY_THRESHOLD] failures retry immediately — a webhook that is down for
- * one interval must not delay the alert at all — and the gap then doubles up to
- * [MAX_DELIVERY_RETRY_SAMPLES]. It never becomes infinite: an alert whose condition still holds is
- * always pushed again eventually, so a channel that comes back finds the alert waiting.
+ * Every failure below [DELIVERY_RETRY_THRESHOLD] retries immediately — a webhook that is down for
+ * one interval must not delay the alert at all. The [DELIVERY_RETRY_THRESHOLD]th defers the retry
+ * by two samples, and the gap doubles from there up to [MAX_DELIVERY_RETRY_SAMPLES]. It never
+ * becomes infinite: an alert whose condition still holds is always pushed again eventually, so a
+ * channel that comes back finds the alert waiting.
  */
 fun deliveryRetryDelaySamples(consecutiveFailures: Int): Long {
     if (consecutiveFailures < DELIVERY_RETRY_THRESHOLD) {
