@@ -66,17 +66,24 @@ class NotificationDispatcher(
 
     /**
      * Results come from [deliver], so their order matches [channels] and best-effort channels can
-     * be excluded by index. With no decisive channel configured the delivery counts as successful.
+     * be recognised by index.
+     *
+     * Only the *optimistic* success of a best-effort channel is discounted. A best-effort channel
+     * that reported an outright failure — the system channel cannot write its HTML report on a
+     * full disk or a read-only home — observed something, and that observation counts: with
+     * Notification Center as the only configured channel, such a failure has to keep the alert
+     * pushable instead of settling it as delivered. With every configured channel silent about the
+     * outcome the delivery counts as successful, because nothing contradicts it.
      *
      * A result without a matching channel — a list this dispatcher did not produce — is treated
      * as decisive rather than indexed blindly, so a caller's mistake cannot be read as a silent
      * success.
      */
     fun decisiveSuccess(results: List<DeliveryResult>): Boolean {
-        val decisive = results.filterIndexed { index, _ ->
-            channels.getOrNull(index)?.bestEffort != true
+        val observed = results.filterIndexed { index, result ->
+            channels.getOrNull(index)?.bestEffort != true || !result.successful
         }
-        return decisive.isEmpty() || decisive.any { it.successful }
+        return observed.isEmpty() || observed.any { it.successful }
     }
 
     val isEmpty: Boolean

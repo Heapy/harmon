@@ -1,4 +1,3 @@
-import dev.yoda.harmon.analysis.MAX_DELIVERY_ATTEMPTS
 import dev.yoda.harmon.config.HarmonConfig
 import dev.yoda.harmon.config.NotificationConfig
 import dev.yoda.harmon.config.SAMPLE_SECONDS_RANGE
@@ -61,10 +60,11 @@ class HarmonServiceAlertFlowTest {
     /**
      * A channel that can never succeed — a typo'd webhook URL, a revoked token — must not turn
      * Notification Center into an endless banner loop. Each push carries a fresh identifier, so
-     * nothing coalesces them: the retries have to be bounded here instead.
+     * nothing coalesces them: the retries widen instead. The alert is never given up on, because
+     * its condition still holds.
      */
     @Test
-    fun stopsRePushingAnAlertWhoseDeliveryNeverSucceeds() {
+    fun spreadsOutRetriesOfAnAlertWhoseDeliveryNeverSucceeds() {
         val channel = RecordingChannel(successful = false)
         val errors = mutableListOf<String>()
         val service = HarmonService(
@@ -75,7 +75,7 @@ class HarmonServiceAlertFlowTest {
             logError = { errors += it },
         )
 
-        repeat(MAX_DELIVERY_ATTEMPTS + 3) { index ->
+        repeat(12) { index ->
             val started = index.toULong()
             service.handleSample(
                 snapshot(started, ALERTING_FOOTPRINT),
@@ -83,8 +83,8 @@ class HarmonServiceAlertFlowTest {
             )
         }
 
-        assertEquals(MAX_DELIVERY_ATTEMPTS, channel.payloads.size)
-        assertTrue(errors.any { "giving up on alert" in it }, errors.toString())
+        assertEquals(5, channel.payloads.size)
+        assertTrue(errors.any { "retrying it in" in it }, errors.toString())
     }
 
     @Test

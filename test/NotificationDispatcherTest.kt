@@ -34,6 +34,36 @@ class NotificationDispatcherTest {
         assertTrue(dispatcher.decisiveSuccess(dispatcher.deliver(fakePayload())))
     }
 
+    /**
+     * The default configuration has Notification Center and nothing else. Its optimistic success
+     * is discounted, but an outright failure — `HtmlReportStore.write` on a full disk or a
+     * read-only home — is something it did observe, and it must keep the alert pushable instead of
+     * settling it as delivered.
+     */
+    @Test
+    fun aBestEffortChannelFailingOnItsOwnIsAFailedDelivery() {
+        val dispatcher = NotificationDispatcher(
+            listOf(fakeChannel("system", successful = false, bestEffort = true)),
+        )
+
+        assertFalse(dispatcher.decisiveSuccess(dispatcher.deliver(fakePayload())))
+    }
+
+    @Test
+    fun aThrowingBestEffortChannelAloneIsAFailedDelivery() {
+        val dispatcher = NotificationDispatcher(
+            listOf(
+                fakeChannel(
+                    "system",
+                    bestEffort = true,
+                    failure = IllegalStateException("read-only file system"),
+                ),
+            ),
+        )
+
+        assertFalse(dispatcher.decisiveSuccess(dispatcher.deliver(fakePayload())))
+    }
+
     @Test
     fun oneSucceedingDecisiveChannelIsEnough() {
         val dispatcher = NotificationDispatcher(

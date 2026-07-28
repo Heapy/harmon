@@ -122,10 +122,15 @@ intended only for a socket under `/tmp` and does not improve process access.
 - An exception raised while handling a sample is logged and the loop continues.
   The baseline advances to the newer snapshot first, so one bad pair of
   snapshots is not replayed against every following capture.
-- An alert key is recorded as pushed only after a decisive channel confirms
-  delivery. Notification Center is best-effort and does not confirm, so a sample
-  whose webhook and Telegram calls both failed pushes the same alerts again on
-  the next sample. Alert state is in-memory and resets with the agent.
+- An alert key is recorded as pushed only after a channel confirms delivery.
+  Notification Center is best-effort and does not confirm a success, though a
+  failure it reports still counts, so a sample whose webhook and Telegram calls
+  both failed pushes the same alerts again on the next sample. A still-firing
+  alert is never dropped; after three consecutive failed deliveries its retries
+  widen from two samples up to thirty-two, and any confirmed delivery clears
+  that backoff. Alert state is in-memory and resets with the agent.
+- Reports carry at most `maxAlertsPerCategory` alerts per rule, while the alert
+  state keeps every firing key, including the ones no report had room for.
 - Notifications never run in the collector and cannot terminate it.
 - Before a system notification is posted, the agent atomically replaces the
   private `Reports/latest.html` file. The notification carries only that local

@@ -46,6 +46,8 @@ extern "C" {
 #define HM_PROCESS_ISSUE_CAPACITY 2
 #define HM_ATTRIBUTION_REGION_LIMIT 8192
 #define HM_ATTRIBUTION_MIN_REGION_SHARE 64
+#define HM_ATTRIBUTION_TAIL_REGION_SHARE 128
+#define HM_ATTRIBUTION_TAIL_BUDGET_DIVISOR 4
 #define HM_MAX_JSON_FRAME_SIZE (32U * 1024U * 1024U)
 
 typedef struct {
@@ -548,10 +550,19 @@ static inline int hm_count_processes(void) {
  * -1 when the process could not be read at all. Only a 0 result may be reported
  * as a measured value.
  *
- * A short proc_pidinfo result ends the walk cleanly only when errno is ESRCH,
- * which is how libproc reports that no region exists at or above `address`. Any
- * other errno is a genuine mid-walk failure, so the partial sum keeps the
- * undercount result: an undercount must never look measured.
+ * A short proc_pidinfo result ends the walk cleanly only when errno is EINVAL,
+ * which is how libproc reports that no region exists at or above `address`:
+ * PROC_PIDREGIONINFO fails with EINVAL once fill_procregioninfo finds
+ * nothing to describe. ESRCH means the opposite — proc_find could not
+ * resolve the pid, so the process exited mid-walk — and every other errno
+ * is a genuine mid-walk failure. All of them keep the undercount result: an
+ * undercount, and the partial sum of a process that vanished, must never
+ * look measured.
+ *
+ * Verified on this machine with a standalone probe: walking self and a foreign
+ * process to the top of the address space both end with result=0 errno=22
+ * (EINVAL), while probing a pid that does not exist gives result=0 errno=3
+ * (ESRCH).
  */
 static inline int hm_read_compressed_or_paged_out(
     pid_t pid,
@@ -589,7 +600,7 @@ static inline int hm_read_compressed_or_paged_out(
             if (regions == 0) {
                 return -1;
             }
-            if (errno == ESRCH) {
+            if (errno == EINVAL) {
                 complete = 1;
             }
             break;
@@ -636,6 +647,31 @@ static inline int hm_compare_process_candidates(const void *left, const void *ri
         return -1;
     }
     return left_candidate->index - right_candidate->index;
+}
+
+/**
+ * Marks `sample` as attempted, walks up to `region_limit` of its VM regions,
+ * and returns how many proc_pidinfo calls the walk cost so the caller can
+ * charge them against its budget. Only a walk that reached the end of the
+ * address space sets `compressed_attribution_available`.
+ */
+static inline int hm_attribute_candidate(
+    HMProcessSample *sample,
+    int region_limit
+) {
+    sample->compressed_attribution_attempted = 1;
+    int consumed = 0;
+    int status = hm_read_compressed_or_paged_out(
+        sample->pid,
+        region_limit,
+        &sample->compressed_or_paged_out_bytes,
+        &sample->virtual_memory_region_count,
+        &consumed
+    );
+    if (status == 0) {
+        sample->compressed_attribution_available = 1;
+    }
+    return consumed;
 }
 
 static inline void hm_read_process_metadata(
@@ -903,21 +939,56 @@ static inline int hm_list_processes(
                 ? attribution_process_limit
                 : written;
             /*
-             * The region budget is shared, not first-come. Each candidate gets
-             * an equal split of what is still left, capped by the per-process
-             * limit, so a few large processes at the head of the descending
-             * footprint order cannot starve the tail. An unspent share stays
-             * available to later candidates because the budget only drops by
-             * what a walk actually consumed.
+             * The budget is split between a head pass and a tail pass instead
+             * of being handed out first-come or in equal shares. Neither pure
+             * policy works: first-come lets a handful of browsers consume
+             * everything and skips the rest of the list, while an equal split
+             * gives every candidate the same small share, which is below what
+             * any large process needs — so the very processes the descending
+             * footprint order exists to measure are the only ones that never
+             * complete, and their partial sums are discarded.
              *
-             * A share below HM_ATTRIBUTION_MIN_REGION_SHARE buys nothing but a
-             * truncated walk, so it is raised to that minimum while the budget
-             * still affords one and the loop stops once it does not. A skipped
+             * The head pass walks candidates in descending footprint order with
+             * the full per-process limit, spending everything except a tail
+             * reserve. The tail pass then splits what is left equally over the
+             * candidates the head never reached, so the small processes at the
+             * end of the list still get measured. The reserve is
+             * HM_ATTRIBUTION_TAIL_REGION_SHARE per candidate, never more than
+             * 1/HM_ATTRIBUTION_TAIL_BUDGET_DIVISOR of the budget, because the
+             * head is what the compressed-memory ranking is made of and must
+             * not be squeezed to fund coverage of the tail.
+             *
+             * Both passes charge only what a walk actually consumed, so an
+             * unspent share stays available. A share below
+             * HM_ATTRIBUTION_MIN_REGION_SHARE buys nothing but a truncated
+             * walk, so it is raised to that minimum while the budget still
+             * affords one and the pass stops once it does not. A skipped
              * candidate is left unattempted rather than marked attempted and
              * counted as a failure: an unreachable process stays uncounted.
              */
+            int tail_reserve =
+                attribution_region_budget / HM_ATTRIBUTION_TAIL_BUDGET_DIVISOR;
+            if (attempts < tail_reserve / HM_ATTRIBUTION_TAIL_REGION_SHARE) {
+                tail_reserve = attempts * HM_ATTRIBUTION_TAIL_REGION_SHARE;
+            }
             int remaining_budget = attribution_region_budget;
-            for (int candidate_index = 0;
+            int head_budget = remaining_budget - tail_reserve;
+            int candidate_index = 0;
+            for (;
+                 candidate_index < attempts &&
+                 head_budget >= HM_ATTRIBUTION_MIN_REGION_SHARE;
+                 ++candidate_index) {
+                int region_limit = head_budget < HM_ATTRIBUTION_REGION_LIMIT
+                    ? head_budget
+                    : HM_ATTRIBUTION_REGION_LIMIT;
+                int consumed = hm_attribute_candidate(
+                    &output[candidates[candidate_index].index],
+                    region_limit
+                );
+                head_budget -= consumed;
+                remaining_budget -= consumed;
+            }
+            for (;
                  candidate_index < attempts && remaining_budget > 0;
                  ++candidate_index) {
                 int remaining_candidates = attempts - candidate_index;
@@ -931,20 +1002,10 @@ static inline int hm_list_processes(
                     }
                     region_limit = HM_ATTRIBUTION_MIN_REGION_SHARE;
                 }
-                HMProcessSample *sample = &output[candidates[candidate_index].index];
-                sample->compressed_attribution_attempted = 1;
-                int consumed = 0;
-                int status = hm_read_compressed_or_paged_out(
-                    sample->pid,
-                    region_limit,
-                    &sample->compressed_or_paged_out_bytes,
-                    &sample->virtual_memory_region_count,
-                    &consumed
+                remaining_budget -= hm_attribute_candidate(
+                    &output[candidates[candidate_index].index],
+                    region_limit
                 );
-                remaining_budget -= consumed;
-                if (status == 0) {
-                    sample->compressed_attribution_available = 1;
-                }
             }
             free(candidates);
         }

@@ -168,15 +168,33 @@ region attribution for the largest 256. Two limits bound the work:
 - a per-process limit of 8,192 regions (`HM_ATTRIBUTION_REGION_LIMIT`);
 - a sample-wide budget of 100,000 regions shared by all attempted processes.
 
-The budget is shared, not first-come. Candidates are visited in descending
-physical-footprint order and each one is given an equal split of whatever is
-left of the budget, capped by the per-process limit, so a few large processes
-can no longer starve the tail of the candidate list. A walk spends only the
-regions it actually read, so an unspent share stays available to later
-candidates. A share below `HM_ATTRIBUTION_MIN_REGION_SHARE` (64 regions) buys
-nothing but a truncated walk, so it is raised to that minimum while the budget
-still affords one and the loop stops once it does not. A candidate skipped that
-way is left unattempted rather than counted as an attribution failure.
+The budget is split between two passes over the candidates, both in descending
+physical-footprint order.
+
+- The **head pass** gives each candidate the full per-process limit and spends
+  everything except a tail reserve. It is what the compressed-memory ranking is
+  made of: a browser, an IDE, or a virtual machine has thousands of VM regions,
+  and a share too small to finish one produces nothing at all, because a
+  truncated walk is discarded.
+- The **tail pass** splits what is left equally over the candidates the head
+  never reached, so the small processes at the end of the list are measured too
+  rather than skipped outright.
+
+The reserve is 128 regions per candidate (`HM_ATTRIBUTION_TAIL_REGION_SHARE`),
+never more than a quarter of the budget, so funding tail coverage cannot squeeze
+the head. Both passes charge only what a walk actually read, so an unspent share
+stays available. A share below `HM_ATTRIBUTION_MIN_REGION_SHARE` (64 regions)
+buys nothing but a truncated walk, so it is raised to that minimum while the
+budget still affords one and the pass stops once it does not. A candidate
+skipped that way is left unattempted rather than counted as an attribution
+failure.
+
+Neither pure policy works, which is why the budget is split. Handing it out
+first-come lets the head consume all of it and skips most of the list. Splitting
+it equally across all 256 candidates gives every one of them the same ~390
+regions — below what any large process needs — so the processes the sort order
+exists to find are the only ones that never complete, and the ranking ends up
+listing small processes under the heading "top compressed/paged-out memory".
 
 Reports expose:
 
@@ -190,11 +208,14 @@ measured value of zero.
 The counters mean exactly what they say:
 
 - only a walk that reached the end of the address space produces a measured
-  value; libproc reports that by answering `ESRCH` for the address above the
-  last region. A walk cut short by its region share, and a walk that stopped on
-  a read error partway through, are both undercounts: the partial sum is
-  discarded and `compressedOrPagedOutBytes` stays `null`, because an undercount
-  must never look like a measurement;
+  value; libproc reports that by answering `EINVAL` for the address above the
+  last region, because `PROC_PIDREGIONINFO` fails that way once there is no
+  region left to describe. `ESRCH` means the opposite — the pid no longer
+  resolves, so the process exited mid-walk. A walk cut short by its region
+  share, a walk whose process vanished, and a walk that stopped on a read error
+  partway through are all undercounts: the partial sum is discarded and
+  `compressedOrPagedOutBytes` stays `null`, because an undercount must never
+  look like a measurement;
 - such a truncated walk is counted in `compressedAttributionFailureCount`: it
   was attempted and it did not produce a usable value;
 - a candidate the remaining budget could not afford is not counted at all —
@@ -208,12 +229,15 @@ fabricated one is not.
 
 On a workstation running an IDE, a browser, and a virtual machine the budget,
 not the 256-process limit, is what actually ends attribution, so coverage stays
-well below 256 measured processes. Sharing the budget changes which processes
-are covered rather than how much work a sample costs: the largest processes are
-truncated at their share instead of consuming the whole budget, and the tail of
-the candidate list is still attempted. That is the intended trade. Attribution
-is a bounded proxy, and the bound costs a predictable number of system calls
-per sample instead of up to 8.4 million.
+well below 256 measured processes. A measured run on such a machine — 484
+readable processes, 256 attempted — reports 84 processes measured and 172
+attempts truncated, with the virtual machine, the terminal, and the browser at
+the top of the ranking. The truncated attempts are the price of covering the
+tail: they were attempted and produced nothing, and they are counted as
+failures rather than hidden. Splitting the budget changes which processes are
+covered rather than how much work a sample costs. Attribution is a bounded
+proxy, and the bound costs a predictable number of system calls per sample
+instead of up to 8.4 million.
 
 ### Why root still does not make this exact
 
@@ -397,18 +421,28 @@ display brightness, thermal state, or external peripherals.
 | Low battery | 20% | 10% |
 
 Zero disables a threshold. For each application rule the analyzer selects at
-most `maxAlertsPerCategory` applications by the rule's metric, and additionally
-retains every already-active key that is still above its cleared threshold but
-did not survive that cut. A category can therefore carry more than
-`maxAlertsPerCategory` alerts; the extra ones were already firing and already
-delivered, so they never produce a new push. A push carries only the alerts that
-crossed their threshold on this sample; while the condition holds there is no
-repeat, and a key becomes pushable again only after it stops firing. Delivery
-has to succeed for a key to count as pushed, so a failed webhook or Telegram
-call is retried on the next sample instead of being silently dropped.
+most `maxAlertsPerCategory` applications by the rule's metric, and every report
+is capped at that number. An already-active key that is still above its cleared
+threshold but did not survive the cut is not reported, yet it stays in the alert
+state as firing: forgetting it there would look like the alert clearing, and its
+return to the top slice would push again as new. A push carries only the alerts
+that crossed their threshold on this sample; while the condition holds there is
+no repeat, and a key becomes pushable again only after it stops firing.
+
+Delivery has to succeed for a key to count as pushed, so a failed webhook or
+Telegram call is retried on the next sample instead of being silently dropped. A
+key is never given up on while its condition holds, but its retries widen: after
+three consecutive failed deliveries the gap doubles from two samples up to
+thirty-two, so a channel that can never succeed cannot turn Notification Center
+into an endless banner loop, and a channel that comes back finds the alert
+waiting. Any confirmed delivery clears every deferral at once, because one
+channel answering again is evidence the outage is over.
+
 Notification Center does not count towards that success: macOS returns no
 synchronous confirmation to a launchd agent, so the channel is treated as
-best-effort. Alert state resets with the agent.
+best-effort. Only its optimistic success is discounted — if it reports an
+outright failure, such as being unable to write the HTML report, that failure
+counts and the alert stays pushable. Alert state resets with the agent.
 
 Only the push text is narrowed that way. The HTML report attached to a system
 notification and the JSON webhook payload both carry every alert active in the

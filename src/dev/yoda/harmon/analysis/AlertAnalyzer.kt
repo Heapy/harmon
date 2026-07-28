@@ -8,6 +8,20 @@ import dev.yoda.harmon.model.SystemUsage
 import dev.yoda.harmon.util.Format
 
 /**
+ * What one sample's rules produced: the alerts a report carries, and every key whose condition
+ * holds.
+ *
+ * The two differ on purpose. [alerts] is capped per category so a report stays readable;
+ * [firingKeys] is the complete set and is what `AlertState` must remember. Dropping a key from the
+ * state because a report had no room for it would look like the alert clearing, and its next
+ * appearance in the top slice would push again as new.
+ */
+data class AlertOutcome(
+    val alerts: List<Alert>,
+    val firingKeys: Set<String>,
+)
+
+/**
  * Turns a usage sample into alerts.
  *
  * [analyze] takes the keys that were already firing on the previous sample. Such a key is
@@ -15,15 +29,26 @@ import dev.yoda.harmon.util.Format
  * threshold does not flip the alert on and off; severity is still graded against the original
  * threshold. Low battery is excluded: it is the only rule comparing with "less than or equal",
  * where a lower threshold would drop the alert while its condition still holds.
- *
- * An active key that no longer fits into the per-category top slice is kept as well, otherwise
- * eviction would look like the alert clearing and cause a spurious repeat push once it returns.
  */
 class AlertAnalyzer {
     fun analyze(
         usage: SystemUsage,
         config: HarmonConfig,
         activeKeys: Set<String> = emptySet(),
+    ): AlertOutcome {
+        val demoted = mutableSetOf<String>()
+        val alerts = alertsFor(usage, config, activeKeys, demoted)
+        return AlertOutcome(
+            alerts = alerts,
+            firingKeys = alerts.mapTo(mutableSetOf()) { it.key } + demoted,
+        )
+    }
+
+    private fun alertsFor(
+        usage: SystemUsage,
+        config: HarmonConfig,
+        activeKeys: Set<String>,
+        demoted: MutableSet<String>,
     ): List<Alert> = buildList {
         val thresholds = config.thresholds
         thresholds.applicationCpuPercent?.let { threshold ->
@@ -31,6 +56,7 @@ class AlertAnalyzer {
                 .selectAlerting(
                     maxPerCategory = config.maxAlertsPerCategory,
                     activeKeys = activeKeys,
+                    demoted = demoted,
                     key = { "cpu:${it.id}" },
                     value = { it.cpuPercent },
                     threshold = threshold,
@@ -59,6 +85,7 @@ class AlertAnalyzer {
                 .selectAlerting(
                     maxPerCategory = config.maxAlertsPerCategory,
                     activeKeys = activeKeys,
+                    demoted = demoted,
                     key = { "memory:${it.id}" },
                     value = { it.physicalFootprintBytes },
                     threshold = thresholdBytes,
@@ -89,6 +116,7 @@ class AlertAnalyzer {
                 .selectAlerting(
                     maxPerCategory = config.maxAlertsPerCategory,
                     activeKeys = activeKeys,
+                    demoted = demoted,
                     key = { "disk-write:${it.id}" },
                     value = { it.diskWriteBytesPerSecond },
                     threshold = thresholdBytesPerSecond,
@@ -174,6 +202,7 @@ class AlertAnalyzer {
                     .selectAlerting(
                         maxPerCategory = config.maxAlertsPerCategory,
                         activeKeys = activeKeys,
+                        demoted = demoted,
                         key = { "battery-impact:${it.id}" },
                         value = { it.batteryImpactScore },
                         threshold = threshold,
@@ -224,19 +253,18 @@ class AlertAnalyzer {
     }
 
     /**
-     * Applications above the threshold, ranked by [value] and cut to [maxPerCategory], plus every
-     * application whose key is already active but did not survive the cut.
+     * The [maxPerCategory] applications above the threshold with the highest [value].
      *
-     * The retained tail is deliberately uncapped. Dropping an active key would look like the
-     * alert clearing, so the key would leave the alert state and its next appearance would push
-     * again as new — the exact repeat the retention rule exists to prevent. The extra entries can
-     * only be keys that were already firing and already delivered, so they never produce a push
-     * of their own, and the list still cannot outgrow the number of applications over the
-     * threshold.
+     * An already-active key that did not survive the cut is collected into [demoted] instead of
+     * being appended to the result. It is still firing, so it must stay in the alert state —
+     * dropping it there would look like the alert clearing and its return to the top slice would
+     * push again as new — but it does not belong in the report, where an uncapped tail makes a
+     * category configured for three alerts carry dozens on a busy machine and never shrink.
      */
     private fun <R : Comparable<R>> List<ApplicationUsage>.selectAlerting(
         maxPerCategory: Int,
         activeKeys: Set<String>,
+        demoted: MutableSet<String>,
         key: (ApplicationUsage) -> String,
         value: (ApplicationUsage) -> R,
         threshold: R,
@@ -249,11 +277,11 @@ class AlertAnalyzer {
             }
             .sortedByDescending(value)
             .toList()
-        val retained = ranked
-            .asSequence()
+        ranked.asSequence()
             .drop(maxPerCategory)
-            .filter { key(it) in activeKeys }
-        return ranked.take(maxPerCategory) + retained
+            .map(key)
+            .filterTo(demoted) { it in activeKeys }
+        return ranked.take(maxPerCategory)
     }
 
     private fun Double.cleared(): Double =

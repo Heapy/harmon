@@ -1,5 +1,7 @@
 import dev.yoda.harmon.analysis.AlertState
-import dev.yoda.harmon.analysis.MAX_DELIVERY_ATTEMPTS
+import dev.yoda.harmon.analysis.DELIVERY_RETRY_THRESHOLD
+import dev.yoda.harmon.analysis.MAX_DELIVERY_RETRY_SAMPLES
+import dev.yoda.harmon.analysis.deliveryRetryDelaySamples
 import dev.yoda.harmon.model.Alert
 import dev.yoda.harmon.model.Severity
 import kotlin.test.Test
@@ -23,7 +25,7 @@ class AlertStateTest {
         val state = AlertState()
         val alerts = listOf(stateAlert("cpu:firefox"))
 
-        state.commit(alerts, setOf("cpu:firefox"))
+        state.commit(setOf("cpu:firefox"), setOf("cpu:firefox"))
 
         assertTrue(state.newlyActive(alerts).isEmpty())
     }
@@ -33,8 +35,8 @@ class AlertStateTest {
         val state = AlertState()
         val alerts = listOf(stateAlert("cpu:firefox"))
 
-        state.commit(alerts, setOf("cpu:firefox"))
-        state.commit(emptyList(), emptySet())
+        state.commit(setOf("cpu:firefox"), setOf("cpu:firefox"))
+        state.commit(emptySet(), emptySet())
 
         assertEquals(listOf("cpu:firefox"), state.newlyActive(alerts).map { it.key })
     }
@@ -44,7 +46,7 @@ class AlertStateTest {
         val state = AlertState()
         val alerts = listOf(stateAlert("cpu:firefox"))
 
-        state.commit(alerts, emptySet())
+        state.commit(setOf("cpu:firefox"), emptySet())
 
         assertEquals(listOf("cpu:firefox"), state.newlyActive(alerts).map { it.key })
     }
@@ -52,9 +54,8 @@ class AlertStateTest {
     @Test
     fun keepsFailedDeliveryKeyActiveForHysteresis() {
         val state = AlertState()
-        val alerts = listOf(stateAlert("cpu:firefox"))
 
-        state.commit(alerts, emptySet(), failedKeys = setOf("cpu:firefox"))
+        state.commit(setOf("cpu:firefox"), emptySet(), failedKeys = setOf("cpu:firefox"))
 
         assertEquals(setOf("cpu:firefox"), state.activeKeys)
     }
@@ -65,8 +66,8 @@ class AlertStateTest {
         val firefox = listOf(stateAlert("cpu:firefox"))
         val both = firefox + stateAlert("memory:chrome")
 
-        state.commit(both, setOf("cpu:firefox", "memory:chrome"))
-        state.commit(firefox, emptySet())
+        state.commit(setOf("cpu:firefox", "memory:chrome"), setOf("cpu:firefox", "memory:chrome"))
+        state.commit(setOf("cpu:firefox"), emptySet())
 
         assertEquals(setOf("cpu:firefox"), state.activeKeys)
         assertTrue(state.newlyActive(firefox).isEmpty())
@@ -74,26 +75,94 @@ class AlertStateTest {
     }
 
     /**
-     * A channel that can never succeed — a typo'd webhook URL, a revoked bot token — would
-     * otherwise re-push the same alert on every sample forever, and Notification Center coalesces
-     * nothing, so every one of those pushes is another banner.
+     * A key the report had no room for is still firing. Committing only the reported alerts would
+     * settle it out of the state and make its return to the top slice look like a fresh alert.
      */
     @Test
-    fun stopsRetryingAKeyThatNeverGetsDelivered() {
+    fun remembersAFiringKeyThatNoReportCarried() {
+        val state = AlertState()
+        val demoted = listOf(stateAlert("cpu:chrome"))
+
+        state.commit(setOf("cpu:firefox", "cpu:chrome"), setOf("cpu:firefox", "cpu:chrome"))
+        state.commit(setOf("cpu:firefox", "cpu:chrome"), emptySet())
+
+        assertEquals(setOf("cpu:firefox", "cpu:chrome"), state.activeKeys)
+        assertTrue(state.newlyActive(demoted).isEmpty(), "a demoted key must not re-push")
+    }
+
+    /**
+     * A channel that can never succeed — a typo'd webhook URL, a revoked bot token — would push a
+     * fresh banner every interval forever, because Notification Center coalesces nothing. The
+     * retries widen instead.
+     */
+    @Test
+    fun spreadsOutRetriesOfAKeyThatNeverGetsDelivered() {
         val state = AlertState()
         val alerts = listOf(stateAlert("cpu:firefox"))
+        val pushedOn = mutableListOf<Int>()
 
-        repeat(MAX_DELIVERY_ATTEMPTS - 1) { attempt ->
-            val exhausted = state.commit(alerts, emptySet(), failedKeys = setOf("cpu:firefox"))
-
-            assertTrue(exhausted.isEmpty(), "gave up after ${attempt + 1} attempts")
-            assertEquals(listOf("cpu:firefox"), state.newlyActive(alerts).map { it.key })
+        repeat(12) { sample ->
+            val pushed = state.newlyActive(alerts).isNotEmpty()
+            if (pushed) {
+                pushedOn += sample
+            }
+            state.commit(
+                firingKeys = setOf("cpu:firefox"),
+                deliveredKeys = emptySet(),
+                failedKeys = if (pushed) setOf("cpu:firefox") else emptySet(),
+            )
         }
-        val exhausted = state.commit(alerts, emptySet(), failedKeys = setOf("cpu:firefox"))
 
-        assertEquals(setOf("cpu:firefox"), exhausted)
-        assertTrue(state.newlyActive(alerts).isEmpty())
-        assertEquals(setOf("cpu:firefox"), state.activeKeys, "hysteresis has to stay on")
+        assertEquals(listOf(0, 1, 2, 5, 10), pushedOn)
+    }
+
+    /**
+     * The condition still holds, so the alert is still true. Giving up on it permanently is the
+     * silent drop the edge detection exists to avoid; the gap only widens up to a bound.
+     */
+    @Test
+    fun neverStopsRetryingAStillFiringAlert() {
+        val state = AlertState()
+        val alerts = listOf(stateAlert("cpu:firefox"))
+        var pushes = 0
+        var lastPush = 0
+
+        repeat(600) { sample ->
+            val pushed = state.newlyActive(alerts).isNotEmpty()
+            if (pushed) {
+                pushes += 1
+                lastPush = sample
+            }
+            state.commit(
+                firingKeys = setOf("cpu:firefox"),
+                deliveredKeys = emptySet(),
+                failedKeys = if (pushed) setOf("cpu:firefox") else emptySet(),
+            )
+        }
+
+        assertTrue(pushes > 10, "the alert stopped being retried after $pushes pushes")
+        assertTrue(
+            600 - lastPush <= MAX_DELIVERY_RETRY_SAMPLES + 1,
+            "the last retry was on sample $lastPush, more than the bounded gap ago",
+        )
+    }
+
+    /** One channel answering again is evidence the outage is over, so no key stays deferred. */
+    @Test
+    fun releasesADeferredKeyOnceAnotherDeliverySucceeds() {
+        val state = AlertState()
+        val firefox = listOf(stateAlert("cpu:firefox"))
+        val firing = setOf("cpu:firefox", "memory:chrome")
+
+        repeat(DELIVERY_RETRY_THRESHOLD) {
+            state.newlyActive(firefox)
+            state.commit(setOf("cpu:firefox"), emptySet(), failedKeys = setOf("cpu:firefox"))
+        }
+        assertTrue(state.newlyActive(firefox).isEmpty(), "the key has to be deferred first")
+
+        state.commit(firing, deliveredKeys = setOf("memory:chrome"))
+
+        assertEquals(listOf("cpu:firefox"), state.newlyActive(firefox).map { it.key })
     }
 
     @Test
@@ -101,14 +170,32 @@ class AlertStateTest {
         val state = AlertState()
         val alerts = listOf(stateAlert("cpu:firefox"))
 
-        repeat(MAX_DELIVERY_ATTEMPTS) {
-            state.commit(alerts, emptySet(), failedKeys = setOf("cpu:firefox"))
+        repeat(DELIVERY_RETRY_THRESHOLD) {
+            state.commit(setOf("cpu:firefox"), emptySet(), failedKeys = setOf("cpu:firefox"))
         }
-        state.commit(emptyList(), emptySet())
-        val exhausted = state.commit(alerts, emptySet(), failedKeys = setOf("cpu:firefox"))
+        state.commit(emptySet(), emptySet())
+        val deferred = state.commit(
+            setOf("cpu:firefox"),
+            emptySet(),
+            failedKeys = setOf("cpu:firefox"),
+        )
 
-        assertTrue(exhausted.isEmpty())
+        assertTrue(deferred.isEmpty())
         assertEquals(listOf("cpu:firefox"), state.newlyActive(alerts).map { it.key })
+    }
+
+    @Test
+    fun retriesImmediatelyUntilTheThresholdAndThenDoublesUpToTheBound() {
+        assertEquals(0L, deliveryRetryDelaySamples(0))
+        assertEquals(0L, deliveryRetryDelaySamples(DELIVERY_RETRY_THRESHOLD - 1))
+        assertEquals(2L, deliveryRetryDelaySamples(DELIVERY_RETRY_THRESHOLD))
+        assertEquals(4L, deliveryRetryDelaySamples(DELIVERY_RETRY_THRESHOLD + 1))
+        assertEquals(8L, deliveryRetryDelaySamples(DELIVERY_RETRY_THRESHOLD + 2))
+        assertEquals(
+            MAX_DELIVERY_RETRY_SAMPLES,
+            deliveryRetryDelaySamples(DELIVERY_RETRY_THRESHOLD + 9),
+        )
+        assertEquals(MAX_DELIVERY_RETRY_SAMPLES, deliveryRetryDelaySamples(Int.MAX_VALUE))
     }
 
     @Test
@@ -118,10 +205,13 @@ class AlertStateTest {
         repeat(1_000) { index ->
             val alerts = listOf(stateAlert("process:$index:${index}00"))
             state.newlyActive(alerts)
-            state.commit(alerts, alerts.mapTo(mutableSetOf()) { it.key })
+            state.commit(
+                alerts.mapTo(mutableSetOf()) { it.key },
+                emptySet(),
+                failedKeys = alerts.mapTo(mutableSetOf()) { it.key },
+            )
 
             assertEquals(1, state.activeKeys.size)
-            assertTrue(state.newlyActive(alerts).isEmpty())
         }
     }
 }

@@ -71,10 +71,14 @@ keeps three concepts separate:
 
 To keep collection bounded, Harmon walks VM regions only for the 256 readable
 processes with the largest physical footprint, and stops walking once a
-per-sample budget of 100,000 regions is spent. On a loaded machine that budget,
-rather than the 256-process limit, is what ends attribution, so coverage settles
-well below 256 measured processes. Reports include the attribution coverage and
-failure count. The proxy must not be summed and presented as exact disk swap.
+per-sample budget of 100,000 regions is spent. Most of that budget goes to the
+largest processes first — they are what the compressed-memory ranking is made
+of, and a share too small to finish one produces nothing — and the reserved
+remainder is split over the rest of the candidates. On a loaded machine the
+budget, rather than the 256-process limit, is what ends attribution, so coverage
+settles well below 256 measured processes. Reports include the attribution
+coverage and failure count. The proxy must not be summed and presented as exact
+disk swap.
 
 ### Root access
 
@@ -253,11 +257,17 @@ clears only after it drops below 90% of the threshold. Low battery is exempt: it
 is the one rule comparing with "less than or equal", where a lowered bound would
 drop the alert while the battery is still low.
 
-A key counts as pushed only once a decisive channel accepted it. Notification
-Center is best-effort — macOS gives the launchd agent no synchronous delivery
-confirmation — so a sample whose webhook and Telegram calls both failed is
-retried on the next sample instead of being silently dropped. Alert state lives
-in the agent process and resets when it restarts.
+A key counts as pushed only once a channel confirmed it. Notification Center is
+best-effort — macOS gives the launchd agent no synchronous delivery
+confirmation — so its success does not settle an alert, though a failure it does
+report, such as being unable to write the HTML report, still counts. A sample
+whose webhook and Telegram calls both failed is retried on the next sample
+instead of being silently dropped. An alert whose condition still holds is never
+given up on, but after three consecutive failed deliveries its retries widen
+from two samples up to thirty-two, so a permanently broken channel cannot turn
+Notification Center into an endless banner loop. Any confirmed delivery clears
+that backoff at once. Alert state lives in the agent process and resets when it
+restarts.
 
 The push text names only the alerts that fired on this sample. The attached HTML
 report and the JSON webhook payload both carry every alert active in the sample,

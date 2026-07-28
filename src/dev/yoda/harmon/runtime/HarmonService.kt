@@ -2,7 +2,6 @@ package dev.yoda.harmon.runtime
 
 import dev.yoda.harmon.analysis.AlertAnalyzer
 import dev.yoda.harmon.analysis.AlertState
-import dev.yoda.harmon.analysis.MAX_DELIVERY_ATTEMPTS
 import dev.yoda.harmon.config.HarmonConfig
 import dev.yoda.harmon.config.SAMPLE_SECONDS_RANGE
 import dev.yoda.harmon.ipc.CollectorClient
@@ -130,20 +129,19 @@ class HarmonService(
      * there are no alerts to commit.
      */
     fun handleSample(previous: RawSystemSnapshot, current: RawSystemSnapshot) {
-        val report = createReport(previous, current)
+        val sampled = createSample(previous, current)
         var outcome = DeliveryOutcome.NONE
         try {
-            val reportText = ReportFormatter.text(report)
+            val reportText = ReportFormatter.text(sampled.report)
             log(reportText)
-            outcome = deliverSafely(report, reportText)
+            outcome = deliverSafely(sampled.report, reportText)
         } finally {
             alertState
-                .commit(report.alerts, outcome.delivered, outcome.failed)
-                .forEach { key ->
+                .commit(sampled.firingKeys, outcome.delivered, outcome.failed)
+                .forEach { (key, delaySamples) ->
                     logError(
-                        "${Clock.System.now()} giving up on alert $key after " +
-                            "$MAX_DELIVERY_ATTEMPTS failed deliveries; it is pushed again " +
-                            "once it clears and fires anew",
+                        "${Clock.System.now()} delivery of alert $key keeps failing; " +
+                            "retrying it in $delaySamples samples",
                     )
                 }
         }
@@ -157,7 +155,7 @@ class HarmonService(
         val previous = collector.capture()
         sleepSeconds(sampleSeconds)
         val current = collector.capture()
-        return createReport(previous, current)
+        return createSample(previous, current).report
     }
 
     fun testNotifications() =
@@ -174,15 +172,26 @@ class HarmonService(
         ReportFormatter.notification(report, reportText = reportText),
     )
 
-    private fun createReport(
+    /**
+     * The report to publish, paired with every key firing in the same sample.
+     *
+     * The report carries at most `maxAlertsPerCategory` alerts per rule so it stays readable,
+     * while the alert state has to see the full set: a key the report had no room for is still
+     * firing, and forgetting it would make its return look like a fresh alert.
+     */
+    private fun createSample(
         previous: RawSystemSnapshot,
         current: RawSystemSnapshot,
-    ): MonitoringReport {
+    ): SampledAlerts {
         val usage = calculator.calculate(previous, current)
-        return MonitoringReport(
-            usage = usage,
-            alerts = analyzer.analyze(usage, config, alertState.activeKeys),
-            topProcessCount = config.topProcessCount,
+        val outcome = analyzer.analyze(usage, config, alertState.activeKeys)
+        return SampledAlerts(
+            report = MonitoringReport(
+                usage = usage,
+                alerts = outcome.alerts,
+                topProcessCount = config.topProcessCount,
+            ),
+            firingKeys = outcome.firingKeys,
         )
     }
 
@@ -285,6 +294,12 @@ class HarmonService(
     }
 
     /** What a single sample's push achieved: the keys it carried, and whether they landed. */
+    /** One sample's publishable report and the complete key set behind it. */
+    private class SampledAlerts(
+        val report: MonitoringReport,
+        val firingKeys: Set<String>,
+    )
+
     private data class DeliveryOutcome(
         val delivered: Set<String>,
         val failed: Set<String>,

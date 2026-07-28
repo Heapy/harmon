@@ -22,7 +22,7 @@ class AlertAnalyzerTest {
             batteryPercentage = 15,
         )
 
-        val alerts = AlertAnalyzer().analyze(usage, HarmonConfig())
+        val alerts = AlertAnalyzer().analyze(usage, HarmonConfig()).alerts
         val keys = alerts.map { it.key.substringBefore(':') }.toSet()
 
         assertEquals(5, alerts.size)
@@ -59,7 +59,7 @@ class AlertAnalyzerTest {
             ),
         )
 
-        val alerts = AlertAnalyzer().analyze(usage, HarmonConfig())
+        val alerts = AlertAnalyzer().analyze(usage, HarmonConfig()).alerts
 
         assertEquals(3, alerts.size)
         assertTrue(alerts.all { "Firefox (2 processes)" in it.message })
@@ -77,7 +77,7 @@ class AlertAnalyzerTest {
             swapOutBytesPerSecond = 30.0 * 1_048_576.0,
         )
 
-        val alerts = AlertAnalyzer().analyze(usage, HarmonConfig())
+        val alerts = AlertAnalyzer().analyze(usage, HarmonConfig()).alerts
 
         assertTrue(alerts.any { it.key.startsWith("disk-write:") })
         assertTrue(alerts.any { it.key == "swap-out" })
@@ -87,7 +87,7 @@ class AlertAnalyzerTest {
     fun holdsAlertBetweenClearRatioAndThresholdWhenKeyIsActive() {
         val usage = systemUsage(processes = listOf(processUsage(cpuPercent = 140.0)))
 
-        val alerts = AlertAnalyzer().analyze(usage, HarmonConfig(), setOf(CPU_KEY))
+        val alerts = AlertAnalyzer().analyze(usage, HarmonConfig(), setOf(CPU_KEY)).alerts
 
         assertEquals(listOf(CPU_KEY), alerts.map { it.key })
     }
@@ -96,7 +96,7 @@ class AlertAnalyzerTest {
     fun doesNotRaiseAlertBelowThresholdWhenKeyIsNotActive() {
         val usage = systemUsage(processes = listOf(processUsage(cpuPercent = 140.0)))
 
-        val alerts = AlertAnalyzer().analyze(usage, HarmonConfig())
+        val alerts = AlertAnalyzer().analyze(usage, HarmonConfig()).alerts
 
         assertTrue(alerts.isEmpty())
     }
@@ -105,7 +105,7 @@ class AlertAnalyzerTest {
     fun clearsAlertBelowClearRatioEvenWhenKeyIsActive() {
         val usage = systemUsage(processes = listOf(processUsage(cpuPercent = 130.0)))
 
-        val alerts = AlertAnalyzer().analyze(usage, HarmonConfig(), setOf(CPU_KEY))
+        val alerts = AlertAnalyzer().analyze(usage, HarmonConfig(), setOf(CPU_KEY)).alerts
 
         assertTrue(alerts.isEmpty())
     }
@@ -114,7 +114,7 @@ class AlertAnalyzerTest {
     fun gradesSeverityAgainstTheOriginalThresholdNotTheLoweredOne() {
         val usage = systemUsage(processes = listOf(processUsage(cpuPercent = 280.0)))
 
-        val alerts = AlertAnalyzer().analyze(usage, HarmonConfig(), setOf(CPU_KEY))
+        val alerts = AlertAnalyzer().analyze(usage, HarmonConfig(), setOf(CPU_KEY)).alerts
 
         assertEquals(Severity.WARNING, alerts.single { it.key == CPU_KEY }.severity)
     }
@@ -123,7 +123,7 @@ class AlertAnalyzerTest {
     fun keepsLowBatteryAlertBecauseHysteresisIsNotAppliedToIt() {
         val usage = systemUsage(processes = emptyList(), batteryPercentage = 19)
 
-        val alerts = AlertAnalyzer().analyze(usage, HarmonConfig(), setOf("battery-low"))
+        val alerts = AlertAnalyzer().analyze(usage, HarmonConfig(), setOf("battery-low")).alerts
 
         assertEquals(Severity.WARNING, alerts.single { it.key == "battery-low" }.severity)
     }
@@ -140,7 +140,7 @@ class AlertAnalyzerTest {
             ),
         )
 
-        val alerts = AlertAnalyzer().analyze(usage, HarmonConfig(), setOf("battery-low"))
+        val alerts = AlertAnalyzer().analyze(usage, HarmonConfig(), setOf("battery-low")).alerts
 
         assertEquals(emptyList(), alerts.filter { it.key.startsWith("battery") })
     }
@@ -160,9 +160,9 @@ class AlertAnalyzerTest {
 
         assertEquals(
             listOf("swap"),
-            analyzer.analyze(usage, HarmonConfig(), setOf("swap")).map { it.key },
+            analyzer.analyze(usage, HarmonConfig(), setOf("swap")).alerts.map { it.key },
         )
-        assertTrue(analyzer.analyze(usage, HarmonConfig()).none { it.key == "swap" })
+        assertTrue(analyzer.analyze(usage, HarmonConfig()).alerts.none { it.key == "swap" })
     }
 
     @Test
@@ -175,9 +175,9 @@ class AlertAnalyzerTest {
 
         assertEquals(
             listOf("swap-out"),
-            analyzer.analyze(usage, HarmonConfig(), setOf("swap-out")).map { it.key },
+            analyzer.analyze(usage, HarmonConfig(), setOf("swap-out")).alerts.map { it.key },
         )
-        assertTrue(analyzer.analyze(usage, HarmonConfig()).none { it.key == "swap-out" })
+        assertTrue(analyzer.analyze(usage, HarmonConfig()).alerts.none { it.key == "swap-out" })
     }
 
     @Test
@@ -197,7 +197,7 @@ class AlertAnalyzerTest {
             batteryPercentage = 8,
         )
 
-        val alerts = AlertAnalyzer().analyze(usage, HarmonConfig())
+        val alerts = AlertAnalyzer().analyze(usage, HarmonConfig()).alerts
 
         assertEquals(
             listOf(
@@ -217,8 +217,13 @@ class AlertAnalyzerTest {
         )
     }
 
+    /**
+     * An active key pushed out of the top slice stays in the firing set even though no report
+     * carries it. Dropping it would leave the alert state, and its return to the slice would look
+     * like a fresh alert and push again.
+     */
     @Test
-    fun keepsActiveKeyThatFellOutOfTheTopSlice() {
+    fun keepsActiveKeyThatFellOutOfTheTopSliceFiringWithoutReportingIt() {
         val usage = systemUsage(
             processes = listOf(
                 processUsage(pid = 1, cpuPercent = 400.0),
@@ -229,35 +234,33 @@ class AlertAnalyzerTest {
         )
         val demotedKey = "cpu:process:4:4"
 
-        val alerts = AlertAnalyzer().analyze(usage, HarmonConfig(), setOf(demotedKey))
+        val outcome = AlertAnalyzer().analyze(usage, HarmonConfig(), setOf(demotedKey))
 
-        val keys = alerts.map { it.key }
-
-        assertEquals(4, keys.size)
-        assertEquals(keys.size, keys.toSet().size)
-        assertTrue(demotedKey in keys)
+        assertEquals(3, outcome.alerts.size)
+        assertTrue(demotedKey !in outcome.alerts.map { it.key })
+        assertTrue(demotedKey in outcome.firingKeys, outcome.firingKeys.toString())
     }
 
     /**
-     * The retained tail has no ceiling of its own. Capping it would drop an active key exactly
-     * when a category is busiest, and a dropped key leaves the alert state, so its next sample
-     * looks new and pushes again — the repeat the retention rule exists to prevent.
+     * The two sides of the split, on the case that motivates it: the firing set has no ceiling of
+     * its own, because dropping an active key from it causes a spurious repeat push, while the
+     * reported list stays at `maxAlertsPerCategory` — an uncapped report grows with every busy
+     * sample and never shrinks.
      */
     @Test
-    fun keepsEveryActiveKeyThatFellOutOfTheTopSliceHoweverManyThereAre() {
+    fun reportsAtMostTheCategoryCapWhileKeepingEveryActiveKeyFiring() {
         val alerting = (1..7).map { index ->
             processUsage(pid = index, cpuPercent = 400.0 - index * 10.0)
         }
         val usage = systemUsage(processes = alerting)
         val demoted = (4..7).map { pid -> "cpu:process:$pid:$pid" }.toSet()
 
-        val keys = AlertAnalyzer()
+        val outcome = AlertAnalyzer()
             .analyze(usage, HarmonConfig(maxAlertsPerCategory = 3), demoted)
-            .map { it.key }
 
-        assertEquals(7, keys.size)
-        assertEquals(keys.size, keys.toSet().size)
-        assertTrue(keys.containsAll(demoted), keys.toString())
+        assertEquals(3, outcome.alerts.size)
+        assertEquals(7, outcome.firingKeys.size)
+        assertTrue(outcome.firingKeys.containsAll(demoted), outcome.firingKeys.toString())
     }
 
     /**
@@ -269,7 +272,7 @@ class AlertAnalyzerTest {
     fun treatsANegativeMemoryThresholdAsZeroRatherThanAsUnreachable() {
         val usage = systemUsage(processes = listOf(processUsage()))
 
-        val alerts = AlertAnalyzer().analyze(usage, onlyMemoryThreshold(-1))
+        val alerts = AlertAnalyzer().analyze(usage, onlyMemoryThreshold(-1)).alerts
 
         assertEquals(listOf("memory:process:42:42"), alerts.map { it.key })
     }
@@ -282,9 +285,12 @@ class AlertAnalyzerTest {
 
         assertEquals(
             listOf("memory:process:42:42"),
-            analyzer.analyze(usage, onlyMemoryThreshold(256)).map { it.key },
+            analyzer.analyze(usage, onlyMemoryThreshold(256)).alerts.map { it.key },
         )
-        assertEquals(emptyList(), analyzer.analyze(usage, onlyMemoryThreshold(OVERFLOWING_MIB)))
+        assertEquals(
+            emptyList(),
+            analyzer.analyze(usage, onlyMemoryThreshold(OVERFLOWING_MIB)).alerts,
+        )
     }
 
     @Test
@@ -298,16 +304,19 @@ class AlertAnalyzerTest {
 
         assertEquals(
             listOf("swap"),
-            analyzer.analyze(usage, onlySwapThreshold(1_024)).map { it.key },
+            analyzer.analyze(usage, onlySwapThreshold(1_024)).alerts.map { it.key },
         )
-        assertEquals(emptyList(), analyzer.analyze(usage, onlySwapThreshold(OVERFLOWING_MIB)))
+        assertEquals(
+            emptyList(),
+            analyzer.analyze(usage, onlySwapThreshold(OVERFLOWING_MIB)).alerts,
+        )
     }
 
     @Test
     fun doesNotOverflowTheDoubledThresholdWhenGradingSeverity() {
         val usage = systemUsage(processes = listOf(processUsage(footprint = 1uL shl 63)))
 
-        val alerts = AlertAnalyzer().analyze(usage, onlyMemoryThreshold(1L shl 43))
+        val alerts = AlertAnalyzer().analyze(usage, onlyMemoryThreshold(1L shl 43)).alerts
 
         assertEquals(Severity.WARNING, alerts.single().severity)
     }
