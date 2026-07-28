@@ -31,7 +31,8 @@
 
 - **Проект**: Kotlin/Native, JetBrains Kotlin Toolchain (Amper) 0.11.x, `macosArm64`,
   Kotlin 2.4.10, `allWarningsAsErrors: true`. Сборка `./kotlin build`, тесты `./kotlin test`.
-- **Файлы под правку**: `cinterop/harmon_native.def` (переезжает и делится), `module.yaml`,
+- **Файлы под правку**: `cinterop/harmon_native.def` (переезжает целиком, деление отменено
+  задачей 3), `module.yaml`,
   `src/dev/yoda/harmon/monitor/DarwinSystemCollector.kt`, `docs/collection.md`, `CLAUDE.md`,
   `README.md`; новые модули `nativebridge/` и `selftest/`; новый каталог `test/native/`;
   новый файл в существующем `scripts/`.
@@ -121,7 +122,9 @@ Kotlin/Native-процесса богаче регионами, чем 30-кил
 содержательнее; заодно это и есть проверка привязки в её самой осмысленной форме.
 
 **Раскладка модулей.** `project.yaml` в корне; `nativebridge/` (`kmp/lib`, `macosArm64`) держит
-`.def` и вынесенный `.h`; корневой `harmon` (`macos/app`) и `selftest/` (`macos/app`) от него
+`.def` целиком, вместе с C-телом после `---` (вынос `.h` не прошёл, см. задачу 3: заголовок
+генерируется из `.def` в `build/` на время прогона C-тестов); корневой `harmon` (`macos/app`) и
+`selftest/` (`macos/app`) от него
 зависят. Строка `package = dev.yoda.harmon.nativebridge` в `.def` не меняется, поэтому импорты в
 `DarwinSystemCollector.kt` остаются как есть — переезд файла не трогает ни строки Kotlin.
 
@@ -279,14 +282,44 @@ the build like an error»), которое задача 15 должна попр
 Идёт до постройки гарнессов, чтобы мост и сторож сразу знали финальные пути.
 
 **Files:**
-- Create: `nativebridge/cinterop/harmon_native.h`
-- Modify: `nativebridge/cinterop/harmon_native.def`
+- ~~Create: `nativebridge/cinterop/harmon_native.h`~~ — отменено, см. развилку ниже
+- ~~Modify: `nativebridge/cinterop/harmon_native.def`~~ — файл остался нетронутым
 
-- [ ] перенести блок после разделителя `---` в `harmon_native.h`, оставив в `.def` конфиг плюс `headers = harmon_native.h` и `compilerOpts` с `-I` на каталог
-- [ ] собрать и убедиться, что `cinteropMacosArm64` отрабатывает и `harmon` линкуется как прежде
-- [ ] ⚠️ при первом же сопротивлении cinterop — не подбирать форму `-I`, а сразу откатить `.def` к текущему виду и генерировать заголовок в `scripts/test-native.sh` командой `sed '1,/^---$/d'`; `.def` остаётся источником правды. Ревью подтвердило, что этот путь полностью работоспособен. Зафиксировать выбранный вариант здесь же — от него зависят списки файлов задач 5 и 11
-- [ ] проверить `clang -std=c11 -Wall -Wextra -Werror -fsyntax-only` на полученном заголовке — ревью показало, что он компилируется начисто
-- [ ] запустить `./kotlin build && ./kotlin test`
+- [x] перенести блок после разделителя `---` в `harmon_native.h`, оставив в `.def` конфиг плюс `headers = harmon_native.h` и `compilerOpts` с `-I` на каталог — **выполнено и откачено**, cinterop не нашёл заголовок
+- [x] собрать и убедиться, что `cinteropMacosArm64` отрабатывает и `harmon` линкуется как прежде — на восстановленном `.def` отрабатывает, 150 тестов зелёные
+- [x] ⚠️ при первом же сопротивлении cinterop — не подбирать форму `-I`, а сразу откатить `.def` к текущему виду и генерировать заголовок в `scripts/test-native.sh` командой `sed '1,/^---$/d'`; `.def` остаётся источником правды. Ревью подтвердило, что этот путь полностью работоспособен. Зафиксировать выбранный вариант здесь же — от него зависят списки файлов задач 5 и 11
+- [x] проверить `clang -std=c11 -Wall -Wextra -Werror -fsyntax-only` на полученном заголовке — ревью показало, что он компилируется начисто
+- [x] запустить `./kotlin build && ./kotlin test`
+
+❌ **Развилка закрыта в пользу генерации: `.def` остаётся источником правды, отдельного
+`.h` в репозитории нет.** Вынос не прошёл — cinterop не видит каталог `.def`-файла в include-пути:
+
+- `headers = harmon_native.h` без `compilerOpts` → `fatal error: 'harmon_native.h' file not
+  found`;
+- `compilerOpts = -Inativebridge/cinterop` (путь от корня проекта) → та же ошибка, рабочий
+  каталог cinterop не корень проекта и извне не задаётся.
+
+Дальше форму `-I` не подбирали, как и предписано. Даже сработавший относительный `-I` был бы
+привязан к неизвестному рабочему каталогу задачи и ломался бы на `--project-dir` — та же
+хрупкость, что уже описана для рабочего каталога тестов.
+
+**Следствия для остальных задач:**
+
+- **задача 4**: `scripts/test-native.sh` первым шагом генерирует заголовок —
+  `sed '1,/^---$/d' nativebridge/cinterop/harmon_native.def > build/native-test/harmon_native.h`
+  — и компилирует C-тесты с `-Ibuild/native-test`. Каталог `build/` уже в `.gitignore`, срок
+  жизни заголовка — один прогон, разъехаться копиям негде;
+- **задачи 5 и 12**: единственный C-источник для сторожа протухания и сообщений об ошибках —
+  `nativebridge/cinterop/harmon_native.def`, никакого `.h` в путях не появляется;
+- **задача 11**: правки идут в `nativebridge/cinterop/harmon_native.def` (блок после `---`).
+
+⚠️ **Уточнение к проверке заголовка.** `-fsyntax-only` **по самому заголовку** падает: clang
+глушит `-Wunused-function` для `static inline` только во *включённых* файлах, а не в главной
+единице трансляции, поэтому получаются 20+ ошибок вида `unused function 'hm_read_swap'`.
+Осмысленная проверка — та, которую и будет делать гарнесс: включить заголовок из `.c`-файла.
+В этой форме `clang -std=c11 -Wall -Wextra -Werror` со всеми тремя `linkerOpts`-фреймворками
+компилирует, линкует и запускает пробник начисто. Задача 4 обязана компилировать C-тесты именно
+так — `-fsyntax-only` по заголовку в скрипт добавлять нельзя.
 
 ### Task 4: Каркас C-тестов и самопроверка отказа
 
@@ -297,7 +330,7 @@ the build like an error»), которое задача 15 должна попр
 - Create: `test/native/pure_test.c`
 
 - [ ] решить схему сборки сразу и записать её: `test/native/main.c` вызывает объявленные в `harness.h` `hm_run_pure_tests()`, `hm_run_kernel_tests()`, `hm_run_framing_tests()`, `hm_run_socket_tests()`; в каждом `*_test.c` нет своего `main`
-- [ ] создать `scripts/test-native.sh`: компиляция всех `test/native/*.c` в один бинарник через `clang` с `-framework IOKit -framework CoreFoundation -lcurl` (повтор `linkerOpts`) и `-Wall -Wextra -Werror`, вывод бинарника под `build/` (уже в `.gitignore`), затем запуск
+- [ ] создать `scripts/test-native.sh`: сначала генерация заголовка из `.def` (`sed '1,/^---$/d' nativebridge/cinterop/harmon_native.def > build/native-test/harmon_native.h`, решение задачи 3), затем компиляция всех `test/native/*.c` в один бинарник через `clang` с `-Ibuild/native-test`, `-framework IOKit -framework CoreFoundation -lcurl` (повтор `linkerOpts`) и `-std=c11 -Wall -Wextra -Werror`, вывод бинарника под `build/` (уже в `.gitignore`), затем запуск
 - [ ] в `harness.h` реализовать макрос `CHECK(name, cond, fmt, ...)` со счётчиком провалов, построчным выводом `ok`/`fail`, префикс-фильтром из `argv[1]` и `alarm(N)` в `main` против зависаний
 - [ ] добавить флаг `--self-check`: заведомо падающая проверка, чтобы ветка `fail` исполнялась
 - [ ] в `pure_test.c` добавить одну проверку-дымоход
@@ -398,7 +431,7 @@ the build like an error»), которое задача 15 должна попр
 тем же коммитом.
 
 **Files:**
-- Modify: C-источник правды из задачи 3 (`nativebridge/cinterop/harmon_native.h` либо `.def`)
+- Modify: `nativebridge/cinterop/harmon_native.def` (блок после `---`; источник правды по решению задачи 3)
 - Modify: `src/dev/yoda/harmon/monitor/DarwinSystemCollector.kt`
 - Modify: `test/native/pure_test.c`
 - Modify: `docs/collection.md`
