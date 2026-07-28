@@ -28,6 +28,12 @@ private const val REPORT_PATH_USER_INFO_KEY = "harmonReportPath"
 interface NotificationChannel {
     val name: String
 
+    /**
+     * A channel that cannot confirm delivery synchronously. Its result never decides whether the
+     * sample was delivered, so a failure elsewhere is not masked by its optimistic success.
+     */
+    val bestEffort: Boolean get() = false
+
     fun deliver(payload: NotificationPayload): DeliveryResult
 }
 
@@ -46,6 +52,15 @@ class NotificationDispatcher(
                 )
             }
         }
+
+    /**
+     * Results come from [deliver], so their order matches [channels] and best-effort channels can
+     * be excluded by index. With no decisive channel configured the delivery counts as successful.
+     */
+    fun decisiveSuccess(results: List<DeliveryResult>): Boolean {
+        val decisive = results.filterIndexed { index, _ -> !channels[index].bestEffort }
+        return decisive.isEmpty() || decisive.any { it.successful }
+    }
 
     val isEmpty: Boolean
         get() = channels.isEmpty()
@@ -87,6 +102,7 @@ internal class SystemNotificationChannel(
     private val reportStore: HtmlReportStore = HtmlReportStore(),
 ) : NotificationChannel {
     override val name: String = "system"
+    override val bestEffort: Boolean = true
     private val center = NSApplication.sharedApplication.let { application ->
         application.setActivationPolicy(
             NSApplicationActivationPolicy.NSApplicationActivationPolicyAccessory,
@@ -116,7 +132,7 @@ internal class SystemNotificationChannel(
         return DeliveryResult(
             channel = name,
             successful = true,
-            detail = "delivered via launchd-compatible Notification Center; " +
+            detail = "queued in Notification Center (no delivery confirmation); " +
                 "click opens $reportPath",
         )
     }

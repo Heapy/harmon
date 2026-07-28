@@ -412,16 +412,23 @@ fun decisiveSuccess(results: List<DeliveryResult>): Boolean {
 - Modify: `src/dev/yoda/harmon/notify/NotificationChannels.kt`
 - Create: `test/NotificationDispatcherTest.kt`
 
-- [ ] написать тест на фейковых каналах: упавший webhook + «успешный» best-effort канал →
+- [x] написать тест на фейковых каналах: упавший webhook + «успешный» best-effort канал →
       `decisiveSuccess == false`
-- [ ] написать тест: единственный best-effort канал → `decisiveSuccess == true`
-- [ ] написать тест: успешный webhook + упавший telegram → `decisiveSuccess == true`
-- [ ] написать тест: исключение из канала по-прежнему даёт `DeliveryResult(successful = false)`
-- [ ] добавить `val bestEffort: Boolean get() = false` в интерфейс `NotificationChannel`,
+- [x] написать тест: единственный best-effort канал → `decisiveSuccess == true`
+- [x] написать тест: успешный webhook + упавший telegram → `decisiveSuccess == true`
+- [x] написать тест: исключение из канала по-прежнему даёт `DeliveryResult(successful = false)`
+- [x] добавить `val bestEffort: Boolean get() = false` в интерфейс `NotificationChannel`,
       переопределить в `SystemNotificationChannel` (реальный инстанс в тестах не создаём — только фейки)
-- [ ] добавить `NotificationDispatcher.decisiveSuccess(results)` с сопоставлением по индексу
-- [ ] уточнить `detail` системного канала — «queued in Notification Center», без утверждения о доставке
-- [ ] запустить `./kotlin test` — должно пройти до перехода к задаче 6
+- [x] добавить `NotificationDispatcher.decisiveSuccess(results)` с сопоставлением по индексу
+- [x] уточнить `detail` системного канала — «queued in Notification Center», без утверждения о доставке
+- [x] запустить `./kotlin test` — должно пройти до перехода к задаче 6
+
+➕ Два теста сверх чеклиста: `everyDecisiveChannelFailingIsAFailure` (обе решающие доставки упали →
+`decisiveSuccess == false`) и `emptyDispatcherIsNotTreatedAsAFailedDelivery` — последний фиксирует
+контракт, на который опирается пункт «пустой диспетчер не блокирует обновление состояния» из задачи 6.
+
+➕ `detail` системного канала: «queued in Notification Center (no delivery confirmation)» — явная
+причина, почему канал best-effort, вместо просто снятого утверждения о доставке.
 
 ### Task 6: Перевести HarmonService на AlertState и удалить кулдаун
 
