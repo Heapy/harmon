@@ -33,7 +33,7 @@ was exact.
 ## macOS data sources
 
 The Kotlin collector calls a small C bridge in
-`cinterop/harmon_native.def`.
+`nativebridge/cinterop/harmon_native.def`.
 
 | Scope | Public source | Values |
 |---|---|---|

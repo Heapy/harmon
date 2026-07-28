@@ -136,10 +136,15 @@ CPU that is roughly 41 times too low.
 ## Build and test
 
 ```shell
-./kotlin test
 ./kotlin build
 ./kotlin build --variant release
+./kotlin test
 ```
+
+Build before test. The test run drives two external harnesses over the native
+C bridge, and one of them is the `selftest` executable, which only
+`./kotlin build` produces; a missing or outdated `selftest` binary fails the
+test suite rather than being skipped.
 
 The release executable is written to:
 
@@ -356,9 +361,11 @@ src/
   report/      text, local HTML, and kotlinx.serialization JSON reporting
   notify/      Notification Center, webhook, and Telegram delivery
   runtime/     user-agent monitoring loop
-cinterop/      libproc, Mach, sysctl, IOKit, sockets, and libcurl bridge
+nativebridge/  libproc, Mach, sysctl, IOKit, sockets, and libcurl bridge
+selftest/      binding checks that run the bridge from Kotlin
+test/          unit tests, plus the C test harness in test/native
 launchd/       LaunchDaemon and LaunchAgent templates
-scripts/       install and uninstall flows
+scripts/       install and uninstall flows, plus the C harness runner
 docs/          architecture and metric semantics
 LICENSE        GPL-3.0-only license text
 ```
