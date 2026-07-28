@@ -61,12 +61,17 @@ echo "Checking sudo access for the system LaunchDaemon..."
     "$INSTALL_CONFIG_DIR" \
     "$INSTALL_LOG_DIR" \
     "$LAUNCH_AGENTS_DIR" \
-    "$HARMON_APP_CONTENTS/MacOS"
+    "$HARMON_APP_CONTENTS/MacOS" \
+    "$HARMON_APP_CONTENTS/Resources"
 
 /usr/bin/install -m 0755 "$BUILT_BINARY" "$HARMON_AGENT_BINARY"
 /usr/bin/install -m 0644 \
     "$PROJECT_DIR/launchd/Harmon.Info.plist" \
     "$HARMON_APP_CONTENTS/Info.plist"
+# Before codesign: a resource added to a signed bundle invalidates its signature.
+/usr/bin/install -m 0644 \
+    "$PROJECT_DIR/launchd/Harmon.icns" \
+    "$HARMON_APP_CONTENTS/Resources/Harmon.icns"
 SIGNING_IDENTITY=$(
     /usr/bin/security find-identity -v -p codesigning |
         /usr/bin/awk '/^[[:space:]]*[0-9]+\)/ { print $2; exit }'
@@ -154,6 +159,9 @@ LSREGISTER="/System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchS
 if [ -x "$LSREGISTER" ]; then
     "$LSREGISTER" -f "$HARMON_APP"
 fi
+# Notification Center caches the sender icon per bundle identifier, so a
+# reinstall that changes the icon keeps showing the old one until these restart.
+/usr/bin/killall usernoted NotificationCenter >/dev/null 2>&1 || true
 
 /bin/launchctl bootstrap "gui/$USER_ID" "$HARMON_AGENT_PLIST"
 /bin/launchctl enable "$HARMON_AGENT_SERVICE"

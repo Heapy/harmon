@@ -20,6 +20,22 @@ stable Harmon identity and routes notification clicks back to the running
 agent. Command dispatch occurs before user configuration is loaded, so the
 collector does not read notification secrets or initiate network delivery.
 
+The icon shown next to a notification is the bundle's own icon: `Info.plist`
+names `Harmon.icns` through `CFBundleIconFile`, and the installer copies that
+resource in before signing, since a resource added to a signed bundle
+invalidates the signature. Notification Center and LaunchServices both cache
+the icon per bundle identifier, so the installer re-registers the bundle and
+restarts `usernoted` — an icon replaced without that still shows up as the
+previous one. IconServices keeps a third copy, which survives both; when a
+*replaced* icon keeps rendering as the old one, clear it by hand:
+
+```shell
+rm -rf ~/Library/Caches/com.apple.iconservices.store
+killall iconservicesagent iconservicesd
+```
+
+`scripts/make-icon.sh` regenerates `Harmon.icns` from `logo.png`.
+
 ## Request lifecycle
 
 ```mermaid

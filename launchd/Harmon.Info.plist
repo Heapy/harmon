@@ -11,6 +11,9 @@
     <key>CFBundleExecutable</key>
     <string>harmon</string>
 
+    <key>CFBundleIconFile</key>
+    <string>Harmon</string>
+
     <key>CFBundleIdentifier</key>
     <string>dev.yoda.harmon</string>
 
