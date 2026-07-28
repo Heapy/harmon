@@ -346,6 +346,17 @@ Zero disables a threshold. At most `maxAlertsPerCategory` applications are
 selected for each application rule. Delivered alert keys are suppressed for
 `alertCooldownSeconds`; cooldown state resets with the agent.
 
+An alert that fired on the previous sample clears only once its value drops
+below 90% of the threshold. Severity is still graded against the full
+threshold, so the lowered bound never turns a warning into a critical. Low
+battery is exempt: it is the only rule comparing with "less than or equal", and
+a lowered bound there would drop the alert while the battery is still low.
+
+An application whose alert is already firing stays in the list even when a
+noisier application pushes it out of the per-category top slice, so a category
+holds up to `2 × maxAlertsPerCategory` alerts. Without that, eviction would look
+like the alert clearing and the alert would be reported as new again on return.
+
 ## Access failures
 
 Process inspection can fail because:

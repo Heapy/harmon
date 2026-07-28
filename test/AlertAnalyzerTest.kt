@@ -1,5 +1,6 @@
 import dev.yoda.harmon.analysis.AlertAnalyzer
 import dev.yoda.harmon.config.HarmonConfig
+import dev.yoda.harmon.model.Severity
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertTrue
@@ -79,5 +80,75 @@ class AlertAnalyzerTest {
 
         assertTrue(alerts.any { it.key.startsWith("disk-write:") })
         assertTrue(alerts.any { it.key == "swap-out" })
+    }
+
+    @Test
+    fun holdsAlertBetweenClearRatioAndThresholdWhenKeyIsActive() {
+        val usage = systemUsage(processes = listOf(processUsage(cpuPercent = 140.0)))
+
+        val alerts = AlertAnalyzer().analyze(usage, HarmonConfig(), setOf(CPU_KEY))
+
+        assertEquals(listOf(CPU_KEY), alerts.map { it.key })
+    }
+
+    @Test
+    fun doesNotRaiseAlertBelowThresholdWhenKeyIsNotActive() {
+        val usage = systemUsage(processes = listOf(processUsage(cpuPercent = 140.0)))
+
+        val alerts = AlertAnalyzer().analyze(usage, HarmonConfig())
+
+        assertTrue(alerts.isEmpty())
+    }
+
+    @Test
+    fun clearsAlertBelowClearRatioEvenWhenKeyIsActive() {
+        val usage = systemUsage(processes = listOf(processUsage(cpuPercent = 130.0)))
+
+        val alerts = AlertAnalyzer().analyze(usage, HarmonConfig(), setOf(CPU_KEY))
+
+        assertTrue(alerts.isEmpty())
+    }
+
+    @Test
+    fun gradesSeverityAgainstTheOriginalThresholdNotTheLoweredOne() {
+        val usage = systemUsage(processes = listOf(processUsage(cpuPercent = 280.0)))
+
+        val alerts = AlertAnalyzer().analyze(usage, HarmonConfig(), setOf(CPU_KEY))
+
+        assertEquals(Severity.WARNING, alerts.single { it.key == CPU_KEY }.severity)
+    }
+
+    @Test
+    fun keepsLowBatteryAlertBecauseHysteresisIsNotAppliedToIt() {
+        val usage = systemUsage(processes = emptyList(), batteryPercentage = 19)
+
+        val alerts = AlertAnalyzer().analyze(usage, HarmonConfig(), setOf("battery-low"))
+
+        assertEquals(Severity.WARNING, alerts.single { it.key == "battery-low" }.severity)
+    }
+
+    @Test
+    fun keepsActiveKeyThatFellOutOfTheTopSlice() {
+        val usage = systemUsage(
+            processes = listOf(
+                processUsage(pid = 1, cpuPercent = 400.0),
+                processUsage(pid = 2, cpuPercent = 300.0),
+                processUsage(pid = 3, cpuPercent = 200.0),
+                processUsage(pid = 4, cpuPercent = 160.0),
+            ),
+        )
+        val demotedKey = "cpu:process:4:4"
+
+        val alerts = AlertAnalyzer().analyze(usage, HarmonConfig(), setOf(demotedKey))
+
+        val keys = alerts.map { it.key }
+
+        assertEquals(4, keys.size)
+        assertEquals(keys.size, keys.toSet().size)
+        assertTrue(demotedKey in keys)
+    }
+
+    private companion object {
+        const val CPU_KEY = "cpu:process:42:42"
     }
 }

@@ -7,15 +7,35 @@ import dev.yoda.harmon.model.Severity
 import dev.yoda.harmon.model.SystemUsage
 import dev.yoda.harmon.util.Format
 
+/**
+ * Turns a usage sample into alerts.
+ *
+ * [analyze] takes the keys that were already firing on the previous sample. Such a key is
+ * compared against a threshold lowered by [CLEAR_RATIO], so a value hovering around the
+ * threshold does not flip the alert on and off; severity is still graded against the original
+ * threshold. Low battery is excluded: it is the only rule comparing with "less than or equal",
+ * where a lower threshold would drop the alert while its condition still holds.
+ *
+ * An active key that no longer fits into the per-category top slice is kept as well, otherwise
+ * eviction would look like the alert clearing and cause a spurious repeat push once it returns.
+ */
 class AlertAnalyzer {
-    fun analyze(usage: SystemUsage, config: HarmonConfig): List<Alert> = buildList {
+    fun analyze(
+        usage: SystemUsage,
+        config: HarmonConfig,
+        activeKeys: Set<String> = emptySet(),
+    ): List<Alert> = buildList {
         val thresholds = config.thresholds
         thresholds.applicationCpuPercent?.let { threshold ->
             usage.applications
-                .asSequence()
-                .filter { it.cpuPercent >= threshold }
-                .sortedByDescending { it.cpuPercent }
-                .take(config.maxAlertsPerCategory)
+                .selectAlerting(
+                    maxPerCategory = config.maxAlertsPerCategory,
+                    activeKeys = activeKeys,
+                    key = { "cpu:${it.id}" },
+                    value = { it.cpuPercent },
+                    threshold = threshold,
+                    clearThreshold = threshold.cleared(),
+                )
                 .forEach { application ->
                     add(
                         Alert(
@@ -36,10 +56,14 @@ class AlertAnalyzer {
         thresholds.applicationMemoryMiB?.let { thresholdMiB ->
             val thresholdBytes = thresholdMiB.toULong() * BYTES_PER_MEBIBYTE
             usage.applications
-                .asSequence()
-                .filter { it.physicalFootprintBytes >= thresholdBytes }
-                .sortedByDescending { it.physicalFootprintBytes }
-                .take(config.maxAlertsPerCategory)
+                .selectAlerting(
+                    maxPerCategory = config.maxAlertsPerCategory,
+                    activeKeys = activeKeys,
+                    key = { "memory:${it.id}" },
+                    value = { it.physicalFootprintBytes },
+                    threshold = thresholdBytes,
+                    clearThreshold = thresholdBytes.cleared(),
+                )
                 .forEach { application ->
                     add(
                         Alert(
@@ -62,10 +86,14 @@ class AlertAnalyzer {
         thresholds.applicationDiskWriteMiBPerSecond?.let { thresholdMiB ->
             val thresholdBytesPerSecond = thresholdMiB * BYTES_PER_MEBIBYTE_DOUBLE
             usage.applications
-                .asSequence()
-                .filter { it.diskWriteBytesPerSecond >= thresholdBytesPerSecond }
-                .sortedByDescending { it.diskWriteBytesPerSecond }
-                .take(config.maxAlertsPerCategory)
+                .selectAlerting(
+                    maxPerCategory = config.maxAlertsPerCategory,
+                    activeKeys = activeKeys,
+                    key = { "disk-write:${it.id}" },
+                    value = { it.diskWriteBytesPerSecond },
+                    threshold = thresholdBytesPerSecond,
+                    clearThreshold = thresholdBytesPerSecond.cleared(),
+                )
                 .forEach { application ->
                     add(
                         Alert(
@@ -90,7 +118,12 @@ class AlertAnalyzer {
 
         thresholds.swapUsedMiB?.let { thresholdMiB ->
             val thresholdBytes = thresholdMiB.toULong() * BYTES_PER_MEBIBYTE
-            if (usage.swap.usedBytes >= thresholdBytes) {
+            val alertThreshold = if ("swap" in activeKeys) {
+                thresholdBytes.cleared()
+            } else {
+                thresholdBytes
+            }
+            if (usage.swap.usedBytes >= alertThreshold) {
                 add(
                     Alert(
                         key = "swap",
@@ -108,7 +141,12 @@ class AlertAnalyzer {
 
         thresholds.swapOutMiBPerSecond?.let { thresholdMiB ->
             val thresholdBytesPerSecond = thresholdMiB * BYTES_PER_MEBIBYTE_DOUBLE
-            if (usage.virtualMemory.swapOutBytesPerSecond >= thresholdBytesPerSecond) {
+            val alertThreshold = if ("swap-out" in activeKeys) {
+                thresholdBytesPerSecond.cleared()
+            } else {
+                thresholdBytesPerSecond
+            }
+            if (usage.virtualMemory.swapOutBytesPerSecond >= alertThreshold) {
                 add(
                     Alert(
                         key = "swap-out",
@@ -133,10 +171,14 @@ class AlertAnalyzer {
         thresholds.applicationBatteryImpactScore?.let { threshold ->
             if (usage.power.onBattery) {
                 usage.applications
-                    .asSequence()
-                    .filter { it.batteryImpactScore >= threshold }
-                    .sortedByDescending { it.batteryImpactScore }
-                    .take(config.maxAlertsPerCategory)
+                    .selectAlerting(
+                        maxPerCategory = config.maxAlertsPerCategory,
+                        activeKeys = activeKeys,
+                        key = { "battery-impact:${it.id}" },
+                        value = { it.batteryImpactScore },
+                        threshold = threshold,
+                        clearThreshold = threshold.cleared(),
+                    )
                     .forEach { application ->
                         add(
                             Alert(
@@ -181,6 +223,38 @@ class AlertAnalyzer {
         }
     }
 
+    /**
+     * Applications above the threshold, ranked by [value] and cut to [maxPerCategory], plus the
+     * applications whose key is already active but did not survive the cut. The result holds at
+     * most `2 × maxPerCategory` entries.
+     */
+    private fun <R : Comparable<R>> List<ApplicationUsage>.selectAlerting(
+        maxPerCategory: Int,
+        activeKeys: Set<String>,
+        key: (ApplicationUsage) -> String,
+        value: (ApplicationUsage) -> R,
+        threshold: R,
+        clearThreshold: R,
+    ): List<ApplicationUsage> {
+        val ranked = asSequence()
+            .filter { application ->
+                val effective = if (key(application) in activeKeys) clearThreshold else threshold
+                value(application) >= effective
+            }
+            .sortedByDescending(value)
+            .toList()
+        val retained = ranked
+            .asSequence()
+            .drop(maxPerCategory)
+            .filter { key(it) in activeKeys }
+            .take(maxPerCategory)
+        return ranked.take(maxPerCategory) + retained
+    }
+
+    private fun Double.cleared(): Double = this * CLEAR_RATIO
+
+    private fun ULong.cleared(): ULong = this / CLEAR_DIVISOR * CLEAR_MULTIPLIER
+
     private fun ApplicationUsage.alertLabel(): String =
         if (processCount == 1) {
             "$name (PID $rootPid)"
@@ -191,5 +265,10 @@ class AlertAnalyzer {
     private companion object {
         const val BYTES_PER_MEBIBYTE: ULong = 1_048_576u
         const val BYTES_PER_MEBIBYTE_DOUBLE = 1_048_576.0
+        const val CLEAR_RATIO = 0.9
+
+        /** Integer form of [CLEAR_RATIO]; dividing first keeps the product from overflowing. */
+        const val CLEAR_DIVISOR: ULong = 10u
+        const val CLEAR_MULTIPLIER: ULong = 9u
     }
 }
