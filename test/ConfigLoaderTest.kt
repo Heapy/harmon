@@ -60,6 +60,36 @@ class ConfigLoaderTest {
     }
 
     @Test
+    fun rejectsMemoryAndSwapThresholdsAboveOneTebibyte() {
+        assertFailsWith<ConfigException> {
+            ConfigLoader.parse(
+                lines = sequenceOf("applicationMemoryAlertMiB=1048577"),
+                environment = emptyMap(),
+            )
+        }
+        assertFailsWith<ConfigException> {
+            ConfigLoader.parse(
+                lines = sequenceOf("swapAlertMiB=1048577"),
+                environment = emptyMap(),
+            )
+        }
+    }
+
+    @Test
+    fun acceptsMemoryAndSwapThresholdsAtOneTebibyte() {
+        val config = ConfigLoader.parse(
+            lines = sequenceOf(
+                "applicationMemoryAlertMiB=1048576",
+                "swapAlertMiB=1048576",
+            ),
+            environment = emptyMap(),
+        )
+
+        assertEquals(1_048_576L, config.thresholds.applicationMemoryMiB)
+        assertEquals(1_048_576L, config.thresholds.swapUsedMiB)
+    }
+
+    @Test
     fun doesNotMistakeAHostnamePrefixForLocalhost() {
         assertFailsWith<ConfigException> {
             ConfigLoader.parse(

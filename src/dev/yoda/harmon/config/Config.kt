@@ -91,6 +91,9 @@ class ConfigException(message: String) : IllegalArgumentException(message)
 object ConfigLoader {
     private const val LINE_BUFFER_SIZE = 8_192
 
+    /** 1 TiB. Byte thresholds stay well inside `ULong` and no real machine reaches it. */
+    private const val MAX_THRESHOLD_MIB = 1_048_576L
+
     private val legacyKeyAliases = mapOf(
         "processCpuAlertPercent" to "applicationCpuAlertPercent",
         "processMemoryAlertMiB" to "applicationMemoryAlertMiB",
@@ -290,6 +293,16 @@ object ConfigLoader {
         }
         if (config.alertCooldownSeconds > 604_800) {
             throw ConfigException("alertCooldownSeconds must not exceed 604800")
+        }
+
+        val thresholds = config.thresholds
+        if ((thresholds.applicationMemoryMiB ?: 0) > MAX_THRESHOLD_MIB) {
+            throw ConfigException(
+                "applicationMemoryAlertMiB must not exceed $MAX_THRESHOLD_MIB",
+            )
+        }
+        if ((thresholds.swapUsedMiB ?: 0) > MAX_THRESHOLD_MIB) {
+            throw ConfigException("swapAlertMiB must not exceed $MAX_THRESHOLD_MIB")
         }
 
         val notifications = config.notifications

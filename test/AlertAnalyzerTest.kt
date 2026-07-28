@@ -1,4 +1,5 @@
 import dev.yoda.harmon.analysis.AlertAnalyzer
+import dev.yoda.harmon.config.AlertThresholds
 import dev.yoda.harmon.config.HarmonConfig
 import dev.yoda.harmon.model.Severity
 import kotlin.test.Test
@@ -148,7 +149,69 @@ class AlertAnalyzerTest {
         assertTrue(demotedKey in keys)
     }
 
+    @Test
+    fun doesNotTurnAnOverflowingMemoryThresholdIntoAnAlwaysFiringAlert() {
+        val usage = systemUsage(processes = listOf(processUsage()))
+
+        val analyzer = AlertAnalyzer()
+
+        assertEquals(
+            listOf("memory:process:42:42"),
+            analyzer.analyze(usage, onlyMemoryThreshold(256)).map { it.key },
+        )
+        assertEquals(emptyList(), analyzer.analyze(usage, onlyMemoryThreshold(OVERFLOWING_MIB)))
+    }
+
+    @Test
+    fun doesNotTurnAnOverflowingSwapThresholdIntoAnAlwaysFiringAlert() {
+        val usage = systemUsage(
+            processes = emptyList(),
+            swapUsed = 2uL * 1_073_741_824uL,
+        )
+
+        val analyzer = AlertAnalyzer()
+
+        assertEquals(
+            listOf("swap"),
+            analyzer.analyze(usage, onlySwapThreshold(1_024)).map { it.key },
+        )
+        assertEquals(emptyList(), analyzer.analyze(usage, onlySwapThreshold(OVERFLOWING_MIB)))
+    }
+
+    @Test
+    fun doesNotOverflowTheDoubledThresholdWhenGradingSeverity() {
+        val usage = systemUsage(processes = listOf(processUsage(footprint = 1uL shl 63)))
+
+        val alerts = AlertAnalyzer().analyze(usage, onlyMemoryThreshold(1L shl 43))
+
+        assertEquals(Severity.WARNING, alerts.single().severity)
+    }
+
     private companion object {
         const val CPU_KEY = "cpu:process:42:42"
+
+        /** 2^44 MiB: the byte value wraps to zero without a saturating conversion. */
+        const val OVERFLOWING_MIB = 1L shl 44
+
+        fun onlyMemoryThreshold(mib: Long): HarmonConfig =
+            singleThreshold(applicationMemoryMiB = mib)
+
+        fun onlySwapThreshold(mib: Long): HarmonConfig = singleThreshold(swapUsedMiB = mib)
+
+        /** Every other rule disabled, so a test observes exactly the rule it enables. */
+        fun singleThreshold(
+            applicationMemoryMiB: Long? = null,
+            swapUsedMiB: Long? = null,
+        ): HarmonConfig = HarmonConfig(
+            thresholds = AlertThresholds(
+                applicationCpuPercent = null,
+                applicationMemoryMiB = applicationMemoryMiB,
+                applicationDiskWriteMiBPerSecond = null,
+                swapUsedMiB = swapUsedMiB,
+                swapOutMiBPerSecond = null,
+                applicationBatteryImpactScore = null,
+                batteryLowPercent = null,
+            ),
+        )
     }
 }

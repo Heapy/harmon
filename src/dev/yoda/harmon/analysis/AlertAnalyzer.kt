@@ -54,7 +54,7 @@ class AlertAnalyzer {
         }
 
         thresholds.applicationMemoryMiB?.let { thresholdMiB ->
-            val thresholdBytes = thresholdMiB.toULong() * BYTES_PER_MEBIBYTE
+            val thresholdBytes = thresholdMiB.mebibytesToBytes()
             usage.applications
                 .selectAlerting(
                     maxPerCategory = config.maxAlertsPerCategory,
@@ -69,7 +69,7 @@ class AlertAnalyzer {
                         Alert(
                             key = "memory:${application.id}",
                             severity = if (
-                                application.physicalFootprintBytes >= thresholdBytes * 2u
+                                application.physicalFootprintBytes >= thresholdBytes.doubled()
                             ) {
                                 Severity.CRITICAL
                             } else {
@@ -117,7 +117,7 @@ class AlertAnalyzer {
         }
 
         thresholds.swapUsedMiB?.let { thresholdMiB ->
-            val thresholdBytes = thresholdMiB.toULong() * BYTES_PER_MEBIBYTE
+            val thresholdBytes = thresholdMiB.mebibytesToBytes()
             val alertThreshold = if ("swap" in activeKeys) {
                 thresholdBytes.cleared()
             } else {
@@ -127,7 +127,7 @@ class AlertAnalyzer {
                 add(
                     Alert(
                         key = "swap",
-                        severity = if (usage.swap.usedBytes >= thresholdBytes * 2u) {
+                        severity = if (usage.swap.usedBytes >= thresholdBytes.doubled()) {
                             Severity.CRITICAL
                         } else {
                             Severity.WARNING
@@ -254,6 +254,24 @@ class AlertAnalyzer {
     private fun Double.cleared(): Double = this * CLEAR_RATIO
 
     private fun ULong.cleared(): ULong = this / CLEAR_DIVISOR * CLEAR_MULTIPLIER
+
+    /**
+     * MiB to bytes, saturating at [ULong.MAX_VALUE]. Wrapping would turn a huge threshold into a
+     * small one — at 2^44 MiB it wraps to zero and every application alerts as critical.
+     * `ConfigLoader` keeps configured values far below that; this covers thresholds built in code.
+     */
+    private fun Long.mebibytesToBytes(): ULong {
+        val mebibytes = toULong()
+        return if (mebibytes > ULong.MAX_VALUE / BYTES_PER_MEBIBYTE) {
+            ULong.MAX_VALUE
+        } else {
+            mebibytes * BYTES_PER_MEBIBYTE
+        }
+    }
+
+    /** The critical bound, saturating so an unreachable threshold does not wrap into zero. */
+    private fun ULong.doubled(): ULong =
+        if (this > ULong.MAX_VALUE / 2u) ULong.MAX_VALUE else this * 2u
 
     private fun ApplicationUsage.alertLabel(): String =
         if (processCount == 1) {

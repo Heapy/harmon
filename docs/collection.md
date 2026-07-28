@@ -346,6 +346,11 @@ Zero disables a threshold. At most `maxAlertsPerCategory` applications are
 selected for each application rule. Delivered alert keys are suppressed for
 `alertCooldownSeconds`; cooldown state resets with the agent.
 
+`applicationMemoryAlertMiB` and `swapAlertMiB` are capped at 1,048,576 MiB
+(1 TiB); a larger value is rejected. The MiB-to-byte conversion saturates rather
+than wraps, so a threshold beyond what bytes can express stays unreachable
+instead of turning into an alert that always fires.
+
 An alert that fired on the previous sample clears only once its value drops
 below 90% of the threshold. Severity is still graded against the full
 threshold, so the lowered bound never turns a warning into a critical. Low

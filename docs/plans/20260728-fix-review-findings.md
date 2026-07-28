@@ -356,15 +356,27 @@ fun decisiveSuccess(results: List<DeliveryResult>): Boolean {
 - Modify: `test/ConfigLoaderTest.kt`
 - Modify: `docs/collection.md`
 
-- [ ] написать тест: `AlertThresholds(applicationMemoryMiB = 2^44)`, сконструированный напрямую,
+- [x] написать тест: `AlertThresholds(applicationMemoryMiB = 2^44)`, сконструированный напрямую,
       не даёт CRITICAL-алертов на пустой памяти
-- [ ] написать тест: то же для `swapUsedMiB`
-- [ ] написать тест: `ConfigLoader` отвергает `applicationMemoryAlertMiB` и `swapAlertMiB` больше 1048576
-- [ ] заменить умножение MiB→байты на насыщающее в обеих ветках (память приложения и swap)
-- [ ] сделать насыщающей проверку `>= thresholdBytes * 2u` для CRITICAL
-- [ ] добавить верхние границы обоих ключей в `ConfigLoader.validate`
-- [ ] отразить границу 1048576 MiB в описании порогов `docs/collection.md`
-- [ ] запустить `./kotlin test` — должно пройти до перехода к задаче 4
+- [x] написать тест: то же для `swapUsedMiB`
+- [x] написать тест: `ConfigLoader` отвергает `applicationMemoryAlertMiB` и `swapAlertMiB` больше 1048576
+- [x] заменить умножение MiB→байты на насыщающее в обеих ветках (память приложения и swap)
+- [x] сделать насыщающей проверку `>= thresholdBytes * 2u` для CRITICAL
+- [x] добавить верхние границы обоих ключей в `ConfigLoader.validate`
+- [x] отразить границу 1048576 MiB в описании порогов `docs/collection.md`
+- [x] запустить `./kotlin test` — должно пройти до перехода к задаче 4
+
+➕ Три дополнительных теста сверх чеклиста:
+`doesNotOverflowTheDoubledThresholdWhenGradingSeverity` (порог 2^43 MiB даёт ровно 2^63 байт —
+умножение не насыщается, а удвоение переполнялось бы в ноль и делало любой алерт CRITICAL;
+единственный тест, покрывающий пункт про `>= thresholdBytes * 2u`),
+`acceptsMemoryAndSwapThresholdsAtOneTebibyte` (граница включающая),
+и позитивные утверждения внутри обоих overflow-тестов — без них тест прошёл бы вхолостую,
+если бы хелпер случайно отключил проверяемое правило.
+
+➕ Тестовый хелпер `singleThreshold` в `AlertAnalyzerTest`: конфиг со всеми правилами, кроме
+одного, выключенными — иначе дефолтные пороги CPU/battery подмешивают чужие алерты в
+`assertEquals(emptyList(), …)`.
 
 ### Task 4: Разделить содержимое пуша и приложенного репорта
 
