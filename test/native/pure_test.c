@@ -114,6 +114,69 @@ static void hm_check_uint32_counter(void) {
     );
 }
 
+/*
+ * Sizing of the intermediate PID list. The property that matters is structural:
+ * whatever the caller reserved is already in `output_capacity`, so taking the
+ * larger of the two arguments keeps the list from ever being the narrower one —
+ * no constant here has to mirror anything in Kotlin. The checks below pin the
+ * two ends (a count that failed, a count that dwarfs the arrays) and both
+ * saturation points.
+ */
+static void hm_check_process_list_capacity(void) {
+    const int headroom = HM_PROCESS_LIST_HEADROOM;
+    CHECK(
+        "pure.list-capacity-ignores-failed-count",
+        hm_process_list_capacity(-1, 1024) == 1024 + headroom &&
+            hm_process_list_capacity(0, 1024) == 1024 + headroom,
+        "expected %d for a failed and a zero count, got %d and %d",
+        1024 + headroom,
+        hm_process_list_capacity(-1, 1024),
+        hm_process_list_capacity(0, 1024)
+    );
+    CHECK(
+        "pure.list-capacity-uses-output-when-count-is-lower",
+        hm_process_list_capacity(700, 1024) == 1024 + headroom,
+        "expected %d, got %d",
+        1024 + headroom,
+        hm_process_list_capacity(700, 1024)
+    );
+    CHECK(
+        "pure.list-capacity-uses-count-when-it-is-higher",
+        hm_process_list_capacity(4096, 1024) == 4096 + headroom,
+        "expected %d, got %d",
+        4096 + headroom,
+        hm_process_list_capacity(4096, 1024)
+    );
+    /*
+     * The ceiling is the one place the invariant yields: a byte size beyond it
+     * would overflow the int proc_listallpids takes. HM_MAX_PROCESS_LIST minus
+     * the headroom is the last count that still gets its full headroom.
+     */
+    const int last_exact = HM_MAX_PROCESS_LIST - headroom;
+    CHECK(
+        "pure.list-capacity-clamps-at-maximum",
+        hm_process_list_capacity(last_exact, 1) == HM_MAX_PROCESS_LIST &&
+            hm_process_list_capacity(last_exact + 1, 1) == HM_MAX_PROCESS_LIST &&
+            hm_process_list_capacity(INT32_MAX, 1) == HM_MAX_PROCESS_LIST &&
+            hm_process_list_capacity(1, INT32_MAX) == HM_MAX_PROCESS_LIST,
+        "expected %d for all four, got %d, %d, %d and %d",
+        HM_MAX_PROCESS_LIST,
+        hm_process_list_capacity(last_exact, 1),
+        hm_process_list_capacity(last_exact + 1, 1),
+        hm_process_list_capacity(INT32_MAX, 1),
+        hm_process_list_capacity(1, INT32_MAX)
+    );
+    CHECK(
+        "pure.list-capacity-holds-the-minimum",
+        hm_process_list_capacity(8, 16) == HM_MIN_PROCESS_LIST &&
+            hm_process_list_capacity(-1, 1) == HM_MIN_PROCESS_LIST,
+        "expected %d twice, got %d and %d",
+        HM_MIN_PROCESS_LIST,
+        hm_process_list_capacity(8, 16),
+        hm_process_list_capacity(-1, 1)
+    );
+}
+
 static int compare_candidates(
     int32_t left_index,
     uint64_t left_footprint,
@@ -265,6 +328,7 @@ void hm_run_pure_tests(void) {
     hm_check_saturating_add();
     hm_check_saturating_multiply();
     hm_check_uint32_counter();
+    hm_check_process_list_capacity();
     hm_check_candidate_order();
     hm_check_mach_time();
     hm_check_discard_http_response();

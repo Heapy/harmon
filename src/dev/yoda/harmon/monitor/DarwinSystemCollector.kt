@@ -60,10 +60,10 @@ const val PROCESS_CAPACITY_HEADROOM = 256
  * so tightly that an ordinary burst of short-lived processes exhausts it. A non-positive [count]
  * means the kernel refused to answer, so the full [capacity] is reserved as before.
  *
- * `hm_list_processes` sizes its own intermediate PID list with the same headroom and minimum
- * (`HM_PROCESS_LIST_HEADROOM`, `HM_MIN_PROCESS_LIST`), so that list is never the narrower of the
- * two: processes beyond what these arrays hold are reported as capacity issues rather than
- * vanishing from a truncated listing.
+ * `hm_list_processes` sizes its own intermediate PID list from the larger of a fresh count and
+ * the capacity returned here, so that list is never the narrower of the two: processes beyond
+ * what these arrays hold are reported as capacity issues rather than vanishing from a truncated
+ * listing. The invariant holds structurally, so the headroom above needs no counterpart in C.
  */
 fun processCapacityFor(count: Int, capacity: Int): Int {
     if (count <= 0) {
@@ -112,7 +112,6 @@ class DarwinSystemCollector(
             sampleSlots,
             nativeIssues,
             issueSlots,
-            pidCount,
             compressedAttributionProcessLimit,
             attributionRegionBudget,
             totalProcesses.ptr,

@@ -225,7 +225,6 @@ static void hm_check_process_listing(void) {
         issue_capacity,
         0,
         0,
-        0,
         &total,
         &inaccessible,
         &written_issues
@@ -309,7 +308,6 @@ static int hm_listing_rejects(
         sample_capacity,
         issues,
         issue_capacity,
-        0,
         attribution_process_limit,
         attribution_region_budget,
         NULL,

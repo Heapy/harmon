@@ -50,10 +50,11 @@ extern "C" {
 #define HM_ATTRIBUTION_TAIL_BUDGET_DIVISOR 4
 #define HM_MAX_JSON_FRAME_SIZE (32U * 1024U * 1024U)
 /*
- * Sizing of the intermediate PID list in hm_list_processes. Mirrors PROCESS_CAPACITY_HEADROOM
- * and MIN_PROCESS_CAPACITY in DarwinSystemCollector.kt: the caller reserves its sample slots
- * with the same headroom, so this list is never the narrower of the two. HM_MAX_PROCESS_LIST is
- * an absolute guard against a byte size that would overflow the int proc_listallpids takes.
+ * Sizing of the intermediate PID list in hm_list_processes, applied by hm_process_list_capacity.
+ * The list is sized from the larger of a fresh PID count and the capacity of the arrays it feeds,
+ * so it is never the narrower of the two whatever the caller reserved — nothing here mirrors the
+ * Kotlin constants. HM_MAX_PROCESS_LIST is an absolute guard against a byte size that would
+ * overflow the int proc_listallpids takes.
  */
 #define HM_PROCESS_LIST_HEADROOM 256
 #define HM_MIN_PROCESS_LIST 512
@@ -737,12 +738,29 @@ static inline void hm_read_process_metadata(
     }
 }
 
+/**
+ * Slots to allocate for the intermediate PID list, from a fresh `counted` and the
+ * `output_capacity` the caller already reserved.
+ *
+ * Taking the larger of the two makes the invariant "the PID list is never narrower than the
+ * caller's arrays" structural instead of a convention two files have to keep in step: whatever
+ * headroom the caller applied is already contained in `output_capacity`. A count that failed
+ * (`counted` negative or zero) simply loses the comparison, so no separate error branch is
+ * needed — `output_capacity` is validated positive before this is reached.
+ */
+static inline int hm_process_list_capacity(int counted, int output_capacity) {
+    int capacity = counted > output_capacity ? counted : output_capacity;
+    capacity = capacity > HM_MAX_PROCESS_LIST - HM_PROCESS_LIST_HEADROOM
+        ? HM_MAX_PROCESS_LIST
+        : capacity + HM_PROCESS_LIST_HEADROOM;
+    return capacity < HM_MIN_PROCESS_LIST ? HM_MIN_PROCESS_LIST : capacity;
+}
+
 static inline int hm_list_processes(
     HMProcessSample *output,
     int output_capacity,
     HMProcessIssue *issues,
     int issue_capacity,
-    int pid_count,
     int attribution_process_limit,
     int attribution_region_budget,
     int *total_processes,
@@ -760,25 +778,13 @@ static inline int hm_list_processes(
     }
 
     /*
-     * The PID list is sized from a fresh count plus the same headroom the caller reserved for
-     * `output_capacity` (HM_PROCESS_LIST_HEADROOM / HM_MIN_PROCESS_LIST mirror the Kotlin
-     * constants). proc_listallpids reports only what it copied once the buffer is full, so a
-     * list narrower than the caller's arrays would drop the processes started in the race
-     * window silently — out of the sample and out of `total_processes` alike — instead of
-     * reporting them as the capacity limit the caller can see. `pid_count` is the caller's own
-     * count and serves as a floor: it covers a fresh count that failed and one that shrank.
+     * The count is taken here, immediately before the buffer is filled, so the race window it
+     * has to cover is as narrow as the kernel allows. proc_listallpids reports only what it
+     * copied once the buffer is full, so a list narrower than the caller's arrays would drop the
+     * processes started in that window silently — out of the sample and out of `total_processes`
+     * alike — instead of reporting them as the capacity limit the caller can see.
      */
-    int counted = proc_listallpids(NULL, 0);
-    int capacity = counted > pid_count ? counted : pid_count;
-    if (capacity <= 0) {
-        return -1;
-    }
-    capacity = capacity > HM_MAX_PROCESS_LIST - HM_PROCESS_LIST_HEADROOM
-        ? HM_MAX_PROCESS_LIST
-        : capacity + HM_PROCESS_LIST_HEADROOM;
-    if (capacity < HM_MIN_PROCESS_LIST) {
-        capacity = HM_MIN_PROCESS_LIST;
-    }
+    int capacity = hm_process_list_capacity(proc_listallpids(NULL, 0), output_capacity);
 
     pid_t *pids = (pid_t *)calloc((size_t)capacity, sizeof(pid_t));
     if (pids == NULL) {

@@ -592,14 +592,34 @@ unix-сокету завершается, как только соединени
 - Modify: `test/native/pure_test.c`
 - Modify: `docs/collection.md`
 
-- [ ] выделить `static inline int hm_process_list_capacity(int counted, int output_capacity)`: максимум из аргументов, прибавление `HM_PROCESS_LIST_HEADROOM` с защитой от переполнения через `HM_MAX_PROCESS_LIST`, пол `HM_MIN_PROCESS_LIST`
-- [ ] в `hm_list_processes` вызвать её как `hm_process_list_capacity(proc_listallpids(NULL, 0), output_capacity)`, сохранив свежий счёт непосредственно перед заполнением буфера; удалить ставшую мёртвой ветку `if (capacity <= 0) return -1`
-- [ ] удалить неиспользуемый параметр `pid_count` из сигнатуры и соответствующий аргумент в `DarwinSystemCollector.kt`
-- [ ] переписать комментарий: инвариант «список PID не уже массивов вызывающего» теперь структурный, зеркалить `PROCESS_CAPACITY_HEADROOM`/`MIN_PROCESS_CAPACITY` больше не требуется; поправить встречное упоминание в `processCapacityFor`
-- [ ] обновить `docs/collection.md` — описание sizing массивов процессов меняется (тем же коммитом)
-- [ ] написать C-тесты: провал свежего счёта (`counted <= 0`) даёт `output_capacity + HM_PROCESS_LIST_HEADROOM`, счёт меньше `output_capacity`, счёт больше, значения у `HM_MAX_PROCESS_LIST`, результат ниже `HM_MIN_PROCESS_LIST`
-- [ ] прогнать `./kotlin build && ./kotlin test`, убедиться что `DarwinCollectorLimitsTest` и проверки задачи 8 не сломались
-- [ ] выполнить A/B по рецепту `CLAUDE.md`: два коллектора на двух сокетах, бинарники до и после, сверить вывод `diagnose`
+- [x] выделить `static inline int hm_process_list_capacity(int counted, int output_capacity)`: максимум из аргументов, прибавление `HM_PROCESS_LIST_HEADROOM` с защитой от переполнения через `HM_MAX_PROCESS_LIST`, пол `HM_MIN_PROCESS_LIST`
+- [x] в `hm_list_processes` вызвать её как `hm_process_list_capacity(proc_listallpids(NULL, 0), output_capacity)`, сохранив свежий счёт непосредственно перед заполнением буфера; удалить ставшую мёртвой ветку `if (capacity <= 0) return -1`
+- [x] удалить неиспользуемый параметр `pid_count` из сигнатуры и соответствующий аргумент в `DarwinSystemCollector.kt`
+- [x] переписать комментарий: инвариант «список PID не уже массивов вызывающего» теперь структурный, зеркалить `PROCESS_CAPACITY_HEADROOM`/`MIN_PROCESS_CAPACITY` больше не требуется; поправить встречное упоминание в `processCapacityFor`
+- [x] обновить `docs/collection.md` — описание sizing массивов процессов меняется (тем же коммитом)
+- [x] написать C-тесты: провал свежего счёта (`counted <= 0`) даёт `output_capacity + HM_PROCESS_LIST_HEADROOM`, счёт меньше `output_capacity`, счёт больше, значения у `HM_MAX_PROCESS_LIST`, результат ниже `HM_MIN_PROCESS_LIST`
+- [x] прогнать `./kotlin build && ./kotlin test`, убедиться что `DarwinCollectorLimitsTest` и проверки задачи 8 не сломались
+- [x] выполнить A/B по рецепту `CLAUDE.md`: два коллектора на двух сокетах, бинарники до и после, сверить вывод `diagnose`
+
+✅ **Пять проверок в `pure_test.c`, все подтверждены мутациями `.def`** (каждая откачена):
+инверсия сравнения (`counted < output_capacity`) роняет четыре из пяти, снятый пол
+`HM_MIN_PROCESS_LIST` — `holds-the-minimum`, снятая защита от переполнения —
+`clamps-at-maximum`. Отдельная находка, ровно как в задаче 10: наивная мутация
+`int capacity = counted;` **не компилируется** — `-Wunused-parameter` под `-Werror`, — поэтому
+осмысленной мутацией служит инверсия. Список имён в `C_HARNESS_CHECKS` дополнен пятью строками.
+
+ℹ️ **A/B выполнен автоматически, а не вручную.** «До» собрано из `git worktree add <scratch> HEAD`,
+чтобы не трогать рабочее дерево; два коллектора на `/tmp/harmon-ab-before.sock` и
+`/tmp/harmon-ab-after.sock`, по одному `diagnose --sample-seconds 2` через каждый. Структурные
+числа совпали побайтно: `Processes: 581/799 readable, 218 inaccessible`,
+`Applications: 479 groups from 581 readable processes`,
+`Compressed/paged-out attribution: 66 processes measured, 190 failed`. Расходятся только живые
+метрики (проценты CPU, порядок top-N, I/O), что ожидаемо для двух прогонов с интервалом в
+секунды. Коллекторы остановлены, сокеты и worktree убраны.
+
+ℹ️ **`hm_count_processes` остаётся на месте.** Из сигнатуры ушёл только `pid_count`; Kotlin
+по-прежнему берёт им живой счёт для `processCapacityFor`, который сайзит уже **свои** массивы.
+Мост перестал зависеть от переданного числа, но не от самого счётчика.
 
 ### Task 12: Модуль selftest и мост к нему
 

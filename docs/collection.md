@@ -61,6 +61,13 @@ counting and listing, so a typical machine reserves a few hundred slots instead
 of the maximum. The ceilings stay 16,384 process records and 4,096 detailed
 process failures per snapshot.
 
+The intermediate PID list inside the collector is sized separately, from a
+second count taken immediately before the buffer is filled, raised to the
+capacity of the sample array it feeds and given the same kind of headroom. It is
+therefore never the narrower of the two, whatever the caller reserved: a process
+that does not fit the sample array is reported as a capacity failure instead of
+disappearing from a truncated listing.
+
 ## Process identity
 
 A process is matched across snapshots by:
