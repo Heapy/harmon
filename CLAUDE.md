@@ -80,6 +80,16 @@ is actually about:
 | `selftest` (`selftest/src/main.kt`) — minimal | only what crosses the Kotlin↔C boundary: struct layout and type mapping | the one thing plain C cannot check about itself |
 | `SystemCollector` and its fakes | everything above cinterop | ordinary unit tests, untouched by any of this |
 
+One check is in both on purpose: `selftest` repeats
+`attribution.self-walk-completes` because the address space of a Kotlin/Native
+process holds far more regions than that of a 30-kilobyte C binary, which makes
+the walk both a longer walk and the binding check in its most meaningful form.
+
+Neither harness is meant to run as root: `processes.samples-are-well-formed`
+holds because an ordinary user cannot read the rusage of pid 0, and
+`socket.accept-rejects-foreign-uid` has no foreign user to name when the caller
+is uid 0.
+
 `scripts/test-native.sh` regenerates the header the C tests include straight
 from the `.def` (`sed '1,/^---$/d'` into `build/native-test/`), compiles every
 `test/native/*.c` into one binary with `clang -std=c11 -Wall -Wextra -Werror`
@@ -87,15 +97,30 @@ plus the `.def`'s own `linkerOpts` frameworks, and runs it. The `.def` stays the
 single source of truth — cinterop cannot be pointed at a separate header, so no
 checked-in `.h` exists — and the generated copy lives for one run.
 
-Both harnesses speak the same protocol: `ok <name>` and
-`fail <name>: <detail>` lines, exit status 0 or 1, an optional name-prefix
-filter as the first argument, and `--self-check`, which adds a deliberately
-failing check so the `fail` branch is executed rather than assumed.
-`test/NativeHarness.kt` drives them through `popen`, turns each `fail` into its
-own assertion, requires a normal exit with status 0, reports a death by signal
-separately, fails on empty output when no filter was given, and compares the
-set of executed check names against the expected list — so a check that falls
-out of a harness cannot disappear quietly.
+Both harnesses speak the same protocol, and this paragraph is the description of
+it — the harnesses and the bridge point here rather than restating it. Output is
+`ok <name>` and `fail <name>: <detail>` lines; the exit status is 0 when every
+executed check passed and 1 otherwise. Arguments are `--self-check`, which adds a
+deliberately failing check so the `fail` branch is executed rather than assumed,
+and one name-prefix filter, which is the first argument that is not a flag — in
+any position, so `--self-check harness.` is how both are combined. Anything else
+beginning with `--`, or a second filter, is a usage error and exits 2: an unknown
+flag taken for a filter would select nothing and exit 0, which is how a mistyped
+`--self-check` would read as a clean run. A filter that selects nothing prints
+`ok harness.no-checks-selected` for the same reason. Both harnesses arm a
+60-second `alarm` before their first check, so a walk or a socket that hung
+inside the kernel dies on SIGALRM instead of hanging `./kotlin test`; the bridge
+reports that as "died on signal 14".
+
+`test/NativeHarness.kt` drives them through `popen`, turns the first `fail` into
+an assertion naming it and the rest, requires a normal exit with status 0,
+reports a death by signal separately, fails whenever no check line was parsed at
+all — with or without a filter, which is what the sentinel line above exists for
+— and compares the set of executed check names against the expected list, so a
+check that falls out of a harness cannot disappear quietly. That list is
+`C_HARNESS_CHECKS` in `test/NativeCTest.kt` and `SELFTEST_CHECKS` in
+`test/SelftestBridgeTest.kt`, which makes a new check a two-file change: the
+`CHECK`/`check` call and its name in the list, or the run fails as `unexpected`.
 
 **Running one harness, or one check**, without going through `./kotlin test`:
 
@@ -105,6 +130,13 @@ scripts/test-native.sh socket.         # one suite, by name prefix
 scripts/test-native.sh --self-check    # exit 1, proves the fail branch runs
 build/tasks/_selftest_linkMacosArm64Debug/selftest.kexe binding.
 ```
+
+The filter gates execution, not just reporting: `main.c` maps each suite to the
+prefixes it reports under and skips the ones the filter cannot select, so a
+filtered run neither forks children nor opens sockets for the suites it left out
+(0.02 s against 0.36 s here). A prefix missing from that table costs a filtered
+run the suite entirely — the unfiltered run `./kotlin test` performs is the one
+that checks the names.
 
 **Working directory and overrides.** `NativeTestTask` runs the test process with
 the module directory — which is the project root — as its working directory,
@@ -118,9 +150,12 @@ message quotes the *absolute* resolved path and the working directory, and
 `SelftestBridgeTest` checks the binary before running it. A missing binary
 **fails** the test with the absolute path and "run `./kotlin build` first" — a
 silent skip is not an option. A binary older than the newest file under
-`selftest/src/` or `nativebridge/cinterop/harmon_native.def` fails as well;
-watching only the `.def` would miss the common case, which is editing the checks
-themselves. The path is deliberately tied to the debug variant: after
+`selftest/src/`, or than `nativebridge/cinterop/harmon_native.def`,
+`selftest/module.yaml`, `nativebridge/module.yaml` or
+`harmon.module-template.yaml`, fails as well; watching only the `.def` would miss
+the common case, which is editing the checks themselves, and watching only
+sources would miss a change to what gets linked. The path is deliberately tied
+to the debug variant: after
 `./kotlin build --variant release` the debug binary stays where it was, and the
 guard is what notices. The C tests need no guard — the script recompiles them
 every run.
@@ -138,6 +173,10 @@ to cover everything:
   `hm_close_descriptor`, `hm_sleep_millis`;
 - the `RUSAGE_INFO_V6 → V4` fallback — only fires on older macOS;
 - the `chown` branch of `hm_unix_server_open` — root only;
+- the peer-uid gate inside `hm_unix_connect` (`EACCES` on a socket owned by
+  someone else), `hm_unix_accept` with a null `peer_user_id`, and its bypass for
+  uid 0 — all three need a second user or root; the server-side gate that
+  matters, `hm_unix_accept` refusing a foreign uid, is covered;
 - `hm_read_battery` on a machine without a battery — only the availability flag
   is checked;
 - `DarwinSystemCollector` as a consumer of the bridge — `selftest` cannot depend

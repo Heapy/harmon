@@ -181,6 +181,32 @@ static void hm_check_send_rejects_bad_payload(void) {
         strerror(empty_failure)
     );
 
+    /*
+     * The same cap the reader applies, on the writing side. The receiver's half
+     * is covered three ways above; a sender that let an oversized frame out
+     * would have it rejected by the peer as a protocol error instead of failing
+     * where the payload was built.
+     */
+    char *oversized = (char *)malloc((size_t)HM_MAX_JSON_FRAME_SIZE + 2U);
+    if (oversized == NULL) {
+        CHECK("framing.send-rejects-oversized", 0, "out of memory");
+    } else {
+        memset(oversized, 'a', (size_t)HM_MAX_JSON_FRAME_SIZE + 1U);
+        oversized[HM_MAX_JSON_FRAME_SIZE + 1U] = '\0';
+        errno = 0;
+        const int oversized_status = hm_send_json_frame(pair[0], oversized);
+        const int oversized_failure = errno;
+        CHECK(
+            "framing.send-rejects-oversized",
+            oversized_status == -1 && oversized_failure == EMSGSIZE,
+            "expected -1/EMSGSIZE for %u bytes, got %d/%s",
+            HM_MAX_JSON_FRAME_SIZE + 1U,
+            oversized_status,
+            strerror(oversized_failure)
+        );
+        free(oversized);
+    }
+
     close(pair[0]);
     close(pair[1]);
 }
@@ -189,6 +215,7 @@ static void hm_check_round_trip(void) {
     int pair[2];
     if (hm_test_socket_pair(pair, 0) != 0) {
         CHECK("framing.round-trips-a-frame", 0, "socketpair failed: %s", strerror(errno));
+        CHECK("framing.receive-accepts-a-null-size", 0, "socketpair failed: %s", strerror(errno));
         return;
     }
 
@@ -215,6 +242,28 @@ static void hm_check_round_trip(void) {
     );
 
     free(received);
+
+    /*
+     * The size is an optional output, and a caller that already knows the length
+     * from the payload passes NULL for it. A guard written the wrong way round
+     * crashes there rather than here.
+     */
+    const int sent_again = hm_send_json_frame(pair[0], request);
+    errno = 0;
+    char *sized_elsewhere = hm_receive_json_frame(pair[1], HM_MAX_JSON_FRAME_SIZE, NULL);
+    const int null_size_failure = errno;
+    CHECK(
+        "framing.receive-accepts-a-null-size",
+        sent_again == 0 &&
+            sized_elsewhere != NULL &&
+            strcmp(sized_elsewhere, request) == 0,
+        "expected 0 and %s without an output size, got %d and %s",
+        request,
+        sent_again,
+        sized_elsewhere == NULL ? strerror(null_size_failure) : sized_elsewhere
+    );
+    free(sized_elsewhere);
+
     close(pair[0]);
     close(pair[1]);
 }
@@ -511,6 +560,7 @@ typedef struct {
     size_t received;
     long pause_milliseconds;
     int failure;
+    int chunks;
 } HMThrottledReader;
 
 /*
@@ -536,6 +586,7 @@ static void *hm_read_throttled(void *argument) {
             break;
         }
         reader->received += (size_t)chunk;
+        reader->chunks++;
         hm_test_pause(reader->pause_milliseconds);
     }
     return NULL;
@@ -618,23 +669,43 @@ static void hm_check_send_completes_partial_write(void) {
         0,
         1,
         0,
+        0,
     };
     HMSenderInterrupter interrupter = {pthread_self(), 0, 0};
     pthread_t reader_thread;
     pthread_t interrupter_thread;
-    if (pthread_create(&reader_thread, NULL, hm_read_throttled, &reader) != 0 ||
-        pthread_create(&interrupter_thread, NULL, hm_interrupt_sender, &interrupter) != 0) {
+    if (pthread_create(&reader_thread, NULL, hm_read_throttled, &reader) != 0) {
         CHECK(
             "framing.send-completes-partial-write",
             0,
-            "pthread_create failed: %s",
+            "pthread_create failed for the reader: %s",
             strerror(errno)
         );
-        interrupter.stop = 1;
         sigaction(SIGUSR1, &previous, NULL);
         free(payload);
         free(wire);
         close(pair[0]);
+        close(pair[1]);
+        return;
+    }
+    /*
+     * A second `pthread_create` in the same condition would leave the reader
+     * running against `wire` and `reader` after both had been freed and the
+     * frame returned. It has to be joined first, and the only thing that ends
+     * its loop is the socket going away.
+     */
+    if (pthread_create(&interrupter_thread, NULL, hm_interrupt_sender, &interrupter) != 0) {
+        CHECK(
+            "framing.send-completes-partial-write",
+            0,
+            "pthread_create failed for the interrupter: %s",
+            strerror(errno)
+        );
+        close(pair[0]);
+        pthread_join(reader_thread, NULL);
+        sigaction(SIGUSR1, &previous, NULL);
+        free(payload);
+        free(wire);
         close(pair[1]);
         return;
     }
@@ -653,21 +724,32 @@ static void hm_check_send_completes_partial_write(void) {
         declared = ntohl(declared);
     }
 
+    /*
+     * The delivered signals and the reader's chunk count are asserted as well as
+     * reported. Neither proves a short write on its own — only instrumenting
+     * `hm_send_all` does that, and it measured 29 to 31 short writes and 26 to 38
+     * EINTR returns per run here — but they are the conditions under which one
+     * happens at all. Without them this check would quietly decay into a second
+     * `framing.round-trips-a-frame` on a machine whose timing changed.
+     */
     CHECK(
         "framing.send-completes-partial-write",
         sent == 0 &&
+            interrupter.delivered > 0 &&
+            reader.chunks > 1 &&
             reader.received == sizeof(uint32_t) + HM_TEST_PARTIAL_WRITE_BYTES &&
             declared == HM_TEST_PARTIAL_WRITE_BYTES &&
             memcmp(wire + sizeof(uint32_t), payload, HM_TEST_PARTIAL_WRITE_BYTES) == 0,
-        "expected %d bytes through a %d-byte socket buffer under %d interrupts, "
-            "got send %d/%s and %zu bytes declaring %u",
+        "expected %d bytes through a %d-byte socket buffer under interrupts, got "
+            "send %d/%s and %zu bytes declaring %u in %d reads under %d interrupts",
         HM_TEST_PARTIAL_WRITE_BYTES,
         HM_TEST_SMALL_SOCKET_BUFFER,
-        interrupter.delivered,
         sent,
         sent == 0 ? "ok" : strerror(send_failure),
         reader.received,
-        declared
+        declared,
+        reader.chunks,
+        interrupter.delivered
     );
 
     free(payload);

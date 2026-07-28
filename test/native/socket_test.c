@@ -546,5 +546,6 @@ void hm_run_socket_tests(void) {
     hm_check_accept_peer_credentials();
     hm_check_accept_rejects_foreign_uid();
     hm_check_remove_bad_input();
-    hm_remove_test_directory();
+    /* The directory is removed by the `atexit` handler `hm_socket_test_path`
+     * registers, which covers an early return out of any check as well. */
 }

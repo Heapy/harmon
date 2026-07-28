@@ -20,14 +20,19 @@ import platform.posix.getenv
 import platform.posix.pclose
 import platform.posix.popen
 import platform.posix.strerror
+import kotlin.test.assertEquals
+import kotlin.test.assertFailsWith
+import kotlin.test.assertFalse
+import kotlin.test.assertTrue
 import kotlin.test.fail
 
 /*
  * The bridge from `kotlin.test` to the external harnesses.
  *
  * KTC-5573 keeps the cinterop klib out of the test compilation, so the native bridge is exercised
- * by separate binaries — the C harness built by `scripts/test-native.sh`, and later `selftest` —
- * that speak one line-based protocol:
+ * by separate binaries — the C harness built by `scripts/test-native.sh` and `selftest` — that
+ * speak one line-based protocol, described once in the "How the native layer is tested" section of
+ * CLAUDE.md:
  *
  *     ok   suite.check-name
  *     fail suite.check-name: expected 3, got 4
@@ -135,10 +140,21 @@ fun selftestHarness(): NativeTool = NativeTool(
     relativePath = "build/tasks/_selftest_linkMacosArm64Debug/selftest.kexe",
 )
 
-/** Everything the selftest binary is built from: its own sources and the bridge it links. */
+/**
+ * Everything the selftest binary is built from: its own sources, the bridge it links, and the
+ * three files that decide what "built" means.
+ *
+ * The module files earn their place: dropping the `nativebridge` dependency, moving to another
+ * Kotlin version or turning off `allWarningsAsErrors` all change what gets linked without touching
+ * a line of Kotlin, and a guard that watched sources alone would stay green over a binary produced
+ * by the previous configuration.
+ */
 val SELFTEST_SOURCES: List<String> = listOf(
     "selftest/src",
+    "selftest/module.yaml",
     "nativebridge/cinterop/harmon_native.def",
+    "nativebridge/module.yaml",
+    "harmon.module-template.yaml",
 )
 
 /** A file a harness is built from, and when it last changed. */
@@ -292,15 +308,18 @@ fun runNativeHarness(
 /**
  * Turns a run into assertions.
  *
- * A failing check is reported as its own assertion carrying its own text, so what breaks the build
- * is `attribution.dead-pid-not-measured`, not "the native suite". The remaining conditions cover
- * the ways a harness can look green without having run: a crash, a non-zero exit with nothing
- * printed, an empty output, or a check that quietly stopped being executed.
+ * The first failing check becomes the assertion, carrying its own text, so what breaks the build is
+ * `attribution.dead-pid-not-measured` rather than "the native suite"; the others are named after it
+ * because an `AssertionError` ends the test either way. The remaining conditions cover the ways a
+ * harness can look green without having run: a crash, a non-zero exit with nothing printed, an
+ * output with no check line in it at all — with or without a filter, which is why a filter that
+ * selects nothing makes both harnesses print `harness.no-checks-selected` — or a check that quietly
+ * stopped being executed.
  */
 fun assertHarnessSucceeded(run: NativeHarnessRun, expectedChecks: Set<String>) {
     val failures = run.checks.filterNot { it.passed }
-    val alsoFailing = failures.drop(1).joinToString(", ") { it.name }
-    failures.forEach { check ->
+    failures.firstOrNull()?.let { check ->
+        val alsoFailing = failures.drop(1).joinToString(", ") { it.name }
         fail(
             "${run.tool.label} reported ${check.name}: ${check.detail}" +
                 (if (alsoFailing.isEmpty()) "" else " (also failing: $alsoFailing)") +
@@ -329,6 +348,53 @@ fun assertHarnessSucceeded(run: NativeHarnessRun, expectedChecks: Set<String>) {
                 "\n${run.describe()}",
         )
     }
+}
+
+/**
+ * Runs [tool] with `--self-check` and requires the deliberate failure to come back as one.
+ *
+ * Without the flag the `fail` branch of a harness never executes, so a `check` broken into always
+ * reporting `ok` would keep the suite green forever. The prefix filter keeps the real suites out of
+ * the run, and the last step is what proves the bridge turns a native failure into an
+ * `AssertionError` that names the check rather than into a nameless "the native suite failed".
+ */
+fun assertReportsDeliberateFailure(tool: NativeTool) {
+    val run = runNativeHarness(tool, listOf("--self-check", "harness."))
+
+    assertEquals(1, run.exitCode, "a failing check must leave a non-zero exit code")
+    assertEquals(
+        1,
+        run.checks.size,
+        "the filter must select exactly the deliberate failure\n${run.describe()}",
+    )
+    val check = run.checks.single()
+    assertEquals("harness.self-check", check.name)
+    assertFalse(check.passed, "the deliberate check must be reported as failed")
+    assertTrue(check.detail.isNotEmpty(), "a failure must carry a detail")
+
+    val reported = assertFailsWith<AssertionError> {
+        assertHarnessSucceeded(run, setOf("harness.self-check"))
+    }
+    assertTrue(
+        reported.message.orEmpty().contains("harness.self-check"),
+        "the assertion must name the check that failed, got: ${reported.message}",
+    )
+}
+
+/**
+ * Runs [tool] with an argument that looks like a flag and is not one, and requires a usage error.
+ *
+ * Taking an unrecognised `--flag` for the name filter is how a mistyped `--self-check` turns into a
+ * run that selects nothing, prints the no-checks sentinel and exits 0.
+ */
+fun assertRejectsAnUnknownFlag(tool: NativeTool) {
+    val run = runNativeHarness(tool, listOf("--no-such-flag"))
+
+    assertEquals(2, run.exitCode, "an unknown flag must be a usage error\n${run.describe()}")
+    assertTrue(
+        run.checks.isEmpty(),
+        "a usage error must run no checks at all\n${run.describe()}",
+    )
 }
 
 private const val READ_BUFFER_BYTES = 4096

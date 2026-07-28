@@ -8,7 +8,6 @@ import dev.yoda.harmon.nativebridge.hm_process_issue_size
 import dev.yoda.harmon.nativebridge.hm_process_sample_size
 import dev.yoda.harmon.nativebridge.hm_read_compressed_or_paged_out
 import dev.yoda.harmon.nativebridge.hm_read_physical_memory
-import dev.yoda.harmon.nativebridge.hm_saturating_add_u64
 import dev.yoda.harmon.nativebridge.hm_uint32_counter
 import kotlinx.cinterop.CArrayPointer
 import kotlinx.cinterop.ExperimentalForeignApi
@@ -22,6 +21,7 @@ import kotlinx.cinterop.ptr
 import kotlinx.cinterop.sizeOf
 import kotlinx.cinterop.toKString
 import kotlinx.cinterop.value
+import platform.posix.alarm
 import platform.posix.fflush
 import platform.posix.fputs
 import platform.posix.getpid
@@ -32,20 +32,13 @@ import kotlin.system.exitProcess
  * The Kotlin half of the native harness.
  *
  * It speaks the same line protocol as the C harness in `test/native`, so one bridge in
- * `test/NativeHarness.kt` reads both:
+ * `test/NativeHarness.kt` reads both. The protocol is described once, in the "How the native layer
+ * is tested" section of CLAUDE.md; in short:
  *
  *     ok   binding.check-name
  *     fail binding.check-name: expected 3, got 4
  *
  * Usage: selftest.kexe [--self-check] [name-prefix]
- *
- * The exit code is 0 when every executed check passed and 1 otherwise; a second positional
- * argument is a usage error and exits with 2. `--self-check` adds a check that always fails, so
- * that the `fail` branch is executed by the suite itself rather than only by a real regression.
- *
- * Unlike the C harness this one prints `ok harness.no-checks-selected` when the filter matched
- * nothing: the bridge treats an empty output as a harness that died before reporting anything,
- * and a filter that selects nothing must not look like that.
  */
 
 private var failures = 0
@@ -88,9 +81,6 @@ private fun reportUsage(program: String) {
  */
 @OptIn(ExperimentalForeignApi::class)
 private fun runBindingChecks() {
-    val sum = hm_saturating_add_u64(1uL, 2uL)
-    check("binding.bridge-is-linked", sum == 3uL) { "expected 3, got $sum" }
-
     checkCounterMapping()
     checkStructSizes()
     checkMonotonicClock()
@@ -159,7 +149,7 @@ private fun checkMonotonicClock() {
 @OptIn(ExperimentalForeignApi::class)
 private fun checkProcessSample() {
     memScoped {
-        val capacity = maxOf(hm_count_processes() + LISTING_HEADROOM, MIN_LISTING_CAPACITY)
+        val capacity = maxOf(hm_count_processes(), 0) + LISTING_SLACK
         val samples = allocArray<HMProcessSample>(capacity)
         val issues = allocArray<HMProcessIssue>(capacity)
         val total = alloc<IntVar>()
@@ -199,7 +189,7 @@ private fun implausibleSample(
     physicalMemory: ULong,
 ): String? {
     val self = getpid()
-    var ownFootprint: ULong? = null
+    var own: HMProcessSample? = null
     for (index in 0..<written) {
         val sample = samples[index]
         if (sample.pid <= 0) {
@@ -208,15 +198,51 @@ private fun implausibleSample(
         if (sample.name.toKString().isEmpty()) {
             return "sample $index of $written (pid ${sample.pid}) has an empty name"
         }
+        /*
+         * The kernel reports these as 32-bit counters and `hm_uint32_counter` widens them; a
+         * widening that sign-extended instead would put a wrapped counter far above this bound.
+         */
+        if (sample.faults > UInt.MAX_VALUE.toULong() ||
+            sample.context_switches > UInt.MAX_VALUE.toULong()
+        ) {
+            return "sample $index of $written (pid ${sample.pid}) carries ${sample.faults} faults " +
+                "and ${sample.context_switches} context switches, both bounded by ${UInt.MAX_VALUE}"
+        }
         if (sample.pid == self) {
-            ownFootprint = sample.physical_footprint_bytes
+            own = sample
         }
     }
 
-    val footprint = ownFootprint
+    val ownSample = own
         ?: return "the listing of $written processes does not contain this process (pid $self)"
+    return implausibleOwnSample(ownSample, physicalMemory)
+}
+
+/**
+ * What is wrong with this process's own sample, where the expected values are known.
+ *
+ * The fields most likely to survive a layout drift that keeps `sizeOf` intact are the ones nothing
+ * else looks at: the two times come out of `hm_mach_time_to_ns`, and the counters out of
+ * `hm_uint32_counter`. The CPU time is bounded by the wall clock this process has been alive for,
+ * read from CLOCK_MONOTONIC rather than from the mach timebase, so a conversion off by the Apple
+ * Silicon factor of 125/3 overshoots it.
+ */
+@OptIn(ExperimentalForeignApi::class)
+private fun implausibleOwnSample(sample: HMProcessSample, physicalMemory: ULong): String? {
+    val footprint = sample.physical_footprint_bytes
     if (footprint == 0uL || footprint >= physicalMemory) {
         return "own footprint is $footprint bytes, expected between 1 and $physicalMemory"
+    }
+
+    val elapsed = hm_monotonic_time_ns() - startedAtNanoseconds
+    val cpuTime = sample.user_time_ns + sample.system_time_ns
+    if (cpuTime > elapsed * THREAD_TIME_ALLOWANCE || cpuTime < elapsed / SCHEDULING_ALLOWANCE) {
+        return "own cpu time is $cpuTime ns over $elapsed ns of wall clock, expected between " +
+            "a ${SCHEDULING_ALLOWANCE}th of the elapsed time and $THREAD_TIME_ALLOWANCE times it"
+    }
+    if (sample.context_switches == 0uL || sample.faults == 0uL) {
+        return "own counters are ${sample.context_switches} context switches and " +
+            "${sample.faults} faults, both expected above zero"
     }
     return null
 }
@@ -252,21 +278,60 @@ private fun checkAttributionSelfWalk() {
     }
 }
 
-private const val LISTING_HEADROOM = 256
-private const val MIN_LISTING_CAPACITY = 512
+/**
+ * Slack over the process count, so that the listing is wide enough to contain this process.
+ *
+ * Nothing here has to agree with what the collector reserves: the check needs one particular
+ * process in the sample, and the bridge widens its own intermediate PID list regardless.
+ */
+private const val LISTING_SLACK = 256
 
+/**
+ * How far the process's own CPU time may sit from its wall-clock lifetime, in either direction.
+ *
+ * Bounds rather than measurements, and two-sided because a mach timebase applied the wrong way
+ * round is an *under*count: on Apple Silicon it is 125/3, so a transposed one reports a
+ * fortieth of the time rather than forty times it. Between the start of `main` and this check
+ * `selftest` does nothing but list processes, which is CPU-bound — the measured ratio is 0.75 to
+ * 0.93 over five runs — so both bounds keep an order of magnitude of room: [THREAD_TIME_ALLOWANCE]
+ * for the runtime's own threads above, [SCHEDULING_ALLOWANCE] for a machine that deschedules this
+ * one below.
+ */
+private const val THREAD_TIME_ALLOWANCE = 8uL
+private const val SCHEDULING_ALLOWANCE = 16uL
+
+/**
+ * The C harness arms an alarm for the same reason: nothing else bounds a run.
+ *
+ * `runNativeHarness` blocks in `fgets` for as long as the child lives, so a walk or a listing that
+ * hung inside the kernel would hang `./kotlin test` with it, with no output to explain why. The
+ * signal turns that into a run the bridge reports as an abnormal termination.
+ */
+private const val TIMEOUT_SECONDS = 60u
+
+private var startedAtNanoseconds = 0uL
+
+@OptIn(ExperimentalForeignApi::class)
 fun main(args: Array<String>) {
+    startedAtNanoseconds = hm_monotonic_time_ns()
     var selfCheck = false
     for (argument in args) {
         when {
             argument == "--self-check" -> selfCheck = true
-            filter == null -> filter = argument
-            else -> {
+            /*
+             * An unknown flag taken as a name filter would match nothing and exit 0 — a mistyped
+             * `--self-check` would read as a clean run of a harness that checked nothing.
+             */
+            argument.startsWith("--") || filter != null -> {
                 reportUsage("selftest")
                 exitProcess(2)
             }
+
+            else -> filter = argument
         }
     }
+
+    alarm(TIMEOUT_SECONDS)
 
     runBindingChecks()
 
@@ -275,6 +340,11 @@ fun main(args: Array<String>) {
             "deliberate failure that proves the fail branch runs"
         }
     }
+    /*
+     * The bridge reads an output with no check line in it as a harness that died before reporting
+     * anything, so a filter that selected nothing has to say so out loud. The C harness prints the
+     * same line for the same reason.
+     */
     if (reported == 0) {
         println("ok   harness.no-checks-selected")
     }

@@ -271,33 +271,41 @@ static void hm_check_candidate_order(void) {
     );
 }
 
+/* How far the two clock readings below may sit apart: they are taken in a row. */
+#define HM_UPTIME_TOLERANCE_NS 5000000ULL
+
 /*
- * Mirrors the conversion the bridge performs, from the same kernel-reported
- * timebase, so the check holds on both an Intel machine (1/1, ticks are already
- * nanoseconds) and Apple Silicon (125/3).
+ * Checked against a second clock rather than against the same arithmetic the
+ * bridge performs. Recomputing `ticks * numer / denom` here would agree with
+ * `hm_mach_time_to_ns` for any change that kept the two in step — a swapped
+ * numerator and denominator included — whereas CLOCK_UPTIME_RAW counts the same
+ * interval the bridge is converting to and is derived independently. On this
+ * machine (timebase 125/3) the two readings came out identical to within 125 ns;
+ * a transposed timebase would be 40 times off an uptime measured in days.
+ *
+ * The conversion of zero stays a separate check: it is the one input the bridge
+ * short-circuits whatever the timebase says.
  */
 static void hm_check_mach_time(void) {
     mach_timebase_info_data_t timebase = {0, 0};
-    if (mach_timebase_info(&timebase) != KERN_SUCCESS || timebase.denom == 0) {
-        timebase.numer = 1;
-        timebase.denom = 1;
+    if (mach_timebase_info(&timebase) != KERN_SUCCESS) {
+        timebase.numer = 0;
+        timebase.denom = 0;
     }
 
-    const uint64_t ticks = 1000000;
-    uint64_t expected = ticks;
-    if (timebase.numer != timebase.denom) {
-        expected = ticks * (uint64_t)timebase.numer / (uint64_t)timebase.denom;
-    }
+    const uint64_t converted = hm_mach_time_to_ns(mach_absolute_time());
+    const uint64_t uptime = clock_gettime_nsec_np(CLOCK_UPTIME_RAW);
 
     CHECK(
-        "pure.mach-time-matches-timebase",
-        hm_mach_time_to_ns(ticks) == expected,
-        "expected %llu ns for %llu ticks at %u/%u, got %llu",
-        (unsigned long long)expected,
-        (unsigned long long)ticks,
+        "pure.mach-time-matches-uptime-clock",
+        uptime >= converted && uptime - converted < HM_UPTIME_TOLERANCE_NS,
+        "expected the converted mach time within %llu ns of CLOCK_UPTIME_RAW at "
+            "timebase %u/%u, got %llu against %llu",
+        (unsigned long long)HM_UPTIME_TOLERANCE_NS,
         timebase.numer,
         timebase.denom,
-        (unsigned long long)hm_mach_time_to_ns(ticks)
+        (unsigned long long)converted,
+        (unsigned long long)uptime
     );
     CHECK(
         "pure.mach-time-converts-zero",

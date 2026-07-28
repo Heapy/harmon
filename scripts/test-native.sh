@@ -36,8 +36,17 @@ mkdir -p "$OUTPUT_DIR"
 # Everything after the `---` separator is the C body of the bridge.
 sed '1,/^---$/d' "$DEF_FILE" > "$HEADER_FILE"
 
+# The libraries come from the `.def` itself rather than from a copy kept in step
+# by hand: a framework added there has to reach this link too, and a hand-written
+# copy would only report the omission as an undefined symbol.
+LINKER_OPTS=$(sed -n 's/^linkerOpts *= *//p' "$DEF_FILE")
+if [ -z "$LINKER_OPTS" ]; then
+    echo "no linkerOpts line in $DEF_FILE" >&2
+    exit 2
+fi
+
 # `-Wall -Wextra -Werror` is the C counterpart of `allWarningsAsErrors` in
-# module.yaml; the frameworks repeat the `linkerOpts` line of the `.def`.
+# module.yaml. $LINKER_OPTS is deliberately unquoted: it is a list of arguments.
 clang \
     -std=c11 \
     -Wall \
@@ -46,8 +55,6 @@ clang \
     -I"$OUTPUT_DIR" \
     -o "$BINARY_FILE" \
     "$SOURCE_DIR"/*.c \
-    -framework IOKit \
-    -framework CoreFoundation \
-    -lcurl
+    $LINKER_OPTS
 
 exec "$BINARY_FILE" "$@"

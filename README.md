@@ -146,11 +146,28 @@ C bridge, and one of them is the `selftest` executable, which only
 `./kotlin build` produces; a missing or outdated `selftest` binary fails the
 test suite rather than being skipped.
 
+The C harness can also be run on its own — it needs no Kotlin build, since the
+script compiles it every time — with an optional name prefix to select one
+suite:
+
+```shell
+scripts/test-native.sh
+scripts/test-native.sh socket.
+```
+
+Neither harness is meant to run as root; two of the checks assume an ordinary
+user. `CLAUDE.md` describes both harnesses in full.
+
 The release executable is written to:
 
 ```text
 build/tasks/_harmon_linkMacosArm64Release/harmon.kexe
 ```
+
+The `_harmon_` in that path is the name of the checkout *directory*: the root
+module has no `name:` key, so a clone or a git worktree under a different
+directory produces `build/tasks/_<directory>_linkMacosArm64Release/` instead.
+The same applies to the debug paths below.
 
 For a local, unprivileged IPC smoke test without installing launchd services,
 start the collector in one terminal:

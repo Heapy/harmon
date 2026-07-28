@@ -1,10 +1,9 @@
-import kotlinx.cinterop.ByteVar
 import kotlinx.cinterop.ExperimentalForeignApi
-import kotlinx.cinterop.allocArray
+import kotlinx.cinterop.cstr
 import kotlinx.cinterop.memScoped
-import kotlinx.cinterop.set
 import kotlinx.cinterop.toKString
 import platform.Foundation.NSFileManager
+import platform.posix.chmod
 import platform.posix.fclose
 import platform.posix.fopen
 import platform.posix.fputs
@@ -57,18 +56,30 @@ private fun toolAt(path: String): NativeTool = NativeTool(
  */
 @OptIn(ExperimentalForeignApi::class)
 private fun temporaryDirectory(): String = memScoped {
-    val template = "/tmp/harmon-guard-test.XXXXXX"
-    val buffer = allocArray<ByteVar>(template.length + 1)
-    template.encodeToByteArray().forEachIndexed { index, byte -> buffer[index] = byte }
-    buffer[template.length] = 0
-    mkdtemp(buffer)?.toKString() ?: fail("cannot create a temporary directory")
+    /* `cstr` allocates a writable copy in this scope, which is what mkdtemp edits in place. */
+    mkdtemp("/tmp/harmon-guard-test.XXXXXX".cstr.getPointer(this))?.toKString()
+        ?: fail("cannot create a temporary directory")
 }
 
 @OptIn(ExperimentalForeignApi::class)
-private fun writeFile(path: String) {
+private fun writeFile(path: String, content: String = "harmon\n") {
     val file = fopen(path, "w") ?: fail("cannot create $path")
-    fputs("harmon\n", file)
+    fputs(content, file)
     fclose(file)
+}
+
+/** A harness of one `printf`: the only way to drive [runNativeHarness] over chosen output. */
+@OptIn(ExperimentalForeignApi::class)
+private fun scriptPrinting(root: String, body: String): NativeTool {
+    val path = "$root/harness.sh"
+    writeFile(path, "#!/bin/sh\n$body\n")
+    chmod(path, "755".toUShort(radix = 8))
+    return NativeTool(
+        label = "a scripted harness",
+        environmentKey = "HARMON_NATIVE_TEST_SCRIPT",
+        relativePath = path,
+        override = null,
+    )
 }
 
 @OptIn(ExperimentalForeignApi::class)
@@ -179,6 +190,41 @@ class NativeHarnessTest {
         assertTrue(
             failure.message.orEmpty().contains("pure.uint32-counter-wraps: expected 4294967295"),
             "the assertion must carry the text of the failing check, got: ${failure.message}",
+        )
+    }
+
+    /**
+     * The assertion ends the test on the first failure, so the rest would go unmentioned unless
+     * they were named in its text — and "one of five checks failed" is a worse message than a list.
+     */
+    @Test
+    fun namesTheOtherFailingChecksAfterTheFirst() {
+        val failure = assertFailsWith<AssertionError> {
+            assertHarnessSucceeded(
+                harnessRun(
+                    lines = listOf(
+                        "fail pure.uint32-counter-wraps: expected 4294967295, got 0",
+                        "ok   pure.saturating-add-adds",
+                        "fail socket.mode-is-0660: expected 0660, got 0666",
+                    ),
+                    exitCode = 1,
+                ),
+                setOf(
+                    "pure.uint32-counter-wraps",
+                    "pure.saturating-add-adds",
+                    "socket.mode-is-0660",
+                ),
+            )
+        }
+
+        val message = failure.message.orEmpty()
+        assertTrue(
+            message.contains("pure.uint32-counter-wraps: expected 4294967295"),
+            "the first failure must carry its own text, got: $message",
+        )
+        assertTrue(
+            message.contains("also failing: socket.mode-is-0660"),
+            "every other failure must be named, got: $message",
         )
     }
 
@@ -389,6 +435,53 @@ class NativeHarnessTest {
             failure.message.orEmpty().contains("binding"),
             "the message must name the nested source, got: ${failure.message}",
         )
+    }
+
+    /**
+     * A source list that resolves to nothing is how the guard stops guarding: a path renamed in the
+     * repository but not in [SELFTEST_SOURCES] leaves a list of files that do not exist, and a
+     * guard that took "no sources" for "nothing newer" would pass over any binary at all.
+     */
+    @Test
+    fun failsWhenNoSourceExists() = withTemporaryDirectory { root ->
+        val binary = "$root/selftest.kexe"
+        writeFile(binary)
+
+        val failure = assertFailsWith<AssertionError> {
+            assertHarnessIsCurrent(toolAt(binary), listOf("$root/gone", "$root/also-gone.def"))
+        }
+
+        assertTrue(
+            failure.message.orEmpty().contains("none of the sources"),
+            "an empty source list must fail rather than pass, got: ${failure.message}",
+        )
+    }
+
+    /**
+     * `fgets` fills a fixed buffer, so a line longer than it arrives in pieces that have to be
+     * joined, and a last line without a newline has to be kept rather than dropped. Both are how a
+     * real check name reaches the parser when a C `printf` is interleaved with anything else.
+     */
+    @Test
+    fun assemblesLinesSplitAcrossReadsAndWithoutATrailingNewline() = withTemporaryDirectory { root ->
+        val detail = "x".repeat(9000)
+        val tool = scriptPrinting(
+            root,
+            """
+            echo "fail pure.long-detail: $detail"
+            printf 'ok   pure.no-trailing-newline'
+            """.trimIndent(),
+        )
+
+        val run = runNativeHarness(tool)
+
+        assertEquals(
+            listOf("pure.long-detail", "pure.no-trailing-newline"),
+            run.checks.map { it.name },
+            "both lines must survive the read buffer\n${run.describe()}",
+        )
+        assertEquals(detail, run.checks.first().detail, "a split line must be joined verbatim")
+        assertTrue(run.checks.last().passed, "a line without a newline is still a check")
     }
 
     @Test

@@ -1,15 +1,13 @@
 import kotlin.test.Test
 import kotlin.test.assertEquals
-import kotlin.test.assertFalse
-import kotlin.test.assertTrue
 
 /**
  * Every check `selftest.kexe` is expected to run, for the same reason the C harness has such a
- * list: a check that stops being executed would otherwise vanish without a line turning red.
+ * list: a check that stops being executed would otherwise vanish without a line turning red. A new
+ * check is therefore a two-file change — the `check` call and its name here.
  */
 private val SELFTEST_CHECKS = setOf(
     "attribution.self-walk-completes",
-    "binding.bridge-is-linked",
     "binding.monotonic-clock-advances",
     "binding.process-sample-readable",
     "binding.struct-sizes-agree",
@@ -31,33 +29,19 @@ class SelftestBridgeTest {
         assertHarnessSucceeded(runNativeHarness(tool), SELFTEST_CHECKS)
     }
 
-    /**
-     * The same proof the C harness gets: without `--self-check` the `fail` branch never executes,
-     * so a `check` broken into always reporting `ok` would keep the suite green forever.
-     */
+    /** The same proof the C harness gets, through the same helper. */
     @Test
     fun reportsADeliberateFailure() {
         val tool = selftestHarness()
         assertHarnessIsCurrent(tool, SELFTEST_SOURCES)
 
-        val run = runNativeHarness(tool, listOf("--self-check", "harness."))
-
-        assertEquals(1, run.exitCode, "a failing check must leave a non-zero exit code")
-        assertEquals(
-            1,
-            run.checks.size,
-            "the filter must select exactly the deliberate failure\n${run.describe()}",
-        )
-        val check = run.checks.single()
-        assertEquals("harness.self-check", check.name)
-        assertFalse(check.passed, "the deliberate check must be reported as failed")
-        assertTrue(check.detail.isNotEmpty(), "a failure must carry a detail")
+        assertReportsDeliberateFailure(tool)
     }
 
     /**
      * A filter that matches nothing collides with the rule that an empty output means a harness
-     * that died before reporting anything. The harness resolves it by saying so out loud instead
-     * of printing nothing.
+     * that died before reporting anything. Both harnesses resolve it the same way, by saying so out
+     * loud instead of printing nothing.
      */
     @Test
     fun reportsThatAFilterSelectedNothing() {
@@ -68,5 +52,14 @@ class SelftestBridgeTest {
 
         assertEquals(0, run.exitCode, "selecting no checks is not a failure\n${run.describe()}")
         assertHarnessSucceeded(run, setOf("harness.no-checks-selected"))
+    }
+
+    /** A mistyped flag must be a usage error here too, not a filter that quietly matches nothing. */
+    @Test
+    fun rejectsAnUnknownFlag() {
+        val tool = selftestHarness()
+        assertHarnessIsCurrent(tool, SELFTEST_SOURCES)
+
+        assertRejectsAnUnknownFlag(tool)
     }
 }

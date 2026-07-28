@@ -1,15 +1,13 @@
 import kotlin.test.Test
 import kotlin.test.assertEquals
-import kotlin.test.assertFailsWith
-import kotlin.test.assertFalse
-import kotlin.test.assertTrue
 
 /**
  * Every check `scripts/test-native.sh` is expected to run.
  *
  * The set is spelled out rather than derived from the output: a check that stops being executed —
  * because a suite lost its call, or a `#if` swallowed it — would otherwise disappear without a
- * single line turning red.
+ * single line turning red. The price is that a new check is a two-file change: the `CHECK` call and
+ * its name here, or the run fails as `unexpected`.
  */
 private val C_HARNESS_CHECKS = setOf(
     "pure.saturating-add-zero",
@@ -34,24 +32,29 @@ private val C_HARNESS_CHECKS = setOf(
     "pure.candidates-tie-breaks-by-index",
     "pure.candidates-sort-descends",
     "pure.candidates-sort-keeps-tie-order",
-    "pure.mach-time-matches-timebase",
+    "pure.mach-time-matches-uptime-clock",
     "pure.mach-time-converts-zero",
     "pure.discard-http-response-consumes-everything",
     "attribution.self-walk-completes",
     "attribution.consumed-is-reported",
     "attribution.dead-pid-not-measured",
+    "attribution.vanishing-pid-is-an-undercount",
     "attribution.region-limit-undercount",
     "attribution.rejects-invalid-arguments",
     "processes.listing-is-consistent",
+    "processes.total-matches-a-fresh-count",
     "processes.samples-are-well-formed",
+    "processes.issues-are-well-formed",
     "processes.rejects-invalid-arguments",
     "snapshot.memory-and-load-are-plausible",
-    "snapshot.processor-counters-advance",
+    "snapshot.processor-counters-never-go-backwards",
     "snapshot.swap-and-virtual-memory-readable",
     "snapshot.storage-and-battery-readable",
     "framing.send-rejects-null",
     "framing.send-rejects-empty",
+    "framing.send-rejects-oversized",
     "framing.round-trips-a-frame",
+    "framing.receive-accepts-a-null-size",
     "framing.receive-rejects-oversized-length",
     "framing.receive-rejects-length-above-maximum",
     "framing.receive-rejects-zero-length",
@@ -78,32 +81,26 @@ class NativeCTest {
         assertHarnessSucceeded(runNativeHarness(cTestHarness()), C_HARNESS_CHECKS)
     }
 
+    @Test
+    fun reportsADeliberateFailure() = assertReportsDeliberateFailure(cTestHarness())
+
     /**
-     * Without `--self-check` the `fail` branch of the C harness never executes, so a `CHECK` macro
-     * broken into always reporting `ok` would keep the suite green forever. The flag forces one
-     * deliberate failure; the prefix filter keeps the other suites out of this run.
+     * The same sentinel `selftest` prints, and for the same reason: the bridge reads an output with
+     * no check line in it as a harness that died before reporting anything, so a filter that
+     * selected nothing has to say so rather than exit quietly.
      */
     @Test
-    fun reportsADeliberateFailure() {
-        val run = runNativeHarness(cTestHarness(), listOf("--self-check", "harness."))
+    fun reportsThatAFilterSelectedNothing() {
+        val run = runNativeHarness(cTestHarness(), listOf("no-such-suite."))
 
-        assertEquals(1, run.exitCode, "a failing check must leave a non-zero exit code")
-        assertEquals(
-            1,
-            run.checks.size,
-            "the filter must select exactly the deliberate failure\n${run.describe()}",
-        )
-        val check = run.checks.single()
-        assertEquals("harness.self-check", check.name)
-        assertFalse(check.passed, "the deliberate check must be reported as failed")
-        assertTrue(check.detail.isNotEmpty(), "a failure must carry a detail")
-
-        val reported = assertFailsWith<AssertionError> {
-            assertHarnessSucceeded(run, setOf("harness.self-check"))
-        }
-        assertTrue(
-            reported.message.orEmpty().contains("harness.self-check"),
-            "the assertion must name the check that failed, got: ${reported.message}",
-        )
+        assertEquals(0, run.exitCode, "selecting no checks is not a failure\n${run.describe()}")
+        assertHarnessSucceeded(run, setOf("harness.no-checks-selected"))
     }
+
+    /**
+     * A mistyped flag must not be taken for a name filter: it would match nothing, print the
+     * sentinel and exit 0 — a green run of a harness that checked nothing at all.
+     */
+    @Test
+    fun rejectsAnUnknownFlag() = assertRejectsAnUnknownFlag(cTestHarness())
 }
