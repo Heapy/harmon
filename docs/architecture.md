@@ -40,12 +40,19 @@ sequenceDiagram
     A->>C: Connect for current snapshot
     C-->>A: Versioned JSON frame
     A->>A: Calculate rates and application totals
-    A->>D: Notify only when configured and due
+    A->>D: Push only the alerts that just crossed a threshold
 ```
 
 The collector is request-driven rather than continuously polling. One accepted
 connection produces one snapshot. The agent determines the interval and needs
-two snapshots to calculate rates.
+two snapshots to calculate rates. It sleeps on the monotonic clock, parked for
+the whole interval rather than polling, so a wall-clock adjustment cannot
+stretch or collapse a sampling window.
+
+Notification is edge-triggered, not scheduled. The agent keeps the set of alert
+keys that were firing on the previous sample and the set whose delivery was
+confirmed; a push is built from the keys missing from the latter. The attached
+report and the JSON payload still describe the whole sample.
 
 ## IPC protocol
 
@@ -91,15 +98,26 @@ intended only for a socket under `/tmp` and does not improve process access.
 ## Failure behavior
 
 - A failed collector startup exits; launchd throttles and restarts it.
-- A rejected peer is closed without taking a snapshot.
+- A rejected peer is closed without taking a snapshot, and a rejection never
+  counts against the accept-failure budget.
+- A failing `accept` is logged and retried after a short pause. Only 16
+  consecutive failures end the daemon, so a transient error cannot kill it while
+  one served client resets the count.
 - A per-process access failure does not fail the snapshot. It is counted and,
   up to the diagnostic capacity, recorded with available PID metadata.
 - Failure of required global swap, physical-memory, CPU, or VM collection
   aborts that request.
 - Battery and internal-storage collection are optional. Their output is marked
   unavailable when the APIs do not produce data.
-- If an agent interval fails, its previous valid snapshot remains the
+- If an agent capture fails, its previous valid snapshot remains the
   baseline. The next successful interval covers the full monotonic duration.
+- An exception raised while handling a sample is logged and the loop continues.
+  The baseline advances to the newer snapshot first, so one bad pair of
+  snapshots is not replayed against every following capture.
+- An alert key is recorded as pushed only after a decisive channel confirms
+  delivery. Notification Center is best-effort and does not confirm, so a sample
+  whose webhook and Telegram calls both failed pushes the same alerts again on
+  the next sample. Alert state is in-memory and resets with the agent.
 - Notifications never run in the collector and cannot terminate it.
 - Before a system notification is posted, the agent atomically replaces the
   private `Reports/latest.html` file. The notification carries only that local

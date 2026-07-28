@@ -55,8 +55,11 @@ The Kotlin collector calls a small C bridge in
 | Sampling clock | `clock_gettime(CLOCK_MONOTONIC)` | Stable interval duration |
 | Report clock | `Clock.System.now()` | Human-readable timestamp |
 
-The process capacity is 16,384 records. Up to 4,096 detailed process failures
-are retained per snapshot.
+Each snapshot sizes its process and failure arrays from the live PID count
+(`proc_listallpids(NULL, 0)`) plus headroom for processes that start between
+counting and listing, so a typical machine reserves a few hundred slots instead
+of the maximum. The ceilings stay 16,384 process records and 4,096 detailed
+process failures per snapshot.
 
 ## Process identity
 
@@ -385,8 +388,16 @@ selected for each application rule. A push carries only the alerts that crossed
 their threshold on this sample; while the condition holds there is no repeat,
 and a key becomes pushable again only after it stops firing. Delivery has to
 succeed for a key to count as pushed, so a failed webhook or Telegram call is
-retried on the next sample instead of being silently dropped. Alert state
-resets with the agent.
+retried on the next sample instead of being silently dropped. Notification
+Center does not count towards that success: macOS returns no synchronous
+confirmation to a launchd agent, so the channel is treated as best-effort.
+Alert state resets with the agent.
+
+Only the push text is narrowed that way. The HTML report attached to a system
+notification and the JSON webhook payload both carry every alert active in the
+sample, and the payload's `newAlertKeys` names the subset the push was about.
+With `notifyEverySample=true` the agent sends on every sample and treats every
+active alert as push content.
 
 `applicationMemoryAlertMiB` and `swapAlertMiB` are capped at 1,048,576 MiB
 (1 TiB); a larger value is rejected. The MiB-to-byte conversion saturates rather
@@ -436,7 +447,8 @@ The standard `harmon.sample` webhook includes:
 - top applications and processes by CPU, memory, battery impact, physical
   writes, internal logical writes, compressed/paged-out proxy, and accounted
   energy;
-- alerts and collection coverage counts.
+- every alert active in the sample, `newAlertKeys` naming the ones that crossed
+  their threshold on it, and collection coverage counts.
 
 It excludes executable paths and detailed PID collection failures.
 

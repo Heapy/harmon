@@ -70,9 +70,11 @@ keeps three concepts separate:
   compressor segment was written to disk.
 
 To keep collection bounded, Harmon walks VM regions only for the 256 readable
-processes with the largest physical footprint. Reports include the attribution
-coverage and failure count. The proxy must not be summed and presented as exact
-disk swap.
+processes with the largest physical footprint, and stops walking once a
+per-sample budget of 100,000 regions is spent. On a loaded machine that budget,
+rather than the 256-process limit, is what ends attribution, so coverage settles
+well below 256 measured processes. Reports include the attribution coverage and
+failure count. The proxy must not be summed and presented as exact disk swap.
 
 ### Root access
 
@@ -210,6 +212,28 @@ Validate configuration and notification delivery without printing secrets:
 harmon check-config
 harmon test-notifications
 ```
+
+## Alerts and notifications
+
+Alerts are event-driven. A push goes out when an alert key crosses its
+threshold; while the condition keeps holding there are no repeat reminders. Once
+the value clears, the same alert pushes again the next time it fires. To stop a
+value sitting on the threshold from flapping, an alert that is already firing
+clears only after it drops below 90% of the threshold. Low battery is exempt: it
+is the one rule comparing with "less than or equal", where a lowered bound would
+drop the alert while the battery is still low.
+
+A key counts as pushed only once a decisive channel accepted it. Notification
+Center is best-effort — macOS gives the launchd agent no synchronous delivery
+confirmation — so a sample whose webhook and Telegram calls both failed is
+retried on the next sample instead of being silently dropped. Alert state lives
+in the agent process and resets when it restarts.
+
+The push text names only the alerts that fired on this sample. The attached HTML
+report and the JSON webhook payload both carry every alert active in the sample,
+and the payload adds `newAlertKeys` listing the ones the push was about. With
+`notifyEverySample=true` the agent sends on every sample and treats the whole
+alert list as push content.
 
 Notification Center delivery uses the background-only Harmon application
 bundle installed under `~/Library/Application Support/Harmon/Harmon.app`.
