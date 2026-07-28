@@ -232,11 +232,18 @@ static inline int hm_process_list_capacity(int counted, int output_capacity);
 - Create: `harmon.module-template.yaml`
 - Modify: `module.yaml`
 
-- [ ] создать `harmon.module-template.yaml` с блоком `settings.kotlin` (version, languageVersion, apiVersion, progressiveMode, allWarningsAsErrors); `serialization: json` оставить в корневом `module.yaml`, он нужен только приложению
-- [ ] в `module.yaml` заменить встроенный `settings.kotlin` на `apply: [./harmon.module-template.yaml]`, сохранив `serialization: json`
-- [ ] проверить `./kotlin show settings` — эффективные настройки корня не изменились
-- [ ] проверить, что строгость жива: временно добавить неиспользуемый импорт, убедиться что сборка падает, откатить
-- [ ] запустить `./kotlin build && ./kotlin test` — должно пройти до перехода к задаче 2
+- [x] создать `harmon.module-template.yaml` с блоком `settings.kotlin` (version, languageVersion, apiVersion, progressiveMode, allWarningsAsErrors); `serialization: json` оставить в корневом `module.yaml`, он нужен только приложению
+- [x] в `module.yaml` заменить встроенный `settings.kotlin` на `apply: [./harmon.module-template.yaml]`, сохранив `serialization: json`
+- [x] проверить `./kotlin show settings` — эффективные настройки корня не изменились
+- [x] проверить, что строгость жива: временно добавить неиспользуемый импорт, убедиться что сборка падает, откатить
+- [x] запустить `./kotlin build && ./kotlin test` — должно пройти до перехода к задаче 2
+
+⚠️ **Уточнение к пробе строгости.** Неиспользуемый импорт **не** роняет сборку под Kotlin 2.4.10
+CLI — как и неиспользуемая приватная функция верхнего уровня; проверено A/B, до и после введения
+шаблона поведение одинаковое. Это относится и к утверждению в `CLAUDE.md` («unused import … fails
+the build like an error»), которое задача 15 должна поправить. Пробой служит предупреждение
+`DEPRECATION`: вызов `@Deprecated`-функции падает с `error: warnings found and -Werror specified`,
+что и подтверждает, что `allWarningsAsErrors` пережил переезд в шаблон.
 
 ### Task 2: Выделить модуль nativebridge
 
@@ -444,6 +451,7 @@ static inline int hm_process_list_capacity(int counted, int output_capacity);
 - [ ] задокументировать требование `./kotlin build` перед `./kotlin test`, поведение сторожа протухания и привязку пути к debug-варианту
 - [ ] задокументировать эмпирически установленное: рабочий каталог тестового процесса — `moduleDir`, переопределения через `HARMON_SELFTEST_BIN` / `HARMON_NATIVE_TEST_SCRIPT`
 - [ ] обновить раздел Layout: `nativebridge/`, `selftest/`, `test/native/`, `scripts/test-native.sh`, `harmon.module-template.yaml`
+- [ ] ➕ поправить в `CLAUDE.md` пример строгости: `allWarningsAsErrors` роняет сборку на `DEPRECATION`, но **не** на неиспользуемом импорте и не на неиспользуемой приватной функции (проверено в задаче 1); заодно упомянуть `harmon.module-template.yaml` как место, откуда строгость приходит в каждый модуль
 - [ ] в `README.md` изменить порядок команд в разделе Build and test — сейчас `./kotlin test` стоит перед `./kotlin build`, после плана этот порядок обязателен
 - [ ] сверить `docs/architecture.md` на упоминания раскладки модулей
 - [ ] переместить этот план в `docs/plans/completed/`

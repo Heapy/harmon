@@ -1,0 +1,11 @@
+# Kotlin settings shared by every module in the project. New modules do not
+# inherit `settings.kotlin` from the root module, so without this template
+# `allWarningsAsErrors` would silently not apply to them.
+
+settings:
+  kotlin:
+    version: 2.4.10
+    languageVersion: "2.4"
+    apiVersion: "2.4"
+    progressiveMode: true
+    allWarningsAsErrors: true
