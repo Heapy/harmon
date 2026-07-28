@@ -1,6 +1,7 @@
 import dev.yoda.harmon.analysis.ApplicationGrouper
 import dev.yoda.harmon.model.Alert
 import dev.yoda.harmon.model.LoadAverages
+import dev.yoda.harmon.model.MonitoringReport
 import dev.yoda.harmon.model.PowerState
 import dev.yoda.harmon.model.ProcessorCounters
 import dev.yoda.harmon.model.ProcessorUsage
@@ -259,6 +260,61 @@ fun systemUsage(
     processes = processes,
     applications = ApplicationGrouper().group(processes),
     processIssues = emptyList(),
+)
+
+/**
+ * A report whose applications tie on several ranked metrics and whose top-N slice is narrower
+ * than the application list, so any change in how the slices are built shows up as a changed
+ * order or a changed membership.
+ */
+fun rankingReport(): MonitoringReport = MonitoringReport(
+    usage = systemUsage(
+        processes = listOf(
+            processUsage(
+                pid = 11,
+                name = "alpha",
+                cpuPercent = 12.0,
+                footprint = 2uL * 1_073_741_824uL,
+                diskWriteBytesPerSecond = 8.0 * 1_048_576.0,
+                logicalWriteBytesPerSecond = 2.0 * 1_048_576.0,
+                compressedOrPagedOutBytes = 512uL * 1_048_576uL,
+                energyWatts = 0.9,
+                impact = 4.0,
+            ),
+            processUsage(
+                pid = 12,
+                name = "bravo",
+                cpuPercent = 12.0,
+                footprint = 1uL * 1_073_741_824uL,
+                logicalWriteBytesPerSecond = 6.0 * 1_048_576.0,
+                impact = 4.0,
+            ),
+            processUsage(
+                pid = 13,
+                name = "charlie",
+                cpuPercent = 3.0,
+                footprint = 4uL * 1_073_741_824uL,
+                diskWriteBytesPerSecond = 1.0 * 1_048_576.0,
+                compressedOrPagedOutBytes = 128uL * 1_048_576uL,
+                energyWatts = 0.2,
+                impact = 1.0,
+            ),
+            processUsage(pid = 14, name = "delta"),
+            processUsage(
+                pid = 15,
+                name = "echo",
+                cpuPercent = 7.0,
+                footprint = 3uL * 1_073_741_824uL,
+                diskWriteBytesPerSecond = 4.0 * 1_048_576.0,
+                logicalWriteBytesPerSecond = 4.0 * 1_048_576.0,
+                compressedOrPagedOutBytes = 64uL * 1_048_576uL,
+                energyWatts = 0.05,
+                impact = 2.0,
+            ),
+        ),
+    ),
+    alerts = listOf(alert(key = "cpu:alpha")),
+    topProcessCount = 3,
 )
 
 fun alert(

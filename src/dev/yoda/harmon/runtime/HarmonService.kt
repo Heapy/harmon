@@ -10,6 +10,7 @@ import dev.yoda.harmon.model.RawSystemSnapshot
 import dev.yoda.harmon.monitor.SystemCollector
 import dev.yoda.harmon.monitor.UsageCalculator
 import dev.yoda.harmon.notify.NotificationDispatcher
+import dev.yoda.harmon.report.ApplicationRankings
 import dev.yoda.harmon.report.ReportFormatter
 import dev.yoda.harmon.util.printError
 import kotlinx.cinterop.ExperimentalForeignApi
@@ -89,9 +90,12 @@ class HarmonService(
      */
     fun handleSample(previous: RawSystemSnapshot, current: RawSystemSnapshot) {
         val report = createReport(previous, current)
-        val reportText = ReportFormatter.text(report)
+        // Ranked once here and handed to both renderers: the logged text and the JSON payload
+        // share most of their application slices.
+        val rankings = ApplicationRankings(report)
+        val reportText = ReportFormatter.text(report, rankings)
         log(reportText)
-        deliverIfNeeded(report, reportText)
+        deliverIfNeeded(report, rankings, reportText)
     }
 
     fun sampleOnce(sampleSeconds: Long = config.onceSampleSeconds): MonitoringReport {
@@ -147,9 +151,13 @@ class HarmonService(
      * reported and treated as delivering nothing. Letting it escape would skip the commit and
      * strand the state on the sample before it.
      */
-    private fun deliverIfNeeded(report: MonitoringReport, reportText: String) {
+    private fun deliverIfNeeded(
+        report: MonitoringReport,
+        rankings: ApplicationRankings,
+        reportText: String,
+    ) {
         val delivered = try {
-            deliverSample(report, reportText)
+            deliverSample(report, rankings, reportText)
         } catch (failure: Throwable) {
             logError(
                 "${Clock.System.now()} notification delivery failed: " +
@@ -168,7 +176,11 @@ class HarmonService(
      * — to check [NotificationDispatcher.isEmpty], say — would build the system channel and boot
      * AppKit on every quiet sample, which is exactly what the lazy holder exists to avoid.
      */
-    private fun deliverSample(report: MonitoringReport, reportText: String): Set<String> {
+    private fun deliverSample(
+        report: MonitoringReport,
+        rankings: ApplicationRankings,
+        reportText: String,
+    ): Set<String> {
         val everySample = config.notifications.notifyEverySample
         val freshAlerts = alertState.newlyActive(report.alerts)
         if (!everySample && freshAlerts.isEmpty()) {
@@ -182,7 +194,7 @@ class HarmonService(
 
         val highlighted = if (everySample) report.alerts else freshAlerts
         val results = dispatcher.deliver(
-            ReportFormatter.notification(report, highlighted, reportText),
+            ReportFormatter.notification(report, highlighted, rankings, reportText),
         )
         results.forEach { result ->
             val stream = if (result.successful) log else logError

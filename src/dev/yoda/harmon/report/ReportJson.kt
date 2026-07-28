@@ -17,12 +17,15 @@ object ReportJson {
 
     /**
      * [newAlertKeys] tells the consumer which of the reported alerts crossed their threshold on
-     * this sample; `alerts` stays the complete list.
+     * this sample; `alerts` stays the complete list. [rankings] is accepted so the application
+     * slices this payload shares with the text report are ranked once per report, not once per
+     * renderer.
      */
     fun encode(
         report: MonitoringReport,
         newAlertKeys: List<String> = report.alerts.map { it.key },
-    ): String = json.encodeToString(report.toDto(newAlertKeys))
+        rankings: ApplicationRankings = ApplicationRankings(report),
+    ): String = json.encodeToString(report.toDto(newAlertKeys, rankings))
 
     fun testEvent(): String =
         json.encodeToString(
@@ -39,7 +42,10 @@ object ReportJson {
             ),
         )
 
-    private fun MonitoringReport.toDto(newAlertKeys: List<String>): ReportEventDto {
+    private fun MonitoringReport.toDto(
+        newAlertKeys: List<String>,
+        rankings: ApplicationRankings,
+    ): ReportEventDto {
         val usage = usage
         return ReportEventDto(
             capturedAt = usage.capturedAt.toString(),
@@ -102,38 +108,17 @@ object ReportJson {
             ),
             applications = ApplicationSetDto(
                 total = usage.applications.size,
-                topCpu = usage.applications
-                    .sortedByDescending { it.cpuPercent }
-                    .take(topProcessCount)
-                    .map { it.toDto() },
-                topMemory = usage.applications
-                    .sortedByDescending { it.physicalFootprintBytes }
-                    .take(topProcessCount)
-                    .map { it.toDto() },
-                topBatteryImpact = usage.applications
-                    .sortedByDescending { it.batteryImpactScore }
-                    .take(topProcessCount)
-                    .map { it.toDto() },
-                topPhysicalWrites = usage.applications
-                    .filter { it.diskWriteBytesPerSecond > 0.0 }
-                    .sortedByDescending { it.diskWriteBytesPerSecond }
-                    .take(topProcessCount)
-                    .map { it.toDto() },
-                topInternalLogicalWrites = usage.applications
-                    .filter { it.logicalWriteBytesPerSecond > 0.0 }
-                    .sortedByDescending { it.logicalWriteBytesPerSecond }
-                    .take(topProcessCount)
-                    .map { it.toDto() },
-                topCompressedOrPagedOut = usage.applications
-                    .filter { it.compressedAttributionProcessCount > 0 }
-                    .sortedByDescending { it.compressedOrPagedOutBytes }
-                    .take(topProcessCount)
-                    .map { it.toDto() },
-                topEnergy = usage.applications
-                    .filter { it.energyWatts > 0.0 }
-                    .sortedByDescending { it.energyWatts }
-                    .take(topProcessCount)
-                    .map { it.toDto() },
+                topCpu = rankings.topCpu.map { it.toDto() },
+                topMemory = rankings.topMemory.map { it.toDto() },
+                topBatteryImpact = rankings.topBatteryImpact.map { it.toDto() },
+                topPhysicalWrites = rankings.topPhysicalWrites.map { it.toDto() },
+                topInternalLogicalWrites = rankings.topInternalLogicalWrites.map {
+                    it.toDto()
+                },
+                topCompressedOrPagedOut = rankings.topCompressedOrPagedOut.map {
+                    it.toDto()
+                },
+                topEnergy = rankings.topEnergy.map { it.toDto() },
             ),
             processes = ProcessSetDto(
                 total = usage.totalProcessCount,

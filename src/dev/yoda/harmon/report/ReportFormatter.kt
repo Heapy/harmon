@@ -10,7 +10,14 @@ import dev.yoda.harmon.model.Severity
 import dev.yoda.harmon.util.Format
 
 object ReportFormatter {
-    fun text(report: MonitoringReport): String = buildString {
+    /**
+     * [rankings] is accepted so a caller that renders both the text and the JSON payload of the
+     * same report ranks its applications once instead of once per renderer.
+     */
+    fun text(
+        report: MonitoringReport,
+        rankings: ApplicationRankings = ApplicationRankings(report),
+    ): String = buildString {
         val usage = report.usage
         appendLine("Harmon sample at ${usage.capturedAt}")
         appendLine("Window: ${Format.decimal(usage.elapsedSeconds)}s")
@@ -54,24 +61,17 @@ object ReportFormatter {
 
         appendApplicationTable(
             heading = "Top application CPU",
-            applications = usage.applications.sortedByDescending { it.cpuPercent },
-            limit = report.topProcessCount,
+            applications = rankings.topCpu,
             metric = { "${Format.decimal(it.cpuPercent)}%" },
         )
         appendApplicationTable(
             heading = "Top application memory",
-            applications = usage.applications.sortedByDescending {
-                it.physicalFootprintBytes
-            },
-            limit = report.topProcessCount,
+            applications = rankings.topMemory,
             metric = { Format.bytes(it.physicalFootprintBytes) },
         )
         appendApplicationTable(
             heading = "Likely application battery impact",
-            applications = usage.applications.sortedByDescending {
-                it.batteryImpactScore
-            },
-            limit = report.topProcessCount,
+            applications = rankings.topBatteryImpact,
             metric = { application ->
                 "score ${Format.decimal(application.batteryImpactScore)}, " +
                     "${Format.decimal(application.wakeupsPerSecond)} wakeups/s, " +
@@ -88,18 +88,7 @@ object ReportFormatter {
         )
         appendApplicationTable(
             heading = "Top application storage writes",
-            applications = usage.applications
-                .filter {
-                    it.diskWriteBytesPerSecond > 0.0 ||
-                        it.logicalWriteBytesPerSecond > 0.0
-                }
-                .sortedByDescending {
-                    maxOf(
-                        it.diskWriteBytesPerSecond,
-                        it.logicalWriteBytesPerSecond,
-                    )
-                },
-            limit = report.topProcessCount,
+            applications = rankings.topStorageWrites,
             metric = { application ->
                 "${Format.bytesPerSecond(
                     application.diskWriteBytesPerSecond,
@@ -111,10 +100,7 @@ object ReportFormatter {
         )
         appendApplicationTable(
             heading = "Top application compressed/paged-out memory",
-            applications = usage.applications
-                .filter { it.compressedAttributionProcessCount > 0 }
-                .sortedByDescending { it.compressedOrPagedOutBytes },
-            limit = report.topProcessCount,
+            applications = rankings.topCompressedOrPagedOut,
             metric = { application ->
                 "${Format.bytes(application.compressedOrPagedOutBytes)} proxy " +
                     "(${application.compressedAttributionProcessCount}/" +
@@ -203,7 +189,8 @@ object ReportFormatter {
     fun notification(
         report: MonitoringReport,
         highlighted: List<Alert> = report.alerts,
-        reportText: String = text(report),
+        rankings: ApplicationRankings = ApplicationRankings(report),
+        reportText: String = text(report, rankings),
     ): NotificationPayload {
         val title = when {
             highlighted.any { it.severity == Severity.CRITICAL } -> "Harmon: critical alert"
@@ -232,14 +219,15 @@ object ReportFormatter {
                 subtitle = subtitle,
                 reportText = reportText,
             ),
-            json = json(report, highlighted.map { it.key }),
+            json = json(report, highlighted.map { it.key }, rankings),
         )
     }
 
     fun json(
         report: MonitoringReport,
         newAlertKeys: List<String> = report.alerts.map { it.key },
-    ): String = ReportJson.encode(report, newAlertKeys)
+        rankings: ApplicationRankings = ApplicationRankings(report),
+    ): String = ReportJson.encode(report, newAlertKeys, rankings)
 
     fun testPayload(): NotificationPayload = NotificationPayload(
         identifier = "harmon-notification-test",
@@ -258,16 +246,14 @@ object ReportFormatter {
     private fun StringBuilder.appendApplicationTable(
         heading: String,
         applications: List<ApplicationUsage>,
-        limit: Int,
         metric: (ApplicationUsage) -> String,
     ) {
         appendLine()
         appendLine("$heading:")
-        val selected = applications.take(limit)
-        if (selected.isEmpty()) {
+        if (applications.isEmpty()) {
             appendLine("No matching application activity in this sample.")
         }
-        selected.forEachIndexed { index, application ->
+        applications.forEachIndexed { index, application ->
             appendLine(
                 "${index + 1}. ${application.reportLabel()}: ${metric(application)}",
             )
