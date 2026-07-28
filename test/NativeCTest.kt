@@ -37,6 +37,13 @@ private val C_HARNESS_CHECKS = setOf(
     "attribution.dead-pid-not-measured",
     "attribution.region-limit-undercount",
     "attribution.rejects-invalid-arguments",
+    "processes.listing-is-consistent",
+    "processes.samples-are-well-formed",
+    "processes.rejects-invalid-arguments",
+    "snapshot.memory-and-load-are-plausible",
+    "snapshot.processor-counters-advance",
+    "snapshot.swap-and-virtual-memory-readable",
+    "snapshot.storage-and-battery-readable",
 )
 
 class NativeCTest {

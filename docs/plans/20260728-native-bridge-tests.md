@@ -460,15 +460,37 @@ the build like an error»), которое задача 15 должна попр
 
 **Files:**
 - Modify: `test/native/kernel_test.c`
+- ➕ Modify: `test/NativeCTest.kt` (список `C_HARNESS_CHECKS`)
 
-- [ ] `processes.listing-is-consistent`: результат `hm_list_processes` положителен, `total >= written`, число issue в пределах ёмкости
-- [ ] `processes.samples-are-well-formed`: у каждого сэмпла `pid > 0`, имя завершено нулём внутри `HM_PROCESS_NAME_SIZE`, путь — внутри `HM_PROCESS_PATH_SIZE`
-- [ ] `processes.rejects-invalid-arguments`: нулевая ёмкость и `NULL`-массивы дают -1 с `EINVAL`
-- [ ] `snapshot.memory-and-load-are-plausible`: физическая память ненулевая, load average неотрицательны
-- [ ] `snapshot.processor-counters-advance`: счётчики процессора не убывают между двумя вызовами
-- [ ] `snapshot.swap-and-virtual-memory-readable`: `hm_read_swap` и `hm_read_virtual_memory` возвращают 0, значения неотрицательны
-- [ ] `snapshot.storage-and-battery-readable`: `hm_read_storage` возвращает 0; для `hm_read_battery` проверяется только флаг доступности (машина может быть без батареи)
-- [ ] прогнать `./kotlin test`
+- [x] `processes.listing-is-consistent`: результат `hm_list_processes` положителен, `total >= written`, число issue в пределах ёмкости
+- [x] `processes.samples-are-well-formed`: у каждого сэмпла `pid > 0`, имя завершено нулём внутри `HM_PROCESS_NAME_SIZE`, путь — внутри `HM_PROCESS_PATH_SIZE`
+- [x] `processes.rejects-invalid-arguments`: нулевая ёмкость и `NULL`-массивы дают -1 с `EINVAL`
+- [x] `snapshot.memory-and-load-are-plausible`: физическая память ненулевая, load average неотрицательны
+- [x] `snapshot.processor-counters-advance`: счётчики процессора не убывают между двумя вызовами
+- [x] `snapshot.swap-and-virtual-memory-readable`: `hm_read_swap` и `hm_read_virtual_memory` возвращают 0, значения неотрицательны
+- [x] `snapshot.storage-and-battery-readable`: `hm_read_storage` возвращает 0; для `hm_read_battery` проверяется только флаг доступности (машина может быть без батареи)
+- [x] прогнать `./kotlin test`
+
+⚠️ **Строгий рост тиков процессора проверять нельзя — измерено.** `host_statistics` отдаёт
+`HOST_CPU_LOAD_INFO` из кэша, который ядро обновляет **раз в секунду**: пробник показал ровно
+1.000 с между изменениями, а за окно в 100 мс под полной нагрузкой агрегат остался
+байт-в-байт прежним в 9 прогонах из 20. Первая редакция требовала `after_total > before_total` и
+была именно так поймана. Итоговая проверка держится формулировки плана — «не убывают» — плюс
+ненулевой агрегат; ждать обновления кэша не стали, это привязало бы набор к недокументированной
+периодичности. Причина записана комментарием в `kernel_test.c`, чтобы проверку не «усилили»
+обратно.
+
+ℹ️ **Проверок семь, вызовов моста — шесть.** `processes.listing-is-consistent` и
+`processes.samples-are-well-formed` разбирают один и тот же листинг, снятый с выключенной
+атрибуцией (оба бюджета нулевые): обход, который она бы выполнила, уже покрыт задачей 7, а прогон
+его по каждому сэмплу стоил бы секунды. Сверх плана: `rejects-invalid-arguments` покрывает все
+шесть отвергаемых комбинаций (включая отрицательные лимиты атрибуции), storage дополнительно
+сверяет `available` со счётчиком устройств и `available_bytes <= total_bytes`, а virtual memory —
+что размер страницы степень двойки, потому что все байтовые поля получаются умножением на него.
+
+ℹ️ **Проверки-плаузибельности прогнаны 8 раз подряд без единого провала**, а инверсия двух
+инвариантов (`total >= written`, рост тиков) подтвердила, что они умеют падать и печатают
+осмысленную деталь.
 
 ### Task 9: C-тесты фрейминга IPC
 
