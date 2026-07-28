@@ -427,6 +427,135 @@ static void hm_check_accept_peer_credentials(void) {
 }
 
 /*
+ * What `hm_set_socket_options` puts on every descriptor the bridge opens, read
+ * back off the descriptor with the calls that set it. Nothing else in the suite
+ * looks at any of it, and each of the three is a production failure of its own:
+ * without SO_NOSIGPIPE the collector dies of SIGPIPE when an agent disappears
+ * mid-answer, without the timeouts a peer that stops reading blocks it for good
+ * instead of for thirty seconds, and without FD_CLOEXEC the listening socket is
+ * inherited by everything the collector ever spawns.
+ */
+#define HM_SOCKET_OPTION_TIMEOUT_SECONDS 30
+
+static int hm_carries_options(int descriptor, char *detail, size_t size) {
+    int no_sigpipe = 0;
+    socklen_t no_sigpipe_size = (socklen_t)sizeof(no_sigpipe);
+    if (getsockopt(
+            descriptor,
+            SOL_SOCKET,
+            SO_NOSIGPIPE,
+            &no_sigpipe,
+            &no_sigpipe_size
+        ) != 0) {
+        snprintf(detail, size, "SO_NOSIGPIPE unreadable: %s", strerror(errno));
+        return 0;
+    }
+    if (no_sigpipe == 0) {
+        snprintf(detail, size, "SO_NOSIGPIPE is off");
+        return 0;
+    }
+
+    const int names[2] = {SO_SNDTIMEO, SO_RCVTIMEO};
+    const char *const labels[2] = {"SO_SNDTIMEO", "SO_RCVTIMEO"};
+    for (int index = 0; index < 2; index++) {
+        struct timeval timeout;
+        memset(&timeout, 0, sizeof(timeout));
+        socklen_t timeout_size = (socklen_t)sizeof(timeout);
+        if (getsockopt(descriptor, SOL_SOCKET, names[index], &timeout, &timeout_size) != 0) {
+            snprintf(detail, size, "%s unreadable: %s", labels[index], strerror(errno));
+            return 0;
+        }
+        if (timeout.tv_sec != HM_SOCKET_OPTION_TIMEOUT_SECONDS || timeout.tv_usec != 0) {
+            snprintf(
+                detail,
+                size,
+                "%s is %lld.%06d s, expected %d s",
+                labels[index],
+                (long long)timeout.tv_sec,
+                timeout.tv_usec,
+                HM_SOCKET_OPTION_TIMEOUT_SECONDS
+            );
+            return 0;
+        }
+    }
+
+    const int flags = fcntl(descriptor, F_GETFD);
+    if (flags < 0) {
+        snprintf(detail, size, "F_GETFD failed: %s", strerror(errno));
+        return 0;
+    }
+    if ((flags & FD_CLOEXEC) == 0) {
+        snprintf(detail, size, "FD_CLOEXEC is clear");
+        return 0;
+    }
+    snprintf(detail, size, "ok");
+    return 1;
+}
+
+static void hm_check_descriptor_options(void) {
+    char path[PATH_MAX];
+    if (hm_socket_test_path(path, sizeof(path), "options.sock") != 0) {
+        CHECK(
+            "socket.descriptors-carry-options",
+            0,
+            "no temporary directory: %s",
+            strerror(errno)
+        );
+        return;
+    }
+
+    HMSocketPairing pairing;
+    errno = 0;
+    if (hm_open_pairing(path, &pairing) != 0) {
+        CHECK(
+            "socket.descriptors-carry-options",
+            0,
+            "cannot pair over %s: %s",
+            path,
+            strerror(errno)
+        );
+        unlink(path);
+        return;
+    }
+
+    uint32_t peer_user_id = UINT32_MAX;
+    const int accepted =
+        hm_unix_accept(pairing.server, (uint32_t)geteuid(), &peer_user_id);
+
+    char server_detail[128] = "";
+    char client_detail[128] = "";
+    char accepted_detail[128] = "not accepted";
+    const int server_carries = hm_carries_options(
+        pairing.server,
+        server_detail,
+        sizeof(server_detail)
+    );
+    const int client_carries = hm_carries_options(
+        pairing.client,
+        client_detail,
+        sizeof(client_detail)
+    );
+    const int accepted_carries = accepted >= 0 &&
+        hm_carries_options(accepted, accepted_detail, sizeof(accepted_detail));
+
+    CHECK(
+        "socket.descriptors-carry-options",
+        server_carries && client_carries && accepted_carries,
+        "expected SO_NOSIGPIPE, %d s timeouts and FD_CLOEXEC on all three "
+            "descriptors; listening: %s, connected: %s, accepted: %s",
+        HM_SOCKET_OPTION_TIMEOUT_SECONDS,
+        server_detail,
+        client_detail,
+        accepted_detail
+    );
+
+    if (accepted >= 0) {
+        close(accepted);
+    }
+    hm_close_pairing(&pairing, path);
+}
+
+/*
  * The access gate. A collector running as root answers whoever it accepts, so a
  * connection from a uid other than the configured one has to be dropped before a
  * single frame is read. The peer uid is reported even then, because the caller
@@ -544,6 +673,7 @@ void hm_run_socket_tests(void) {
     hm_check_connect_rejects_bad_path();
     hm_check_connect();
     hm_check_accept_peer_credentials();
+    hm_check_descriptor_options();
     hm_check_accept_rejects_foreign_uid();
     hm_check_remove_bad_input();
     /* The directory is removed by the `atexit` handler `hm_socket_test_path`

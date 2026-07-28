@@ -1,5 +1,6 @@
 #include "harmon_native.h"
 
+#include <pthread.h>
 #include <sys/mman.h>
 #include <sys/wait.h>
 
@@ -19,8 +20,13 @@
  * caller must own at least the 64 rusage-readable processes that fill it. An
  * ordinary desktop session is far past that (566 here), a stripped service
  * account might not be — the check then fails naming the capacity issues it
- * counted, which is the same signal it gives for a truncated PID list. CLAUDE.md
- * records this alongside the non-root requirement.
+ * counted, which is the same signal it gives for a truncated PID list. Two more
+ * checks ask for a little more of the same machine:
+ * `processes.issue-metadata-matches-a-fresh-read` for 32 issues that are still
+ * readable moments later, and `attribution.bytes-match-an-independent-walk` for a
+ * compressor holding pages of one of the account's first processes. All of them
+ * fail naming what they counted rather than passing vacuously, and CLAUDE.md
+ * records the requirements alongside the non-root one.
  */
 
 /*
@@ -148,20 +154,31 @@ static void hm_check_attribution_dead_pid(void) {
 }
 
 /*
- * How many regions the child below maps for itself, how long it stays alive once
- * it has them, and how many times the parent may try to catch it dying.
+ * How many regions the child below maps for itself, how long the killer thread
+ * waits once the walk has started, and how many times the parent may try to catch
+ * the child dying inside it.
  *
- * Measured on this machine: the walk costs about 0.25 us per region, so 20000
- * regions take some 5 ms, and a child that lives 1.5 ms past the handshake dies
- * a quarter of the way in — 10 times out of 10. The child spins rather than
- * sleeps because usleep overshoots a millisecond request badly enough that the
- * child regularly outlived the whole walk (measured: 4 hits in 8 attempts with
- * usleep, 10 in 10 with a spin).
+ * The child does not time its own death: it maps its regions, reports itself
+ * ready and then waits to be killed, so nothing about the hit depends on how
+ * promptly the parent gets from the handshake to the first `proc_pidinfo`. An
+ * earlier revision had the child exit a fixed time after the handshake, which
+ * made every deschedule of the parent in that window an attempt spent, and the
+ * see-saw that adjusted the lifetime could walk away from the answer instead of
+ * towards it. The killer thread starts counting from the instant before the
+ * bridge call instead — the only reference point that makes the window a property
+ * of the walk rather than of the scheduler.
+ *
+ * Measured on this machine: 20000 regions cost about 6 ms to map and 0.19 us
+ * each to walk, so the walk lasts some 4 ms, and a kill 1.5 ms in lands about
+ * 8000 regions in — 10 times out of 10, as it does at 0.5 ms and at 3 ms. The
+ * attempts and the adjustment are for a killer thread starved past the end of the
+ * walk on a loaded machine; under a mutation every attempt reports the same wrong
+ * answer and the check fails anyway.
  */
 #define HM_VANISHING_REGIONS 20000
 #define HM_VANISHING_REGION_LIMIT (HM_VANISHING_REGIONS * 2)
-#define HM_VANISHING_LIFE_MICROSECONDS 1500
-#define HM_VANISHING_ATTEMPTS 4
+#define HM_VANISHING_DELAY_MICROSECONDS 1500
+#define HM_VANISHING_ATTEMPTS 6
 
 static void hm_spin_microseconds(uint64_t microseconds) {
     const uint64_t deadline = hm_monotonic_time_ns() + (microseconds * 1000ULL);
@@ -170,7 +187,7 @@ static void hm_spin_microseconds(uint64_t microseconds) {
 }
 
 /* Never returns. Maps enough regions to make a walk of this child take milliseconds. */
-static void hm_run_vanishing_child(int ready_descriptor, uint64_t life_microseconds) {
+static void hm_run_vanishing_child(int ready_descriptor) {
     const size_t page = (size_t)getpagesize();
     for (int index = 0; index < HM_VANISHING_REGIONS; index++) {
         void *mapped = mmap(
@@ -189,8 +206,30 @@ static void hm_run_vanishing_child(int ready_descriptor, uint64_t life_microseco
     if (write(ready_descriptor, &ready, 1) != 1) {
         _exit(1);
     }
-    hm_spin_microseconds(life_microseconds);
-    _exit(0);
+    for (;;) {
+        pause();
+    }
+}
+
+typedef struct {
+    pid_t child;
+    uint64_t delay_microseconds;
+    volatile int walking;
+    int killed;
+} HMVanishingKiller;
+
+/*
+ * Waits for the walk to start, then for a fraction of it, then kills the child.
+ * It spins rather than sleeps for the reason the child used to: usleep overshoots
+ * a millisecond request by more than the whole walk lasts.
+ */
+static void *hm_kill_mid_walk(void *argument) {
+    HMVanishingKiller *killer = (HMVanishingKiller *)argument;
+    while (!killer->walking) {
+    }
+    hm_spin_microseconds(killer->delay_microseconds);
+    killer->killed = kill(killer->child, SIGKILL) == 0;
+    return NULL;
 }
 
 typedef struct {
@@ -198,10 +237,11 @@ typedef struct {
     int32_t regions;
     int consumed;
     int failure;
+    int killed;
 } HMVanishingWalk;
 
-/* Walks a child that exits `life_microseconds` after it reports itself ready. */
-static int hm_walk_vanishing_child(uint64_t life_microseconds, HMVanishingWalk *walk) {
+/* Walks a child killed `delay_microseconds` after the walk of it started. */
+static int hm_walk_vanishing_child(uint64_t delay_microseconds, HMVanishingWalk *walk) {
     int ready[2];
     if (pipe(ready) != 0) {
         return -1;
@@ -209,7 +249,7 @@ static int hm_walk_vanishing_child(uint64_t life_microseconds, HMVanishingWalk *
     const pid_t child = fork();
     if (child == 0) {
         close(ready[0]);
-        hm_run_vanishing_child(ready[1], life_microseconds);
+        hm_run_vanishing_child(ready[1]);
     }
     if (child < 0) {
         close(ready[0]);
@@ -222,25 +262,39 @@ static int hm_walk_vanishing_child(uint64_t life_microseconds, HMVanishingWalk *
     const ssize_t handshake = read(ready[0], &ready_byte, 1);
     close(ready[0]);
 
+    HMVanishingKiller killer = {child, delay_microseconds, 0, 0};
+    pthread_t thread;
+    const int armed = handshake == 1 &&
+        pthread_create(&thread, NULL, hm_kill_mid_walk, &killer) == 0;
+
     uint64_t bytes = 0;
     walk->regions = 0;
     walk->consumed = 0;
     errno = 0;
-    walk->status = handshake == 1
-        ? hm_read_compressed_or_paged_out(
-              child,
-              HM_VANISHING_REGION_LIMIT,
-              &bytes,
-              &walk->regions,
-              &walk->consumed
-          )
-        : -1;
+    if (armed) {
+        killer.walking = 1;
+        walk->status = hm_read_compressed_or_paged_out(
+            child,
+            HM_VANISHING_REGION_LIMIT,
+            &bytes,
+            &walk->regions,
+            &walk->consumed
+        );
+    } else {
+        walk->status = -1;
+    }
     walk->failure = errno;
+    if (armed) {
+        pthread_join(thread, NULL);
+    }
+    walk->killed = killer.killed;
 
+    /* The child waits to be killed, so it outlives a walk the killer never reached. */
+    kill(child, SIGKILL);
     int wait_status = 0;
     while (waitpid(child, &wait_status, 0) < 0 && errno == EINTR) {
     }
-    return handshake == 1 ? 0 : -1;
+    return armed ? 0 : -1;
 }
 
 /*
@@ -253,26 +307,29 @@ static int hm_walk_vanishing_child(uint64_t life_microseconds, HMVanishingWalk *
  * finished" — keeps every other check in the harness green while making an
  * undercount, and the partial sum of a process that vanished, look measured.
  *
- * The attempts exist for the machine, not for the bridge: under a mutation every
- * attempt reports the same wrong answer and the check fails anyway.
+ * ESRCH is asserted and not merely reported: it is the errno the fix turned on,
+ * and the only one that reaches this branch from a process that stopped existing.
  */
 static void hm_check_attribution_vanishing_pid(void) {
-    HMVanishingWalk walk = {0, 0, 0, 0};
-    uint64_t life = HM_VANISHING_LIFE_MICROSECONDS;
+    HMVanishingWalk walk = {0, 0, 0, 0, 0};
+    uint64_t delay = HM_VANISHING_DELAY_MICROSECONDS;
     int spawned = 0;
     int attempts = 0;
 
     for (int attempt = 0; attempt < HM_VANISHING_ATTEMPTS; attempt++) {
         attempts++;
-        if (hm_walk_vanishing_child(life, &walk) != 0) {
+        if (hm_walk_vanishing_child(delay, &walk) != 0) {
             break;
         }
         spawned = 1;
-        if (walk.status == 1 && walk.regions > 0 && walk.consumed == (int)walk.regions + 1) {
+        if (walk.status == 1 &&
+            walk.regions > 0 &&
+            walk.consumed == (int)walk.regions + 1 &&
+            walk.failure == ESRCH) {
             break;
         }
-        /* Overshot: the child outlived the walk. Undershot: it died before the first region. */
-        life = walk.status == 0 ? (life / 2) + 1 : life * 2;
+        /* Landed after the last region, or before the first one. */
+        delay = walk.status == 0 ? (delay / 2) + 1 : delay * 2;
     }
 
     CHECK(
@@ -280,15 +337,181 @@ static void hm_check_attribution_vanishing_pid(void) {
         spawned &&
             walk.status == 1 &&
             walk.regions > 0 &&
-            walk.consumed == (int)walk.regions + 1,
-        "expected status 1 after a failed call mid-walk, got spawned=%d status=%d "
-            "over %d regions in %d calls (%s) after %d attempts",
+            walk.consumed == (int)walk.regions + 1 &&
+            walk.failure == ESRCH,
+        "expected status 1 and ESRCH after a failed call mid-walk, got spawned=%d "
+            "status=%d over %d regions in %d calls (%s, killed=%d) after %d attempts",
         spawned,
         walk.status,
         (int)walk.regions,
         walk.consumed,
         strerror(walk.failure),
+        walk.killed,
         attempts
+    );
+}
+
+/*
+ * The bytes the walk sums are what the whole feature reports, and nothing else in
+ * either harness looks at them: every other attribution check reads the status,
+ * the region count and the consumed budget. Summing `pri_pages_resident` instead
+ * of `pri_pages_swapped_out`, dropping the `getpagesize()` multiplication and
+ * returning a hard zero are invisible to all of them.
+ *
+ * The anchor is the same walk, performed by the test before and after the
+ * bridge's, so that a target whose pages move between the two is caught by the
+ * sandwich instead of reported as a mismatch. Measured here: 120 sandwiches over
+ * 6 targets, never a page apart.
+ *
+ * The target is another process of this user, not the harness: the harness has no
+ * swapped-out pages seconds after it started (measured: 0 over 54 regions), and
+ * over a zero sum a missing multiplication and a hard zero are both invisible.
+ * 37 of the first 40 processes of this user carried compressed pages when
+ * measured, so the scan normally stops at its first candidate; a machine whose
+ * compressor holds nothing of this user's fails the check naming the scan, which
+ * is the same signal it gives for a bridge that lost the field.
+ */
+#define HM_ANCHOR_REGION_LIMIT 1024
+#define HM_ANCHOR_CANDIDATES 24
+
+typedef struct {
+    uint64_t swapped_pages;
+    uint64_t resident_pages;
+    int32_t regions;
+} HMRegionWalk;
+
+static HMRegionWalk hm_walk_regions(pid_t pid) {
+    HMRegionWalk walk = {0, 0, 0};
+    uint64_t address = 0;
+    while (walk.regions < HM_ANCHOR_REGION_LIMIT) {
+        struct proc_regioninfo region;
+        memset(&region, 0, sizeof(region));
+        if (proc_pidinfo(
+                pid,
+                PROC_PIDREGIONINFO,
+                address,
+                &region,
+                (int)sizeof(region)
+            ) != (int)sizeof(region)) {
+            break;
+        }
+        walk.swapped_pages += region.pri_pages_swapped_out;
+        walk.resident_pages += region.pri_pages_resident;
+        const uint64_t next = region.pri_address + region.pri_size;
+        if (next <= address || next < region.pri_address) {
+            break;
+        }
+        address = next;
+        ++walk.regions;
+    }
+    return walk;
+}
+
+typedef struct {
+    pid_t target;
+    int scanned;
+    uint64_t lowest_pages;
+    uint64_t highest_pages;
+    uint64_t resident_pages;
+    uint64_t bytes;
+    int32_t regions;
+    int status;
+} HMAnchoredWalk;
+
+/*
+ * The first process of this user whose pages the compressor is holding, walked by
+ * the test, then by the bridge, then by the test again. A candidate that stops
+ * existing in the middle costs an iteration rather than the check: `proc_listallpids`
+ * answers newest first, and the newest processes of a desktop session include the
+ * Spotlight workers, which exit on their own schedule.
+ */
+static HMAnchoredWalk hm_anchored_walk(void) {
+    HMAnchoredWalk result = {0, 0, 0, 0, 0, 0, 0, -1};
+    const int capacity = hm_count_processes() + HM_PROCESS_LIST_HEADROOM;
+    pid_t *pids = (pid_t *)calloc((size_t)capacity, sizeof(pid_t));
+    if (pids == NULL) {
+        return result;
+    }
+    const int listed = proc_listallpids(pids, capacity * (int)sizeof(pid_t));
+    for (int index = 0; index < listed && result.scanned < HM_ANCHOR_CANDIDATES; ++index) {
+        const pid_t pid = pids[index];
+        if (pid <= 0 || pid == getpid()) {
+            continue;
+        }
+        struct proc_bsdinfo info;
+        memset(&info, 0, sizeof(info));
+        if (proc_pidinfo(pid, PROC_PIDTBSDINFO, 0, &info, (int)sizeof(info)) !=
+                (int)sizeof(info) ||
+            info.pbi_uid != (uint32_t)geteuid()) {
+            continue;
+        }
+        ++result.scanned;
+
+        const HMRegionWalk before = hm_walk_regions(pid);
+        if (before.swapped_pages == 0) {
+            continue;
+        }
+        uint64_t bytes = 0;
+        int32_t regions = 0;
+        int consumed = 0;
+        const int status = hm_read_compressed_or_paged_out(
+            pid,
+            HM_ANCHOR_REGION_LIMIT,
+            &bytes,
+            &regions,
+            &consumed
+        );
+        const HMRegionWalk after = hm_walk_regions(pid);
+        if (status < 0 || after.regions == 0) {
+            continue;
+        }
+
+        result.target = pid;
+        result.lowest_pages = before.swapped_pages < after.swapped_pages
+            ? before.swapped_pages
+            : after.swapped_pages;
+        result.highest_pages = before.swapped_pages > after.swapped_pages
+            ? before.swapped_pages
+            : after.swapped_pages;
+        result.resident_pages = before.resident_pages;
+        result.bytes = bytes;
+        result.regions = regions;
+        result.status = status;
+        break;
+    }
+    free(pids);
+    return result;
+}
+
+static void hm_check_attribution_bytes(void) {
+    const HMAnchoredWalk walk = hm_anchored_walk();
+    const uint64_t page_size = (uint64_t)getpagesize();
+
+    /*
+     * The resident sum is asserted to differ from the swapped one so that the
+     * comparison is discriminating: over a target where the two agreed, reading
+     * the wrong field would pass.
+     */
+    CHECK(
+        "attribution.bytes-match-an-independent-walk",
+        walk.target > 0 &&
+            walk.lowest_pages > 0 &&
+            walk.resident_pages != walk.lowest_pages &&
+            walk.bytes >= walk.lowest_pages * page_size &&
+            walk.bytes <= walk.highest_pages * page_size,
+        "expected pid %d's %llu..%llu swapped pages at %llu bytes each, got %llu "
+            "bytes (%llu pages) over %d regions at status %d, against %llu resident "
+            "pages, after scanning %d processes",
+        (int)walk.target,
+        (unsigned long long)walk.lowest_pages,
+        (unsigned long long)walk.highest_pages,
+        (unsigned long long)page_size,
+        (unsigned long long)walk.bytes,
+        (unsigned long long)(walk.bytes / page_size),
+        (int)walk.regions,
+        walk.status,
+        (unsigned long long)walk.resident_pages,
+        walk.scanned
     );
 }
 
@@ -361,9 +584,42 @@ static void hm_check_attribution_invalid_arguments(void) {
 /*
  * Snapshots of machine state. Nothing here can assert an exact value — the
  * numbers belong to whatever the machine is doing at the moment — so the checks
- * assert the invariants the callers actually depend on: a status of 0, counters
- * that only move forward, and outputs consistent with each other.
+ * come in two kinds. One asserts the invariants the callers depend on: a status
+ * of 0, counters that only move forward, outputs consistent with each other. The
+ * other reads the same kernel source a second time and compares the sample to it
+ * field by field, because every invariant of the first kind survives a mapping
+ * that puts the right numbers in the wrong fields.
  */
+
+/*
+ * One field of a sample against the same field read again, and how far apart the
+ * two reads may be. A tolerance of zero means the two reads must agree exactly.
+ */
+typedef struct {
+    const char *name;
+    uint64_t reported;
+    uint64_t anchor;
+    uint64_t tolerance;
+} HMAnchoredField;
+
+static const char *hm_first_mismatch(
+    const HMAnchoredField *fields,
+    size_t count,
+    uint64_t *reported,
+    uint64_t *anchor
+) {
+    for (size_t index = 0; index < count; ++index) {
+        const uint64_t difference = fields[index].reported > fields[index].anchor
+            ? fields[index].reported - fields[index].anchor
+            : fields[index].anchor - fields[index].reported;
+        if (difference > fields[index].tolerance) {
+            *reported = fields[index].reported;
+            *anchor = fields[index].anchor;
+            return fields[index].name;
+        }
+    }
+    return NULL;
+}
 
 /*
  * How far `total_processes` may sit from a count taken moments earlier. Process
@@ -374,7 +630,106 @@ static void hm_check_attribution_invalid_arguments(void) {
 #define HM_PROCESS_COUNT_TOLERANCE 64
 
 /*
- * One listing feeds four checks. Attribution is switched off (both budgets zero):
+ * How much of the issue array may disagree with a second read of the same pids,
+ * and how much of it has to be compared for the comparison to mean anything.
+ *
+ * Neither number is a tolerance on the bridge: a process that execs between the
+ * two reads changes its own name and path, and one that exits is skipped
+ * entirely, so a live machine produces the occasional legitimate disagreement.
+ * Measured here: 0 disagreements over 174 to 177 comparable issues, six runs out
+ * of six. The thinnest mutation measured — a parent pid hard-coded to 1, which
+ * many processes legitimately have — still disagreed on 24 % of them, against a
+ * budget of 6.25 %.
+ */
+#define HM_ISSUE_METADATA_MINIMUM 32
+#define HM_ISSUE_METADATA_MISMATCH_DIVISOR 16
+
+/*
+ * The metadata on the issue path, against a second read the test performs
+ * itself. Both issue branches of `hm_list_processes` fill these fields, and
+ * `processes.issues-are-well-formed` is satisfied by the zeroed struct they start
+ * from, so without this the whole call could go and nothing would notice. It also
+ * covers what `hm_read_process_metadata` puts where: a hard-coded uid, a parent
+ * pid that is always 1, a `proc_pidpath` that is never called.
+ *
+ * The second read mirrors the bridge's fallback order — proc_name first, then
+ * `pbi_name` and `pbi_comm` — because that order is the mapping under test. A pid
+ * whose `proc_bsdinfo` cannot be read at all is skipped: it either vanished
+ * between the two reads or is kernel_task, for which the bridge reports the empty
+ * name this check would otherwise have to special-case.
+ */
+static void hm_check_issue_metadata(const HMProcessIssue *issues, int written_issues) {
+    int compared = 0;
+    int mismatched = 0;
+    int first = -1;
+    const char *reason = "";
+    for (int index = 0; index < written_issues; ++index) {
+        const HMProcessIssue *issue = &issues[index];
+        struct proc_bsdinfo info;
+        memset(&info, 0, sizeof(info));
+        if (proc_pidinfo(issue->pid, PROC_PIDTBSDINFO, 0, &info, (int)sizeof(info)) !=
+            (int)sizeof(info)) {
+            continue;
+        }
+
+        char name[HM_PROCESS_NAME_SIZE];
+        memset(name, 0, sizeof(name));
+        if (proc_name(issue->pid, name, (uint32_t)sizeof(name)) <= 0) {
+            snprintf(
+                name,
+                sizeof(name),
+                "%s",
+                info.pbi_name[0] != '\0' ? info.pbi_name : info.pbi_comm
+            );
+        }
+        char path[HM_PROCESS_PATH_SIZE];
+        memset(path, 0, sizeof(path));
+        if (proc_pidpath(issue->pid, path, (uint32_t)sizeof(path)) <= 0) {
+            path[0] = '\0';
+        }
+
+        ++compared;
+        const char *disagreement = NULL;
+        if (strcmp(issue->name, name) != 0) {
+            disagreement = "name";
+        } else if (issue->uid != info.pbi_uid) {
+            disagreement = "uid";
+        } else if (issue->parent_pid != (int32_t)info.pbi_ppid) {
+            disagreement = "parent pid";
+        } else if (strcmp(issue->executable_path, path) != 0) {
+            disagreement = "executable path";
+        }
+        if (disagreement != NULL) {
+            ++mismatched;
+            if (first < 0) {
+                first = index;
+                reason = disagreement;
+            }
+        }
+    }
+
+    CHECK(
+        "processes.issue-metadata-matches-a-fresh-read",
+        compared >= HM_ISSUE_METADATA_MINIMUM &&
+            mismatched * HM_ISSUE_METADATA_MISMATCH_DIVISOR <= compared,
+        "expected at least %d issues comparable against a fresh read and at most a "
+            "%dth of them to disagree, compared %d of %d and %d disagreed "
+            "(first at %d over the %s: '%s'/uid %u/parent %d)",
+        HM_ISSUE_METADATA_MINIMUM,
+        HM_ISSUE_METADATA_MISMATCH_DIVISOR,
+        compared,
+        written_issues,
+        mismatched,
+        first,
+        reason,
+        first >= 0 ? issues[first].name : "",
+        first >= 0 ? issues[first].uid : 0U,
+        first >= 0 ? issues[first].parent_pid : 0
+    );
+}
+
+/*
+ * One listing feeds five checks. Attribution is switched off (both budgets zero):
  * the walk it would perform is what the attribution checks above cover directly,
  * and running it over every sample here would cost seconds and prove nothing new.
  *
@@ -399,6 +754,7 @@ static void hm_check_process_listing(void) {
         CHECK("processes.total-matches-a-fresh-count", 0, "out of memory");
         CHECK("processes.samples-are-well-formed", 0, "out of memory");
         CHECK("processes.issues-are-well-formed", 0, "out of memory");
+        CHECK("processes.issue-metadata-matches-a-fresh-read", 0, "out of memory");
         return;
     }
 
@@ -515,12 +871,16 @@ static void hm_check_process_listing(void) {
 
     /*
      * The issue array is where the caller learns why a process is missing from
-     * the sample, and it is the only consumer of `hm_read_process_metadata` on
-     * this path. With 64 slots against the hundreds of processes on any live
+     * the sample. With 64 slots against the hundreds of processes on any live
      * machine the capacity branch fires for most of the listing, so a run that
      * produced no capacity issue at all means that branch stopped being reached
      * — and a reason that is neither constant, or a name running past its array,
      * would reach the report unnoticed.
+     *
+     * What the metadata on an issue actually says is a separate check:
+     * everything asserted here is satisfied by the memset that precedes the
+     * `hm_read_process_metadata` call, so deleting that call leaves this green.
+     * `processes.issue-metadata-matches-a-fresh-read` is what reads the fields.
      *
      * A pid of zero is allowed here on purpose: proc_listallpids reports
      * kernel_task, whose rusage an ordinary user cannot read, so it arrives as
@@ -569,6 +929,102 @@ static void hm_check_process_listing(void) {
         malformed_issue >= 0 ? issues[malformed_issue].reason : 0,
         issue_reason,
         capacity_issues
+    );
+
+    hm_check_issue_metadata(issues, written_issues);
+
+    free(samples);
+    free(issues);
+}
+
+/*
+ * The sample the harness reports about itself, against what the harness knows
+ * about itself.
+ *
+ * This is the only check that reads the four fields `hm_read_process_metadata`
+ * fills on the sample path. Deleting the call from that path leaves every other
+ * `processes.*` check green — the `pid-N` fallback refills the name, which is all
+ * `processes.samples-are-well-formed` asks for — and so does replacing the
+ * guarded fallback with an unconditional `pid-%d`, which would hand application
+ * grouping a machine of processes named after their pids.
+ *
+ * The listing is taken at full width so that this process is in it: the 64 slots
+ * the check above uses are filled long before a pid this recent. proc_name
+ * truncates a long name, so the name is compared as a prefix of the basename
+ * `proc_pidpath` reports rather than as its equal; the path itself is compared
+ * whole.
+ */
+static void hm_check_own_sample(void) {
+    const int capacity = hm_count_processes() + HM_PROCESS_LIST_HEADROOM;
+    const int issue_capacity = 64;
+    HMProcessSample *samples = (HMProcessSample *)calloc(
+        (size_t)capacity,
+        sizeof(HMProcessSample)
+    );
+    HMProcessIssue *issues = (HMProcessIssue *)calloc(
+        (size_t)issue_capacity,
+        sizeof(HMProcessIssue)
+    );
+    char own_path[HM_PROCESS_PATH_SIZE];
+    memset(own_path, 0, sizeof(own_path));
+    const int path_length = proc_pidpath(getpid(), own_path, (uint32_t)sizeof(own_path));
+    if (samples == NULL || issues == NULL || path_length <= 0) {
+        free(samples);
+        free(issues);
+        CHECK(
+            "processes.own-sample-carries-metadata",
+            0,
+            "no listing to take: allocation %d, own path %d",
+            samples != NULL && issues != NULL,
+            path_length
+        );
+        return;
+    }
+
+    const int written = hm_list_processes(
+        samples,
+        capacity,
+        issues,
+        issue_capacity,
+        0,
+        0,
+        NULL,
+        NULL,
+        NULL
+    );
+
+    const HMProcessSample *own = NULL;
+    for (int index = 0; index < written; ++index) {
+        if (samples[index].pid == getpid()) {
+            own = &samples[index];
+            break;
+        }
+    }
+
+    const char *separator = strrchr(own_path, '/');
+    const char *own_name = separator != NULL ? separator + 1 : own_path;
+    const size_t reported_length = own == NULL ? 0 : strlen(own->name);
+
+    CHECK(
+        "processes.own-sample-carries-metadata",
+        own != NULL &&
+            reported_length > 0 &&
+            strncmp(own_name, own->name, reported_length) == 0 &&
+            strcmp(own->executable_path, own_path) == 0 &&
+            own->uid == (uint32_t)geteuid() &&
+            own->parent_pid == (int32_t)getppid(),
+        "expected pid %d in a listing of %d to carry a name starting '%s', the path "
+            "'%s', uid %u and parent %d; got name '%s', path '%s', uid %u, parent %d",
+        (int)getpid(),
+        written,
+        own_name,
+        own_path,
+        (uint32_t)geteuid(),
+        (int)getppid(),
+        own == NULL ? "(no sample of this process)" : own->name,
+        own == NULL ? "" : own->executable_path,
+        own == NULL ? 0U : own->uid,
+        own == NULL ? 0 : own->parent_pid
     );
 
     free(samples);
@@ -707,6 +1163,72 @@ static void hm_check_processor_counters(void) {
 }
 
 /*
+ * Which kernel counter ends up in which field. The check above holds whatever
+ * that mapping is — transposed user and system ticks are both monotonic, and so
+ * is an idle field filled from the user counter — so the four fields are compared
+ * against a second `host_statistics` call.
+ *
+ * The tolerance is for the refresh, not for the reads: measured here, 2000
+ * back-to-back pairs never differed by a tick, because the kernel serves this
+ * from a cache it refreshes once a second. One refresh is worth a second of
+ * ticks, which across the 14 cores of this machine is under 1400 in any one
+ * field, while the fields the comparison separates are millions apart (375M
+ * user, 222M system, 2036M idle).
+ *
+ * `nice_ticks` is the exception, and the reason it is only half covered: it reads
+ * 0 on this machine and a 300 ms burn at nice 19 does not move it, so a bridge
+ * that hard-coded it to zero would agree with the anchor. CLAUDE.md lists that
+ * among the accepted gaps.
+ */
+#define HM_TICK_DRIFT 4096ULL
+
+static void hm_check_processor_fields(void) {
+    HMProcessorSample sample;
+    memset(&sample, 0, sizeof(sample));
+    const int status = hm_read_processor(&sample);
+
+    host_cpu_load_info_data_t anchor;
+    memset(&anchor, 0, sizeof(anchor));
+    mach_msg_type_number_t count = HOST_CPU_LOAD_INFO_COUNT;
+    const mach_port_t host = mach_host_self();
+    const kern_return_t anchor_status = host_statistics(
+        host,
+        HOST_CPU_LOAD_INFO,
+        (host_info_t)&anchor,
+        &count
+    );
+    mach_port_deallocate(mach_task_self(), host);
+
+    const HMAnchoredField fields[] = {
+        {"user_ticks", sample.user_ticks, anchor.cpu_ticks[CPU_STATE_USER], HM_TICK_DRIFT},
+        {"system_ticks", sample.system_ticks, anchor.cpu_ticks[CPU_STATE_SYSTEM], HM_TICK_DRIFT},
+        {"idle_ticks", sample.idle_ticks, anchor.cpu_ticks[CPU_STATE_IDLE], HM_TICK_DRIFT},
+        {"nice_ticks", sample.nice_ticks, anchor.cpu_ticks[CPU_STATE_NICE], HM_TICK_DRIFT},
+    };
+    uint64_t reported = 0;
+    uint64_t anchored = 0;
+    const char *mismatch = hm_first_mismatch(
+        fields,
+        sizeof(fields) / sizeof(fields[0]),
+        &reported,
+        &anchored
+    );
+
+    CHECK(
+        "snapshot.processor-ticks-match-a-fresh-read",
+        status == 0 && anchor_status == KERN_SUCCESS && mismatch == NULL,
+        "expected every tick counter within %llu of a second host_statistics call, "
+            "got status %d/%d and %s reporting %llu against %llu",
+        (unsigned long long)HM_TICK_DRIFT,
+        status,
+        (int)anchor_status,
+        mismatch == NULL ? "no mismatch" : mismatch,
+        (unsigned long long)reported,
+        (unsigned long long)anchored
+    );
+}
+
+/*
  * How far a swap figure may sit from one read moments later. Measured here at
  * zero over 2000 back-to-back pairs of reads, so the allowance is for a machine
  * that swaps while the check runs, not for the reads themselves.
@@ -787,6 +1309,104 @@ static void hm_check_swap_and_virtual_memory(void) {
 }
 
 /*
+ * The other half of the virtual memory sample: which statistic lands in which
+ * field. The check above asserts only the page size and a non-zero sum of the
+ * four residency figures, which a sample with `compressed_bytes` zeroed or
+ * `pageins` and `pageouts` transposed satisfies exactly as well — and
+ * `compressed_bytes` is the headline number of this whole monitor.
+ *
+ * Every page count is multiplied here as it is there, so the multiplication is
+ * mirrored rather than checked; the swap check covers a page size that is zero or
+ * not a power of two, which is the failure that arithmetic has.
+ *
+ * The tolerances are for a cache refresh between the two reads, like the tick
+ * ones: measured here, 500 back-to-back pairs never differed at all in any of the
+ * seven fields probed — free, compressed, pageins, pageouts, faults, compressions
+ * and swapouts. They stay far below the distances between the fields they
+ * separate: 394M pageins against 11M pageouts, 63M swapins against 70M swapouts.
+ */
+#define HM_MEMORY_DRIFT_BYTES (64ULL * 1024ULL * 1024ULL)
+#define HM_MEMORY_DRIFT_EVENTS 1000000ULL
+
+static void hm_check_virtual_memory_fields(void) {
+    HMVirtualMemorySample sample;
+    memset(&sample, 0, sizeof(sample));
+    const int status = hm_read_virtual_memory(&sample);
+
+    const mach_port_t host = mach_host_self();
+    vm_size_t page_size = 0;
+    const kern_return_t page_status = host_page_size(host, &page_size);
+    vm_statistics64_data_t anchor;
+    memset(&anchor, 0, sizeof(anchor));
+    mach_msg_type_number_t count = HOST_VM_INFO64_COUNT;
+    const kern_return_t anchor_status = host_statistics64(
+        host,
+        HOST_VM_INFO64,
+        (host_info64_t)&anchor,
+        &count
+    );
+    mach_port_deallocate(mach_task_self(), host);
+
+    const uint64_t page = (uint64_t)page_size;
+    const HMAnchoredField fields[] = {
+        {"page_size_bytes", sample.page_size_bytes, page, 0},
+        {"free_bytes", sample.free_bytes, anchor.free_count * page, HM_MEMORY_DRIFT_BYTES},
+        {"active_bytes", sample.active_bytes, anchor.active_count * page, HM_MEMORY_DRIFT_BYTES},
+        {"inactive_bytes", sample.inactive_bytes, anchor.inactive_count * page, HM_MEMORY_DRIFT_BYTES},
+        {"wired_bytes", sample.wired_bytes, anchor.wire_count * page, HM_MEMORY_DRIFT_BYTES},
+        {"purgeable_bytes", sample.purgeable_bytes, anchor.purgeable_count * page, HM_MEMORY_DRIFT_BYTES},
+        {"compressed_bytes", sample.compressed_bytes, anchor.compressor_page_count * page, HM_MEMORY_DRIFT_BYTES},
+        {
+            "uncompressed_bytes_in_compressor",
+            sample.uncompressed_bytes_in_compressor,
+            anchor.total_uncompressed_pages_in_compressor * page,
+            HM_MEMORY_DRIFT_BYTES,
+        },
+        {
+            "swap_backed_uncompressed_bytes",
+            sample.swap_backed_uncompressed_bytes,
+            anchor.swapped_count * page,
+            HM_MEMORY_DRIFT_BYTES,
+        },
+        {"pageins", sample.pageins, anchor.pageins, HM_MEMORY_DRIFT_EVENTS},
+        {"pageouts", sample.pageouts, anchor.pageouts, HM_MEMORY_DRIFT_EVENTS},
+        {"faults", sample.faults, anchor.faults, HM_MEMORY_DRIFT_EVENTS},
+        {"copy_on_write_faults", sample.copy_on_write_faults, anchor.cow_faults, HM_MEMORY_DRIFT_EVENTS},
+        {"compressions", sample.compressions, anchor.compressions, HM_MEMORY_DRIFT_EVENTS},
+        {"decompressions", sample.decompressions, anchor.decompressions, HM_MEMORY_DRIFT_EVENTS},
+        {"swapins", sample.swapins, anchor.swapins, HM_MEMORY_DRIFT_EVENTS},
+        {"swapouts", sample.swapouts, anchor.swapouts, HM_MEMORY_DRIFT_EVENTS},
+    };
+    uint64_t reported = 0;
+    uint64_t anchored = 0;
+    const char *mismatch = hm_first_mismatch(
+        fields,
+        sizeof(fields) / sizeof(fields[0]),
+        &reported,
+        &anchored
+    );
+
+    CHECK(
+        "snapshot.virtual-memory-matches-a-fresh-read",
+        status == 0 &&
+            page_status == KERN_SUCCESS &&
+            anchor_status == KERN_SUCCESS &&
+            mismatch == NULL,
+        "expected every field within %llu bytes or %llu events of a second "
+            "host_statistics64 call, got status %d/%d/%d and %s reporting %llu "
+            "against %llu",
+        (unsigned long long)HM_MEMORY_DRIFT_BYTES,
+        (unsigned long long)HM_MEMORY_DRIFT_EVENTS,
+        status,
+        (int)page_status,
+        (int)anchor_status,
+        mismatch == NULL ? "no mismatch" : mismatch,
+        (unsigned long long)reported,
+        (unsigned long long)anchored
+    );
+}
+
+/*
  * Storage is asserted against the machine, not against the implementation line
  * that sets `available`: a Mac running this harness has an internal block
  * storage driver, and that driver has read bytes since boot, at least one per
@@ -837,16 +1457,314 @@ static void hm_check_storage_and_battery(void) {
     );
 }
 
+/*
+ * Which IOKit key ends up in which storage field, and which `statfs` member ends
+ * up in which filesystem figure. The check above asserts one relation between two
+ * of the seven numbers; the rest — the written bytes, the write operations, both
+ * service times — are unconstrained by it, and a read time filled from the write
+ * time is exactly the kind of transposition it cannot see.
+ *
+ * The anchor walks the registry a second time and reads the keys out explicitly.
+ * The device filter is the bridge's own `hm_storage_driver_is_internal`, because
+ * the mapping under test is key-to-field and not which device counts; sharing the
+ * filter also keeps the two walks over the same set of devices when an external
+ * disk is attached.
+ *
+ * The tolerances are for a machine that is doing I/O while the check runs, which
+ * it is: measured over 50 back-to-back pairs, at most 61 KiB read, 16 KiB
+ * written, 3 operations and 220 us of service time apart. The fields they
+ * separate are 4 TB and 48 hours apart.
+ *
+ * `root_filesystem_available_bytes` is compared against `f_bavail`, which is what
+ * the bridge multiplies. On the APFS root of this machine `f_bfree` and `f_bavail`
+ * are equal, so reading the wrong one of the two is invisible here; CLAUDE.md
+ * records that.
+ */
+#define HM_STORAGE_DRIFT_BYTES (256ULL * 1024ULL * 1024ULL)
+#define HM_STORAGE_DRIFT_OPERATIONS 1000000ULL
+#define HM_STORAGE_DRIFT_NANOSECONDS 1000000000ULL
+#define HM_FILESYSTEM_DRIFT_BYTES (1024ULL * 1024ULL * 1024ULL)
+
+typedef struct {
+    uint64_t bytes_read;
+    uint64_t bytes_written;
+    uint64_t read_operations;
+    uint64_t write_operations;
+    uint64_t read_time_ns;
+    uint64_t write_time_ns;
+    int32_t device_count;
+} HMStorageAnchor;
+
+static uint64_t hm_storage_statistic(CFDictionaryRef statistics, CFStringRef key) {
+    uint64_t value = 0;
+    hm_cf_number_to_u64(CFDictionaryGetValue(statistics, key), &value);
+    return value;
+}
+
+static HMStorageAnchor hm_read_storage_anchor(void) {
+    HMStorageAnchor anchor;
+    memset(&anchor, 0, sizeof(anchor));
+
+    CFMutableDictionaryRef matching = IOServiceMatching(kIOBlockStorageDriverClass);
+    if (matching == NULL) {
+        return anchor;
+    }
+    io_iterator_t iterator = IO_OBJECT_NULL;
+    if (IOServiceGetMatchingServices(kIOMainPortDefault, matching, &iterator) !=
+        KERN_SUCCESS) {
+        return anchor;
+    }
+
+    io_registry_entry_t driver;
+    while ((driver = IOIteratorNext(iterator)) != IO_OBJECT_NULL) {
+        if (hm_storage_driver_is_internal(driver)) {
+            CFTypeRef value = IORegistryEntryCreateCFProperty(
+                driver,
+                CFSTR(kIOBlockStorageDriverStatisticsKey),
+                kCFAllocatorDefault,
+                0
+            );
+            if (value != NULL && CFGetTypeID(value) == CFDictionaryGetTypeID()) {
+                CFDictionaryRef statistics = (CFDictionaryRef)value;
+                anchor.bytes_read += hm_storage_statistic(
+                    statistics,
+                    CFSTR(kIOBlockStorageDriverStatisticsBytesReadKey)
+                );
+                anchor.bytes_written += hm_storage_statistic(
+                    statistics,
+                    CFSTR(kIOBlockStorageDriverStatisticsBytesWrittenKey)
+                );
+                anchor.read_operations += hm_storage_statistic(
+                    statistics,
+                    CFSTR(kIOBlockStorageDriverStatisticsReadsKey)
+                );
+                anchor.write_operations += hm_storage_statistic(
+                    statistics,
+                    CFSTR(kIOBlockStorageDriverStatisticsWritesKey)
+                );
+                anchor.read_time_ns += hm_storage_statistic(
+                    statistics,
+                    CFSTR(kIOBlockStorageDriverStatisticsTotalReadTimeKey)
+                );
+                anchor.write_time_ns += hm_storage_statistic(
+                    statistics,
+                    CFSTR(kIOBlockStorageDriverStatisticsTotalWriteTimeKey)
+                );
+                ++anchor.device_count;
+            }
+            if (value != NULL) {
+                CFRelease(value);
+            }
+        }
+        IOObjectRelease(driver);
+    }
+    IOObjectRelease(iterator);
+    return anchor;
+}
+
+static void hm_check_storage_fields(void) {
+    HMStorageSample sample;
+    memset(&sample, 0, sizeof(sample));
+    const int status = hm_read_storage(&sample);
+    const HMStorageAnchor anchor = hm_read_storage_anchor();
+
+    struct statfs filesystem;
+    memset(&filesystem, 0, sizeof(filesystem));
+    const int filesystem_status = statfs("/", &filesystem);
+    const uint64_t block_size = (uint64_t)filesystem.f_bsize;
+
+    const HMAnchoredField fields[] = {
+        {"device_count", (uint64_t)sample.device_count, (uint64_t)anchor.device_count, 0},
+        {"bytes_read", sample.bytes_read, anchor.bytes_read, HM_STORAGE_DRIFT_BYTES},
+        {"bytes_written", sample.bytes_written, anchor.bytes_written, HM_STORAGE_DRIFT_BYTES},
+        {
+            "read_operations",
+            sample.read_operations,
+            anchor.read_operations,
+            HM_STORAGE_DRIFT_OPERATIONS,
+        },
+        {
+            "write_operations",
+            sample.write_operations,
+            anchor.write_operations,
+            HM_STORAGE_DRIFT_OPERATIONS,
+        },
+        {"read_time_ns", sample.read_time_ns, anchor.read_time_ns, HM_STORAGE_DRIFT_NANOSECONDS},
+        {
+            "write_time_ns",
+            sample.write_time_ns,
+            anchor.write_time_ns,
+            HM_STORAGE_DRIFT_NANOSECONDS,
+        },
+        {
+            "root_filesystem_total_bytes",
+            sample.root_filesystem_total_bytes,
+            (uint64_t)filesystem.f_blocks * block_size,
+            0,
+        },
+        {
+            "root_filesystem_available_bytes",
+            sample.root_filesystem_available_bytes,
+            (uint64_t)filesystem.f_bavail * block_size,
+            HM_FILESYSTEM_DRIFT_BYTES,
+        },
+    };
+    uint64_t reported = 0;
+    uint64_t anchored = 0;
+    const char *mismatch = hm_first_mismatch(
+        fields,
+        sizeof(fields) / sizeof(fields[0]),
+        &reported,
+        &anchored
+    );
+
+    CHECK(
+        "snapshot.storage-matches-a-fresh-read",
+        status == 0 &&
+            filesystem_status == 0 &&
+            anchor.device_count > 0 &&
+            mismatch == NULL,
+        "expected every field within a second walk of the block storage registry, "
+            "got status %d/%d over %d anchored devices and %s reporting %llu "
+            "against %llu",
+        status,
+        filesystem_status,
+        anchor.device_count,
+        mismatch == NULL ? "no mismatch" : mismatch,
+        (unsigned long long)reported,
+        (unsigned long long)anchored
+    );
+}
+
+/*
+ * The battery fields against a second reading of the same power source. The check
+ * above asserts a percentage inside 0..100, which `(current * 10) / maximum`
+ * satisfies just as well as `(current * 100) / maximum`, and says nothing at all
+ * about the charging flag, the power source or the estimate.
+ *
+ * What the anchor can prove depends on where the machine is plugged in, and the
+ * detail says which case it took. Measured here, unplugged: 56 %, not charging,
+ * on battery, 293 minutes — all four asserted. On mains power
+ * `IOPSGetTimeRemainingEstimate` answers "unlimited" rather than a duration, the
+ * bridge leaves `minutes_remaining` at -1, and the anchor agrees with it without
+ * either of them having computed anything. CLAUDE.md records that half.
+ */
+#define HM_BATTERY_DRIFT_MINUTES 2
+
+static void hm_check_battery_fields(void) {
+    HMBatterySample sample;
+    memset(&sample, 0, sizeof(sample));
+    const int status = hm_read_battery(&sample);
+
+    CFTypeRef snapshot = IOPSCopyPowerSourcesInfo();
+    if (snapshot == NULL) {
+        CHECK(
+            "snapshot.battery-matches-a-fresh-read",
+            0,
+            "no power source snapshot to anchor against, bridge status %d",
+            status
+        );
+        return;
+    }
+
+    CFStringRef source_type = IOPSGetProvidingPowerSourceType(snapshot);
+    const int on_battery = source_type != NULL &&
+        CFStringCompare(source_type, CFSTR(kIOPMBatteryPowerKey), 0) == kCFCompareEqualTo;
+
+    int available = 0;
+    int percentage = -1;
+    int charging = 0;
+    CFArrayRef sources = IOPSCopyPowerSourcesList(snapshot);
+    if (sources != NULL) {
+        const CFIndex count = CFArrayGetCount(sources);
+        for (CFIndex index = 0; index < count; ++index) {
+            CFTypeRef source = CFArrayGetValueAtIndex(sources, index);
+            CFDictionaryRef description = IOPSGetPowerSourceDescription(snapshot, source);
+            if (description == NULL) {
+                continue;
+            }
+            CFTypeRef type = CFDictionaryGetValue(description, CFSTR(kIOPSTypeKey));
+            if (type == NULL ||
+                CFGetTypeID(type) != CFStringGetTypeID() ||
+                CFStringCompare(
+                    (CFStringRef)type,
+                    CFSTR(kIOPSInternalBatteryType),
+                    0
+                ) != kCFCompareEqualTo) {
+                continue;
+            }
+            available = 1;
+            int current = 0;
+            int maximum = 0;
+            hm_cf_number_to_int(
+                CFDictionaryGetValue(description, CFSTR(kIOPSCurrentCapacityKey)),
+                &current
+            );
+            hm_cf_number_to_int(
+                CFDictionaryGetValue(description, CFSTR(kIOPSMaxCapacityKey)),
+                &maximum
+            );
+            if (maximum > 0) {
+                percentage = (current * 100) / maximum;
+            }
+            charging = CFDictionaryGetValue(description, CFSTR(kIOPSIsChargingKey)) ==
+                kCFBooleanTrue;
+            break;
+        }
+        CFRelease(sources);
+    }
+
+    const CFTimeInterval seconds_remaining = IOPSGetTimeRemainingEstimate();
+    const int32_t minutes_remaining = seconds_remaining >= 0.0
+        ? (int32_t)(seconds_remaining / 60.0)
+        : -1;
+    CFRelease(snapshot);
+
+    const int32_t minutes_difference = sample.minutes_remaining > minutes_remaining
+        ? sample.minutes_remaining - minutes_remaining
+        : minutes_remaining - sample.minutes_remaining;
+
+    CHECK(
+        "snapshot.battery-matches-a-fresh-read",
+        status == 0 &&
+            sample.available == available &&
+            sample.on_battery == on_battery &&
+            sample.charging == charging &&
+            sample.percentage == percentage &&
+            minutes_difference <= HM_BATTERY_DRIFT_MINUTES,
+        "expected available %d, on battery %d, charging %d, %d%% and %d minutes "
+            "from a second IOPS read, got status %d with available %d, on battery "
+            "%d, charging %d, %d%% and %d minutes",
+        available,
+        on_battery,
+        charging,
+        percentage,
+        minutes_remaining,
+        status,
+        sample.available,
+        sample.on_battery,
+        sample.charging,
+        sample.percentage,
+        sample.minutes_remaining
+    );
+}
+
 void hm_run_kernel_tests(void) {
     hm_check_attribution_self_walk();
+    hm_check_attribution_bytes();
     hm_check_attribution_dead_pid();
     hm_check_attribution_vanishing_pid();
     hm_check_attribution_region_limit();
     hm_check_attribution_invalid_arguments();
     hm_check_process_listing();
+    hm_check_own_sample();
     hm_check_process_listing_invalid_arguments();
     hm_check_memory_and_load();
     hm_check_processor_counters();
+    hm_check_processor_fields();
     hm_check_swap_and_virtual_memory();
+    hm_check_virtual_memory_fields();
     hm_check_storage_and_battery();
+    hm_check_storage_fields();
+    hm_check_battery_fields();
 }

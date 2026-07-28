@@ -85,6 +85,16 @@ One check is in both on purpose: `selftest` repeats
 process holds far more regions than that of a 30-kilobyte C binary, which makes
 the walk both a longer walk and the binding check in its most meaningful form.
 
+Wherever a reader could put the right number in the wrong field, the check reads
+the same kernel source a second time and compares field by field instead of
+asserting that the aggregate looks plausible: `vm.swapusage` for the swap
+figures, `host_statistics` for the tick counters, `host_statistics64` for the
+virtual memory sample, a second walk of the block storage registry, a second IOPS
+read for the battery, a second region walk for the compressed bytes, a second
+`proc_pidinfo` for the process metadata. A plausibility assertion survives a
+transposed pair of fields; an anchor does not. Where an anchor cannot separate
+two fields, the gap is listed below rather than left to the comment.
+
 Neither harness is meant to run as root: `processes.samples-are-well-formed`
 holds because an ordinary user cannot read the rusage of pid 0, and
 `socket.accept-rejects-foreign-uid` has no foreign user to name when the caller
@@ -92,6 +102,12 @@ is uid 0. The other way round, `processes.issues-are-well-formed` needs the
 account to own at least 64 rusage-readable processes, because the capacity branch
 it covers only fires once the 64-slot sample array is full — an ordinary session
 is far past that (566 here), a stripped service account might not be.
+`processes.issue-metadata-matches-a-fresh-read` needs 32 of those issues to still
+be readable moments later (174 to 177 here), and
+`attribution.bytes-match-an-independent-walk` needs the memory compressor to be
+holding pages of at least one of the account's first 24 processes — 37 of the
+first 40 measured here, and true of any Mac that has been up for a while. Each of
+the three fails naming what it counted rather than passing vacuously.
 
 `scripts/test-native.sh` regenerates the header the C tests include straight
 from the `.def` (`sed '1,/^---$/d'` into `build/native-test/`), compiles every
@@ -181,17 +197,29 @@ to cover everything:
 - the `pid-N` name fallback in `hm_list_processes` — it needs a process that
   vanishes between the rusage read and the metadata read, so proc_name and
   `proc_bsdinfo` both come back empty; deleting the fallback leaves every
-  `processes.*` check green. The empty-name branch of
-  `processes.samples-are-well-formed` is a guard against that, not coverage of
-  it, and `binding.process-sample-readable` asserts the same non-empty name over
-  a listing where proc_name never fails;
+  `processes.*` check green, because on a live machine the branch never fires.
+  The empty-name branch of `processes.samples-are-well-formed` is a guard against
+  that, not coverage of it. What *is* covered is the fallback firing when it
+  should not: `processes.own-sample-carries-metadata` compares this process's own
+  sample against `proc_pidpath`, so an unconditional `pid-%d` — every process on
+  the machine named after its pid — fails it;
+- `nice_ticks` in `hm_read_processor` — the counter reads 0 on this machine and a
+  300 ms burn at nice 19 does not move it, so the anchor agrees with a bridge that
+  hard-coded the field to zero. The other three tick counters are anchored;
+- `root_filesystem_available_bytes` from `f_bfree` instead of `f_bavail` — the two
+  are equal on the APFS root here, so the anchor cannot tell them apart. It would
+  on a filesystem that reserves blocks for root;
 - the `chown` branch of `hm_unix_server_open` — root only;
 - the peer-uid gate inside `hm_unix_connect` (`EACCES` on a socket owned by
   someone else), `hm_unix_accept` with a null `peer_user_id`, and its bypass for
   uid 0 — all three need a second user or root; the server-side gate that
   matters, `hm_unix_accept` refusing a foreign uid, is covered;
-- `hm_read_battery` on a machine without a battery — only the availability flag
-  is checked;
+- `hm_read_battery` beyond what the machine's state exposes. Every field is
+  anchored against a second IOPS read, so the anchor is only as strong as the
+  present state: a machine on mains power leaves `minutes_remaining` at -1 in both
+  the sample and the anchor, a battery that is not charging cannot distinguish the
+  charging flag from a hard-coded 0, and a machine without a battery exercises
+  none of it;
 - `DarwinSystemCollector` as a consumer of the bridge — `selftest` cannot depend
   on an application module, so it checks the bridge, not how the collector uses
   it. The collector's own arguments are covered by `DarwinCollectorLimitsTest`.

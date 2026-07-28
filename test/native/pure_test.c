@@ -271,8 +271,20 @@ static void hm_check_candidate_order(void) {
     );
 }
 
-/* How far the two clock readings below may sit apart: they are taken in a row. */
-#define HM_UPTIME_TOLERANCE_NS 5000000ULL
+/*
+ * How far the two clock readings below may sit apart. They are taken on
+ * consecutive lines and measured 125 ns apart here, but the pair straddles
+ * whatever the scheduler decides to do between them, and a single preemption
+ * outlasts any millisecond bound: an earlier revision allowed 5 ms, which is
+ * half a macOS quantum, and would have failed for a reason indistinguishable
+ * from the regression below.
+ *
+ * Two seconds is chosen against that regression instead of against the clocks. A
+ * transposed timebase converts by 3/125 rather than 125/3, i.e. 1736 times short,
+ * so it is off by days on an uptime of days and still off by four seconds on an
+ * uptime of four. Only a machine that booted two seconds ago could hide it.
+ */
+#define HM_UPTIME_TOLERANCE_NS 2000000000ULL
 
 /*
  * Checked against a second clock rather than against the same arithmetic the

@@ -30,6 +30,7 @@
 #define HM_TEST_LEAK_PAYLOAD_BYTES (64 * 1024)
 #define HM_TEST_LEAK_TOLERANCE_BYTES (64 * 1024)
 #define HM_TEST_PARTIAL_WRITE_BYTES (64 * 1024)
+#define HM_TEST_PROBE_BYTES (16 * 1024)
 
 /*
  * A pair with explicit timeouts, and optionally with a buffer size of its own:
@@ -273,6 +274,13 @@ static void hm_check_round_trip(void) {
  * Three ways a declared length is refused. The absolute cap protects the reader
  * from a peer that asks it to allocate 4 GiB; `maximum_size` is the caller's own,
  * tighter limit; a zero length would produce an empty message that means nothing.
+ *
+ * The cap is exercised with `maximum_size` at UINT32_MAX so that the cap is the
+ * only clause that can refuse the frame. Passing the cap itself — which is what
+ * the one caller in `CollectorSocket.kt` does, and what this check used to do —
+ * lets `length > maximum_size` do the refusing, and deleting
+ * `length > HM_MAX_JSON_FRAME_SIZE` from the bridge then leaves both this check
+ * and the one below it green.
  */
 static void hm_check_receive_rejects_lengths(void) {
     uint8_t payload[16];
@@ -280,8 +288,7 @@ static void hm_check_receive_rejects_lengths(void) {
     uint8_t frame[sizeof(uint32_t) + sizeof(payload)];
 
     size_t size = hm_build_frame(frame, HM_MAX_JSON_FRAME_SIZE + 1U, NULL, 0);
-    HMFrameOutcome oversized =
-        hm_receive_bytes(frame, size, HM_MAX_JSON_FRAME_SIZE, 0);
+    HMFrameOutcome oversized = hm_receive_bytes(frame, size, UINT32_MAX, 0);
     CHECK(
         "framing.receive-rejects-oversized-length",
         oversized.json == NULL && oversized.failure == EMSGSIZE,
@@ -348,11 +355,45 @@ static size_t hm_heap_bytes_in_use(void) {
 }
 
 /*
+ * Rejects the same frame `HM_TEST_LEAK_ITERATIONS` times, so that the heap
+ * measurement around it sees the same allocation made and dropped that many
+ * times. `size` is what reaches the reader, which is how a payload is truncated:
+ * the header still declares the full length, so the allocation happens either
+ * way and only the release differs.
+ */
+static int hm_reject_repeatedly(
+    const uint8_t *frame,
+    size_t size,
+    int expected_failure,
+    int *observed_failure
+) {
+    for (int iteration = 0; iteration < HM_TEST_LEAK_ITERATIONS; iteration++) {
+        HMFrameOutcome outcome = hm_receive_bytes(
+            frame,
+            size,
+            HM_MAX_JSON_FRAME_SIZE,
+            HM_TEST_LARGE_SOCKET_BUFFER
+        );
+        if (outcome.json != NULL || outcome.failure != expected_failure) {
+            *observed_failure = outcome.json != NULL ? 0 : outcome.failure;
+            free(outcome.json);
+            return 0;
+        }
+    }
+    return 1;
+}
+
+/*
  * A rejected frame has already been allocated by the time it is rejected, and
  * nothing in the return value says whether it was released. Losing that `free`
  * would leak the whole frame on every malformed message a peer sends — the
  * cheapest denial of service the protocol has to offer — while every check above
  * stays green.
+ *
+ * Both rejections that happen after the allocation are measured, not just one:
+ * the embedded NUL, and the payload that stops halfway. They are separate `free`
+ * calls in the bridge, and the truncated frame is the cheaper of the two for a
+ * hostile peer to send — four bytes of header and a disconnect.
  *
  * `malloc_zone_statistics` accounts for this exactly rather than approximately:
  * measured on this machine, 64 allocations of 64 KiB that are freed move
@@ -373,8 +414,9 @@ static void hm_check_receive_frees_rejected_frame(void) {
     payload[payload_bytes / 2] = '\0';
     const size_t size =
         hm_build_frame(frame, (uint32_t)payload_bytes, payload, payload_bytes);
+    const size_t truncated_size = sizeof(uint32_t) + 1024U;
 
-    /* One warm-up run keeps first-touch allocations out of the measurement. */
+    /* One warm-up run of each keeps first-touch allocations out of the measurement. */
     HMFrameOutcome warm_up = hm_receive_bytes(
         frame,
         size,
@@ -382,37 +424,128 @@ static void hm_check_receive_frees_rejected_frame(void) {
         HM_TEST_LARGE_SOCKET_BUFFER
     );
     free(warm_up.json);
+    HMFrameOutcome truncated_warm_up = hm_receive_bytes(
+        frame,
+        truncated_size,
+        HM_MAX_JSON_FRAME_SIZE,
+        HM_TEST_LARGE_SOCKET_BUFFER
+    );
+    free(truncated_warm_up.json);
 
+    int embedded_nul_failure = 0;
+    int truncated_failure = 0;
     const size_t before = hm_heap_bytes_in_use();
-    int rejected = 1;
-    for (int iteration = 0; iteration < HM_TEST_LEAK_ITERATIONS; iteration++) {
-        HMFrameOutcome outcome = hm_receive_bytes(
-            frame,
-            size,
-            HM_MAX_JSON_FRAME_SIZE,
-            HM_TEST_LARGE_SOCKET_BUFFER
-        );
-        if (outcome.json != NULL || outcome.failure != EILSEQ) {
-            rejected = 0;
-            free(outcome.json);
-            break;
-        }
-    }
-    const long long growth =
-        (long long)hm_heap_bytes_in_use() - (long long)before;
+    const int embedded_nul_rejected =
+        hm_reject_repeatedly(frame, size, EILSEQ, &embedded_nul_failure);
+    const size_t midpoint = hm_heap_bytes_in_use();
+    const int truncated_rejected =
+        hm_reject_repeatedly(frame, truncated_size, ECONNRESET, &truncated_failure);
+    const long long embedded_nul_growth =
+        (long long)midpoint - (long long)before;
+    const long long truncated_growth =
+        (long long)hm_heap_bytes_in_use() - (long long)midpoint;
 
     CHECK(
         "framing.receive-frees-rejected-frame",
-        rejected && growth < HM_TEST_LEAK_TOLERANCE_BYTES,
+        embedded_nul_rejected &&
+            truncated_rejected &&
+            embedded_nul_growth < HM_TEST_LEAK_TOLERANCE_BYTES &&
+            truncated_growth < HM_TEST_LEAK_TOLERANCE_BYTES,
         "expected the heap to grow by less than %d bytes over %d rejected frames "
-            "of %zu bytes, grew by %lld (every frame rejected: %d)",
+            "of %zu bytes each way, grew by %lld over the embedded NUL (rejected: "
+            "%d, %s) and by %lld over the truncated payload (rejected: %d, %s)",
         HM_TEST_LEAK_TOLERANCE_BYTES,
         HM_TEST_LEAK_ITERATIONS,
         payload_bytes,
-        growth,
-        rejected
+        embedded_nul_growth,
+        embedded_nul_rejected,
+        embedded_nul_rejected ? "EILSEQ" : strerror(embedded_nul_failure),
+        truncated_growth,
+        truncated_rejected,
+        truncated_rejected ? "ECONNRESET" : strerror(truncated_failure)
     );
 
+    free(frame);
+    free(payload);
+}
+
+/*
+ * The byte after the payload. What `hm_receive_json_frame` returns is used as a
+ * C string by every caller, and the only thing that makes it one is the
+ * `json[length] = '\0'` at the end of the function: the allocation is
+ * `length + 1` bytes and nothing else writes the last of them. Dropping that line
+ * leaves the string terminated by whatever the allocator happened to hand over,
+ * which is a zeroed page most of the time — so the check frees a block of exactly
+ * the size the reader is about to ask for, filled with non-zero bytes, and
+ * asserts that the reader got that block back. Measured here: at 64 KiB the very
+ * next `malloc` of the same size returns the freed block with the dirt intact,
+ * over 40 runs of the harness including 18 under full CPU load. Without the reuse
+ * the assertion would be about zeroed memory, so it is asserted rather than hoped
+ * for.
+ */
+static void hm_check_receive_terminates_payload(void) {
+    const size_t payload_bytes = HM_TEST_LEAK_PAYLOAD_BYTES;
+    uint8_t *frame = (uint8_t *)malloc(sizeof(uint32_t) + payload_bytes);
+    uint8_t *payload = (uint8_t *)malloc(payload_bytes);
+    if (frame == NULL || payload == NULL) {
+        free(frame);
+        free(payload);
+        CHECK("framing.receive-terminates-the-payload", 0, "out of memory");
+        return;
+    }
+    memset(payload, 'a', payload_bytes);
+    const size_t size =
+        hm_build_frame(frame, (uint32_t)payload_bytes, payload, payload_bytes);
+
+    int pair[2];
+    if (hm_test_socket_pair(pair, HM_TEST_LARGE_SOCKET_BUFFER) != 0) {
+        free(frame);
+        free(payload);
+        CHECK(
+            "framing.receive-terminates-the-payload",
+            0,
+            "socketpair failed: %s",
+            strerror(errno)
+        );
+        return;
+    }
+    const int sent = hm_send_all(pair[0], frame, size);
+    close(pair[0]);
+
+    char *dirt = (char *)malloc(payload_bytes + 1U);
+    const char *dirtied_block = dirt;
+    if (dirt != NULL) {
+        memset(dirt, 0xFF, payload_bytes + 1U);
+        free(dirt);
+    }
+
+    uint32_t received_size = 0;
+    errno = 0;
+    char *received = hm_receive_json_frame(pair[1], HM_MAX_JSON_FRAME_SIZE, &received_size);
+    const int failure = errno;
+    close(pair[1]);
+
+    const int reused = received != NULL && received == dirtied_block;
+    const size_t length = received == NULL ? 0 : strlen(received);
+    CHECK(
+        "framing.receive-terminates-the-payload",
+        sent == 0 &&
+            received != NULL &&
+            reused &&
+            received_size == (uint32_t)payload_bytes &&
+            received[payload_bytes] == '\0' &&
+            length == payload_bytes,
+        "expected %zu bytes terminated in the dirtied block, got send %d, %s, "
+            "size %u, strlen %zu, reused block %d",
+        payload_bytes,
+        sent,
+        received == NULL ? strerror(failure) : "a frame",
+        received_size,
+        length,
+        reused
+    );
+
+    free(received);
     free(frame);
     free(payload);
 }
@@ -614,6 +747,39 @@ static void *hm_interrupt_sender(void *argument) {
 }
 
 /*
+ * The same loop `hm_send_all` runs, with the two returns that loop exists for
+ * counted. It is sent down the same descriptor, against the same throttled reader
+ * and the same interrupter, immediately before the frame — a control that says
+ * whether a short write or an EINTR happens under these conditions at all.
+ */
+static int hm_send_counting(
+    int descriptor,
+    const char *buffer,
+    size_t size,
+    int *short_writes,
+    int *interruptions
+) {
+    const uint8_t *cursor = (const uint8_t *)buffer;
+    size_t remaining = size;
+    while (remaining > 0) {
+        const ssize_t written = send(descriptor, cursor, remaining, 0);
+        if (written < 0 && errno == EINTR) {
+            ++(*interruptions);
+            continue;
+        }
+        if (written <= 0) {
+            return -1;
+        }
+        if ((size_t)written < remaining) {
+            ++(*short_writes);
+        }
+        cursor += (size_t)written;
+        remaining -= (size_t)written;
+    }
+    return 0;
+}
+
+/*
  * The one case in which `send` hands back fewer bytes than it was given, and so
  * the only way to reach the arithmetic that resumes the transfer. Measured on
  * this machine: a blocking unix-domain `send` moves the whole buffer in a single
@@ -640,7 +806,9 @@ static void hm_check_send_completes_partial_write(void) {
     }
 
     char *payload = (char *)malloc(HM_TEST_PARTIAL_WRITE_BYTES + 1U);
-    uint8_t *wire = (uint8_t *)malloc(sizeof(uint32_t) + HM_TEST_PARTIAL_WRITE_BYTES);
+    uint8_t *wire = (uint8_t *)malloc(
+        HM_TEST_PROBE_BYTES + sizeof(uint32_t) + HM_TEST_PARTIAL_WRITE_BYTES
+    );
     if (payload == NULL || wire == NULL) {
         free(payload);
         free(wire);
@@ -666,7 +834,7 @@ static void hm_check_send_completes_partial_write(void) {
     HMThrottledReader reader = {
         pair[1],
         wire,
-        sizeof(uint32_t) + HM_TEST_PARTIAL_WRITE_BYTES,
+        HM_TEST_PROBE_BYTES + sizeof(uint32_t) + HM_TEST_PARTIAL_WRITE_BYTES,
         0,
         1,
         0,
@@ -711,6 +879,16 @@ static void hm_check_send_completes_partial_write(void) {
         return;
     }
 
+    int short_writes = 0;
+    int interruptions = 0;
+    const int probed = hm_send_counting(
+        pair[0],
+        payload,
+        HM_TEST_PROBE_BYTES,
+        &short_writes,
+        &interruptions
+    );
+
     errno = 0;
     const int sent = hm_send_json_frame(pair[0], payload);
     const int send_failure = errno;
@@ -720,31 +898,51 @@ static void hm_check_send_completes_partial_write(void) {
     sigaction(SIGUSR1, &previous, NULL);
 
     uint32_t declared = 0;
-    if (reader.received >= sizeof(declared)) {
-        memcpy(&declared, wire, sizeof(declared));
+    if (reader.received >= HM_TEST_PROBE_BYTES + sizeof(declared)) {
+        memcpy(&declared, wire + HM_TEST_PROBE_BYTES, sizeof(declared));
         declared = ntohl(declared);
     }
 
     /*
-     * The delivered signals and the reader's chunk count are asserted as well as
-     * reported. Neither proves a short write on its own — only instrumenting
-     * `hm_send_all` does that, and it measured 29 to 31 short writes and 26 to 38
-     * EINTR returns per run here — but they are the conditions under which one
-     * happens at all. Without them this check would quietly decay into a second
-     * `framing.round-trips-a-frame` on a machine whose timing changed.
+     * The evidence that the resumption path ran is the control send above: the
+     * same loop, on the same descriptor, under the same reader and interrupter,
+     * counting the two returns `hm_send_all` does not report. Measured here: 6
+     * short writes and 5 EINTR returns over the 16 KiB probe, and 0 of each with
+     * the interrupter silenced — which is the state this condition exists to
+     * catch, and the state a `send` that stopped coming back short would leave
+     * the check in.
+     *
+     * `interrupter.delivered` and `reader.chunks` are reported but not asserted:
+     * both hold whatever the kernel does with the signal — the interrupter counts
+     * its own `pthread_kill` calls, and the reader needs 81 chunks to reach its
+     * capacity a kilobyte at a time — so an assertion on them would be true by
+     * construction. Adding `SA_RESTART` to the `sigaction` above, for one, leaves
+     * all three of them and the control send green, and correctly so: measured
+     * with it, the EINTR returns fall to 0 while the short writes stay at 6,
+     * because the kernel restarts only a `send` that transferred nothing.
      */
     CHECK(
         "framing.send-completes-partial-write",
-        sent == 0 &&
-            interrupter.delivered > 0 &&
-            reader.chunks > 1 &&
-            reader.received == sizeof(uint32_t) + HM_TEST_PARTIAL_WRITE_BYTES &&
+        probed == 0 &&
+            short_writes + interruptions > 0 &&
+            sent == 0 &&
+            reader.received ==
+                HM_TEST_PROBE_BYTES + sizeof(uint32_t) + HM_TEST_PARTIAL_WRITE_BYTES &&
             declared == HM_TEST_PARTIAL_WRITE_BYTES &&
-            memcmp(wire + sizeof(uint32_t), payload, HM_TEST_PARTIAL_WRITE_BYTES) == 0,
-        "expected %d bytes through a %d-byte socket buffer under interrupts, got "
-            "send %d/%s and %zu bytes declaring %u in %d reads under %d interrupts",
+            memcmp(
+                wire + HM_TEST_PROBE_BYTES + sizeof(uint32_t),
+                payload,
+                HM_TEST_PARTIAL_WRITE_BYTES
+            ) == 0,
+        "expected %d bytes through a %d-byte socket buffer after a probe that was "
+            "interrupted at least once, got probe %d with %d short writes and %d "
+            "EINTR returns, send %d/%s and %zu bytes declaring %u in %d reads "
+            "under %d interrupts",
         HM_TEST_PARTIAL_WRITE_BYTES,
         HM_TEST_SMALL_SOCKET_BUFFER,
+        probed,
+        short_writes,
+        interruptions,
         sent,
         sent == 0 ? "ok" : strerror(send_failure),
         reader.received,
@@ -765,6 +963,7 @@ void hm_run_framing_tests(void) {
     hm_check_receive_rejects_lengths();
     hm_check_receive_rejects_embedded_nul();
     hm_check_receive_frees_rejected_frame();
+    hm_check_receive_terminates_payload();
     hm_check_receive_rejects_truncated_frames();
     hm_check_receive_assembles_split_payload();
     hm_check_send_completes_partial_write();
