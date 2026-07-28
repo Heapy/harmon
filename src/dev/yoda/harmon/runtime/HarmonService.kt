@@ -177,7 +177,9 @@ class HarmonService(
      *
      * The report carries at most `maxAlertsPerCategory` alerts per rule so it stays readable,
      * while the alert state has to see the full set: a key the report had no room for is still
-     * firing, and forgetting it would make its return look like a fresh alert.
+     * firing, and forgetting it would make its return look like a fresh alert. The keys that did
+     * not fit are named in the report instead of vanishing, so a consumer diffing the alert list
+     * cannot read a demoted alert as a cleared one.
      */
     private fun createSample(
         previous: RawSystemSnapshot,
@@ -185,11 +187,13 @@ class HarmonService(
     ): SampledAlerts {
         val usage = calculator.calculate(previous, current)
         val outcome = analyzer.analyze(usage, config, alertState.activeKeys)
+        val reported = outcome.alerts.mapTo(mutableSetOf()) { it.key }
         return SampledAlerts(
             report = MonitoringReport(
                 usage = usage,
                 alerts = outcome.alerts,
                 topProcessCount = config.topProcessCount,
+                suppressedAlertKeys = (outcome.firingKeys - reported).sorted(),
             ),
             firingKeys = outcome.firingKeys,
         )
@@ -228,12 +232,22 @@ class HarmonService(
      * AppKit on every quiet sample, which is exactly what the lazy holder exists to avoid.
      *
      * `notifyEverySample` widens what the push carries, not what counts as new: the payload still
-     * names only the keys that crossed their threshold on this sample, so a consumer can tell a
-     * fresh alert from one that has been firing for an hour.
+     * names only the keys that have not been delivered yet, so a consumer can tell a fresh alert
+     * from one that has been firing for an hour.
+     *
+     * That mode pushes whether or not the delivery backoff is deferring a key, so it reads the
+     * unsettled keys rather than the pushable ones — a deferred key rides in the payload, and
+     * leaving it out of the new set would hide it from the consumer for its whole firing episode,
+     * exactly in the flaky-channel case the backoff exists for. For the same reason it records no
+     * failures: nothing can be deferred in a mode that pushes every sample regardless.
      */
     private fun deliverSample(report: MonitoringReport, reportText: String): DeliveryOutcome {
         val everySample = config.notifications.notifyEverySample
-        val freshAlerts = alertState.newlyActive(report.alerts)
+        val freshAlerts = if (everySample) {
+            alertState.unsettled(report.alerts)
+        } else {
+            alertState.newlyActive(report.alerts)
+        }
         if (!everySample && freshAlerts.isEmpty()) {
             return DeliveryOutcome.NONE
         }
@@ -259,10 +273,11 @@ class HarmonService(
             )
         }
         val pushed = highlighted.mapTo(mutableSetOf()) { it.key }
-        return if (dispatcher.decisiveSuccess(results)) {
-            DeliveryOutcome(delivered = pushed, failed = emptySet())
-        } else {
-            DeliveryOutcome(delivered = emptySet(), failed = pushed)
+        return when {
+            dispatcher.decisiveSuccess(results) ->
+                DeliveryOutcome(delivered = pushed, failed = emptySet())
+            everySample -> DeliveryOutcome.NONE
+            else -> DeliveryOutcome(delivered = emptySet(), failed = pushed)
         }
     }
 
@@ -293,13 +308,13 @@ class HarmonService(
         }
     }
 
-    /** What a single sample's push achieved: the keys it carried, and whether they landed. */
     /** One sample's publishable report and the complete key set behind it. */
     private class SampledAlerts(
         val report: MonitoringReport,
         val firingKeys: Set<String>,
     )
 
+    /** What a single sample's push achieved: the keys it carried, and whether they landed. */
     private data class DeliveryOutcome(
         val delivered: Set<String>,
         val failed: Set<String>,

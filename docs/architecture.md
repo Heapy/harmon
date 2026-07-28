@@ -99,6 +99,14 @@ LaunchDaemon plist.
 File mode is therefore only the first check. A different local account that
 shares a group is still rejected by peer UID.
 
+The installer passes `--allowed-gid "$(id -g)"`, which on a stock macOS install
+is `staff` — the primary group of every local account — so on a multi-account
+machine every user can reach the socket and be rejected there. Point
+`--allowed-gid` at a dedicated group if that matters. The rejection is cheap
+either way: it takes no snapshot, does not count against the accept-failure
+budget, and its log line is coalesced to at most one a minute, so a rejected
+peer connecting in a loop cannot fill the collector's log.
+
 The collector refuses to start without root unless the explicit
 `--allow-unprivileged` development switch is supplied. Development mode is
 intended only for a socket under `/tmp` and does not improve process access.
@@ -107,7 +115,8 @@ intended only for a socket under `/tmp` and does not improve process access.
 
 - A failed collector startup exits; launchd throttles and restarts it.
 - A rejected peer is closed without taking a snapshot, and a rejection never
-  counts against the accept-failure budget.
+  counts against the accept-failure budget. Its log line is coalesced into at
+  most one a minute, each naming how many rejections it stands for.
 - A failing `accept` is logged and retried after a short pause. Only 16
   consecutive failures end the daemon, so a transient error cannot kill it while
   one served client resets the count.
@@ -130,7 +139,12 @@ intended only for a socket under `/tmp` and does not improve process access.
   widen from two samples up to thirty-two, and any confirmed delivery clears
   that backoff. Alert state is in-memory and resets with the agent.
 - Reports carry at most `maxAlertsPerCategory` alerts per rule, while the alert
-  state keeps every firing key, including the ones no report had room for.
+  state keeps every firing key, including the ones no report had room for. Those
+  keys are named in the report's `suppressedAlertKeys`, so a demoted alert is
+  distinguishable from a cleared one.
+- With `notifyEverySample`, the push goes out whether or not a key's retry is
+  deferred, so nothing is deferred in that mode and `newAlertKeys` names every
+  alert no channel has confirmed yet.
 - Notifications never run in the collector and cannot terminate it.
 - Before a system notification is posted, the agent atomically replaces the
   private `Reports/latest.html` file. The notification carries only that local

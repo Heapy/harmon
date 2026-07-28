@@ -373,6 +373,16 @@ object ConfigLoader {
         }
     }
 
+    /**
+     * Whether [url] may carry the webhook payload and its bearer token.
+     *
+     * HTTPS goes anywhere; plaintext HTTP only to loopback. The host is taken from after the last
+     * `@` in the authority, because everything before it is userinfo, not a host:
+     * `http://127.0.0.1:80@evil.example/hook` is a request to `evil.example` — libcurl parses it
+     * as `host=evil.example user=127.0.0.1` — and reading the host as `127.0.0.1` would send the
+     * token to an arbitrary server in cleartext. libcurl rejects an authority with a second `@`
+     * outright, so the last one is the delimiter it uses.
+     */
     private fun isAllowedWebhookUrl(url: String): Boolean {
         if (url.any { it.isWhitespace() || it.code < 0x20 }) {
             return false
@@ -393,7 +403,7 @@ object ConfigLoader {
         if (scheme == "https") {
             return true
         }
-        val host = authority.substringBefore(':')
+        val host = authority.substringAfterLast('@').substringBefore(':')
         return scheme == "http" && host == "127.0.0.1"
     }
 

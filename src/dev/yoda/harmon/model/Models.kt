@@ -311,10 +311,17 @@ data class Alert(
     val message: String,
 )
 
+/**
+ * [alerts] is capped at `maxAlertsPerCategory` per rule so a report stays readable, and
+ * [suppressedAlertKeys] names the keys that are still firing but did not fit. Without it a
+ * consumer diffing the alert list could not tell a demoted alert from a cleared one, and would
+ * never see it again: the alert state still holds it as firing, so it is never pushed as new.
+ */
 data class MonitoringReport(
     val usage: SystemUsage,
     val alerts: List<Alert>,
     val topProcessCount: Int,
+    val suppressedAlertKeys: List<String> = emptyList(),
 )
 
 data class NotificationPayload(

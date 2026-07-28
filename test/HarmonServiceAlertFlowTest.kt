@@ -1,3 +1,4 @@
+import dev.yoda.harmon.analysis.DELIVERY_RETRY_THRESHOLD
 import dev.yoda.harmon.config.HarmonConfig
 import dev.yoda.harmon.config.NotificationConfig
 import dev.yoda.harmon.config.SAMPLE_SECONDS_RANGE
@@ -130,6 +131,63 @@ class HarmonServiceAlertFlowTest {
         assertEquals(1, newAlertKeysOf(channel.payloads[0]).size)
         assertEquals(emptyList(), newAlertKeysOf(channel.payloads[1]))
         assertTrue(channel.payloads[1].text.endsWith("memory"), "the push still carries it")
+    }
+
+    /**
+     * The flaky channel the backoff exists for. `notifyEverySample` pushes whether or not a key's
+     * retry is deferred, so the deferral must not decide what counts as new either: the payload
+     * that finally lands would otherwise carry the alert without naming it, the next sample would
+     * settle it, and a consumer acting on `newAlertKeys` would never see the alert at all.
+     */
+    @Test
+    fun notifyEverySampleNamesADeferredKeyAsNewOnThePushThatLands() {
+        val channel = RecoveringChannel(failures = DELIVERY_RETRY_THRESHOLD)
+        val service = serviceWith(channel, notifyEverySample = true)
+
+        repeat(DELIVERY_RETRY_THRESHOLD + 1) { index ->
+            val started = index.toULong()
+            service.handleSample(
+                snapshot(started, ALERTING_FOOTPRINT),
+                snapshot(started + 1uL, ALERTING_FOOTPRINT),
+            )
+        }
+
+        val landed = channel.payloads.last()
+        assertEquals(1, newAlertKeysOf(landed).size, "the landed push named no new alert")
+        assertTrue(landed.text.endsWith("memory"))
+    }
+
+    /**
+     * A key demoted out of the capped report is still firing, so it must not simply disappear: a
+     * consumer diffing the alert list would read it as cleared, while the alert state holds it as
+     * firing and never pushes it again. The report names it instead, in the text and in the JSON.
+     */
+    @Test
+    fun namesTheStillFiringKeysThatDidNotFitTheCappedReport() {
+        val channel = RecordingChannel()
+        val reports = mutableListOf<String>()
+        val service = HarmonService(
+            config = alertConfig(),
+            collector = UnusedCollector,
+            notifications = lazyOf(NotificationDispatcher(listOf(channel))),
+            log = { reports += it },
+            logError = {},
+        )
+        val crowded = listOf(5_000uL, 4_000uL, 3_000uL, 2_500uL).map { it * MIB }
+
+        service.handleSample(crowdedSnapshot(0uL, crowded), crowdedSnapshot(1uL, crowded))
+        // the fourth application overtakes the others, demoting the smallest firing key
+        val overtaken = listOf(5_000uL, 4_000uL, 3_000uL, 6_000uL).map { it * MIB }
+        service.handleSample(crowdedSnapshot(1uL, overtaken), crowdedSnapshot(2uL, overtaken))
+
+        assertContains(
+            reports.last { it.startsWith("Harmon sample") },
+            "1 more still firing, over maxAlertsPerCategory: memory:",
+        )
+        assertEquals(
+            listOf("memory:process:12:100"),
+            suppressedAlertKeysOf(channel.payloads.last()),
+        )
     }
 
     /**
@@ -431,9 +489,15 @@ class HarmonServiceAlertFlowTest {
 }
 
 private fun newAlertKeysOf(payload: NotificationPayload): List<String> =
-    Json.parseToJsonElement(payload.json)
+    payload.keysOf("newAlertKeys")
+
+private fun suppressedAlertKeysOf(payload: NotificationPayload): List<String> =
+    payload.keysOf("suppressedAlertKeys")
+
+private fun NotificationPayload.keysOf(field: String): List<String> =
+    Json.parseToJsonElement(json)
         .jsonObject
-        .getValue("newAlertKeys")
+        .getValue(field)
         .jsonArray
         .map { it.jsonPrimitive.content }
 
@@ -460,6 +524,15 @@ private fun snapshot(seconds: ULong, footprint: ULong): RawSystemSnapshot = rawS
     processes = listOf(rawProcess(footprint = footprint)),
 )
 
+/** One unrelated application per footprint, so they compete for the per-category alert slots. */
+private fun crowdedSnapshot(seconds: ULong, footprints: List<ULong>): RawSystemSnapshot =
+    rawSnapshot(
+        monotonicNs = seconds * 1_000_000_000uL,
+        processes = footprints.mapIndexed { index, footprint ->
+            rawProcess(pid = index + 10, name = "application-$index", footprint = footprint)
+        },
+    )
+
 private object UnusedCollector : SystemCollector {
     override fun capture(): RawSystemSnapshot = error("handleSample must not capture")
 }
@@ -480,6 +553,21 @@ private class FlakyCollector(private val snapshot: RawSystemSnapshot) : SystemCo
             error("collector socket refused the connection")
         }
         return snapshot
+    }
+}
+
+/** Down for its first [failures] deliveries, the way a webhook endpoint being restarted is. */
+private class RecoveringChannel(private val failures: Int) : NotificationChannel {
+    override val name: String = "recovering"
+    val payloads = mutableListOf<NotificationPayload>()
+
+    override fun deliver(payload: NotificationPayload): DeliveryResult {
+        payloads += payload
+        return DeliveryResult(
+            channel = name,
+            successful = payloads.size > failures,
+            detail = "recorded",
+        )
     }
 }
 

@@ -236,8 +236,11 @@ HARMON_TELEGRAM_CHAT_ID
 HARMON_COLLECTOR_SOCKET
 ```
 
-External webhooks must use HTTPS. Plain HTTP is accepted only for
-`127.0.0.1`. A LaunchAgent does not inherit terminal environment variables, so
+External webhooks must use HTTPS. Plain HTTP is accepted only for `127.0.0.1`,
+and the host is read from after any `@` in the URL, so
+`http://127.0.0.1@example.com/hook` is an external HTTP URL and is rejected
+rather than treated as loopback. A LaunchAgent does not inherit terminal
+environment variables, so
 normal installations should keep secrets in the generated `0600` config file.
 
 Validate configuration and notification delivery without printing secrets:
@@ -270,10 +273,16 @@ that backoff at once. Alert state lives in the agent process and resets when it
 restarts.
 
 The push text names only the alerts that fired on this sample. The attached HTML
-report and the JSON webhook payload both carry every alert active in the sample,
-and the payload adds `newAlertKeys` listing the ones the push was about. With
+report and the JSON webhook payload both carry the sample's whole reported alert
+list, and the payload adds `newAlertKeys` listing the ones the push was about.
+That list is capped at `maxAlertsPerCategory` alerts per rule: an already-firing
+alert that noisier ones push out of the top slice is demoted rather than
+cleared, and `suppressedAlertKeys` names every key demoted that way, so a
+consumer diffing the alert list can tell the two apart. With
 `notifyEverySample=true` the agent sends on every sample and treats the whole
-alert list as push content.
+alert list as push content; nothing is deferred in that mode, so `newAlertKeys`
+there names every alert not yet confirmed as delivered, including one whose
+earlier deliveries failed.
 
 Edge detection across samples exists only in the long-running `harmon run`
 agent. `harmon once --notify` starts with a fresh, empty alert state, so every

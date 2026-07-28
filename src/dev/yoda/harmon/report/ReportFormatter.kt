@@ -102,11 +102,18 @@ object ReportFormatter {
             },
         )
 
-        if (report.alerts.isNotEmpty()) {
+        if (report.alerts.isNotEmpty() || report.suppressedAlertKeys.isNotEmpty()) {
             appendLine()
             appendLine("Alerts:")
             report.alerts.forEach { alert ->
                 appendLine("- ${alert.severity.name.lowercase()}: ${alert.message}")
+            }
+            if (report.suppressedAlertKeys.isNotEmpty()) {
+                appendLine(
+                    "- ${report.suppressedAlertKeys.size} more still firing, " +
+                        "over maxAlertsPerCategory: " +
+                        report.suppressedAlertKeys.joinToString(),
+                )
             }
         }
     }.trimEnd()

@@ -147,6 +147,35 @@ class AlertStateTest {
         )
     }
 
+    /**
+     * The backoff decides when a key is pushed again, not whether it has been delivered. A caller
+     * that pushes on every sample regardless of the backoff reads the unsettled keys, so that the
+     * payload finally carrying a deferred alert still names it as new.
+     */
+    @Test
+    fun keepsADeferredKeyUnsettledWhileItsRetryIsPostponed() {
+        val state = AlertState()
+        val alerts = listOf(stateAlert("cpu:firefox"))
+
+        repeat(DELIVERY_RETRY_THRESHOLD) {
+            state.commit(setOf("cpu:firefox"), emptySet(), failedKeys = setOf("cpu:firefox"))
+        }
+
+        assertTrue(state.newlyActive(alerts).isEmpty(), "the retry has to be deferred first")
+        assertEquals(listOf("cpu:firefox"), state.unsettled(alerts).map { it.key })
+    }
+
+    @Test
+    fun countsADeliveredKeyAsSettledForBothViews() {
+        val state = AlertState()
+        val alerts = listOf(stateAlert("cpu:firefox"))
+
+        state.commit(setOf("cpu:firefox"), setOf("cpu:firefox"))
+
+        assertTrue(state.unsettled(alerts).isEmpty())
+        assertTrue(state.newlyActive(alerts).isEmpty())
+    }
+
     /** One channel answering again is evidence the outage is over, so no key stays deferred. */
     @Test
     fun releasesADeferredKeyOnceAnotherDeliverySucceeds() {

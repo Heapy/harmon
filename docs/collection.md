@@ -425,7 +425,8 @@ most `maxAlertsPerCategory` applications by the rule's metric, and every report
 is capped at that number. An already-active key that is still above its cleared
 threshold but did not survive the cut is not reported, yet it stays in the alert
 state as firing: forgetting it there would look like the alert clearing, and its
-return to the top slice would push again as new. A push carries only the alerts
+return to the top slice would push again as new. Such a key is listed in the
+report's `suppressedAlertKeys` instead. A push carries only the alerts
 that crossed their threshold on this sample; while the condition holds there is
 no repeat, and a key becomes pushable again only after it stops firing.
 
@@ -445,10 +446,13 @@ outright failure, such as being unable to write the HTML report, that failure
 counts and the alert stays pushable. Alert state resets with the agent.
 
 Only the push text is narrowed that way. The HTML report attached to a system
-notification and the JSON webhook payload both carry every alert active in the
-sample, and the payload's `newAlertKeys` names the subset the push was about.
-With `notifyEverySample=true` the agent sends on every sample and treats every
-active alert as push content.
+notification and the JSON webhook payload both carry the sample's whole reported
+alert list, `newAlertKeys` names the subset the push was about, and
+`suppressedAlertKeys` names the still-firing keys the per-category cap left out
+of the list. With `notifyEverySample=true` the agent sends on every sample and
+treats every reported alert as push content; the backoff defers nothing in that
+mode, so `newAlertKeys` there names every alert not yet confirmed as delivered,
+including one whose earlier deliveries failed.
 
 `applicationMemoryAlertMiB` and `swapAlertMiB` are capped at 1,048,576 MiB
 (1 TiB); a larger value is rejected. The MiB-to-byte conversion saturates rather
@@ -461,11 +465,15 @@ threshold, so the lowered bound never turns a warning into a critical. Low
 battery is exempt: it is the only rule comparing with "less than or equal", and
 a lowered bound there would drop the alert while the battery is still low.
 
-An application whose alert is already firing stays in the list even when
-noisier applications push it out of the per-category top slice, however many of
-them there are, so a category can hold more than `maxAlertsPerCategory` alerts.
-Without that, eviction would look like the alert clearing and the alert would be
-reported as new again on return.
+An application whose alert is already firing and is pushed out of the
+per-category top slice by noisier applications is demoted, not cleared: it
+leaves the reported alert list, which stays hard-capped at
+`maxAlertsPerCategory` per rule, and stays in the alert state as firing. Without
+that, eviction would look like the alert clearing and the alert would be
+reported as new again on return. Every demoted key is named in
+`suppressedAlertKeys`, in the text and HTML reports as well as in the webhook
+payload, so a consumer diffing the alert list cannot read a demoted alert as a
+cleared one.
 
 ## Access failures
 
@@ -499,8 +507,10 @@ The standard `harmon.sample` webhook includes:
 - top applications and processes by CPU, memory, battery impact, physical
   writes, internal logical writes, compressed/paged-out proxy, and accounted
   energy;
-- every alert active in the sample, `newAlertKeys` naming the ones that crossed
-  their threshold on it, and collection coverage counts.
+- the sample's reported alerts, capped at `maxAlertsPerCategory` per rule, with
+  `newAlertKeys` naming the ones the push was about and `suppressedAlertKeys`
+  naming the still-firing keys the cap left out;
+- collection coverage counts.
 
 It excludes executable paths and detailed PID collection failures.
 

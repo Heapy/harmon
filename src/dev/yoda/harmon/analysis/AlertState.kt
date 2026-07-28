@@ -64,8 +64,19 @@ class AlertState {
 
     val activeKeys: Set<String> get() = firing
 
+    /**
+     * The alerts whose key has never been confirmed as delivered while it kept firing.
+     *
+     * This is what a caller that pushes on every sample has to name as new: it pushes regardless
+     * of the retry backoff, so applying the backoff here as well would drop a key from the new set
+     * of the very payload that finally carries it, and the key would never be named as new in any
+     * payload the consumer receives.
+     */
+    fun unsettled(alerts: List<Alert>): List<Alert> = alerts.filter { it.key !in settled }
+
+    /** The subset of [unsettled] whose retry the delivery backoff is not currently deferring. */
     fun newlyActive(alerts: List<Alert>): List<Alert> =
-        alerts.filter { it.key !in settled && (retryAt[it.key] ?: 0L) <= sample }
+        unsettled(alerts).filter { (retryAt[it.key] ?: 0L) <= sample }
 
     /**
      * Records the outcome of a sample and returns, for every key whose retry was deferred, how

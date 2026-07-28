@@ -242,6 +242,25 @@ class ReportFormatterTest {
         )
     }
 
+    /**
+     * The capped alert list is only honest if the keys it dropped are still named somewhere. A
+     * reader of the text report — and of the HTML built from it — has to see that the list is not
+     * everything that is firing.
+     */
+    @Test
+    fun namesTheStillFiringKeysTheCappedAlertListLeftOut() {
+        val report = alertingReport().copy(
+            suppressedAlertKeys = listOf("memory:one", "memory:two"),
+        )
+
+        val output = ReportFormatter.text(report)
+
+        assertContains(
+            output,
+            "- 2 more still firing, over maxAlertsPerCategory: memory:one, memory:two",
+        )
+    }
+
     private fun rankedNames(output: String, heading: String): List<String> = output
         .substringAfter("$heading:\n")
         .substringBefore("\n\n")

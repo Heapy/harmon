@@ -6,6 +6,7 @@ import kotlin.test.Test
 import kotlin.test.assertContains
 import kotlin.test.assertEquals
 import kotlin.test.assertFailsWith
+import kotlin.test.assertNotNull
 import kotlin.test.assertNull
 
 class ConfigLoaderTest {
@@ -163,5 +164,39 @@ class ConfigLoaderTest {
                 environment = emptyMap(),
             )
         }
+    }
+
+    /**
+     * Userinfo is not a host. libcurl resolves each of these to `evil.example`, so reading the
+     * part before the `@` as the host would send the payload and its bearer token to an arbitrary
+     * server over plaintext HTTP — which is the one thing the loopback exemption exists to stop.
+     */
+    @Test
+    fun doesNotMistakeLocalhostInUserinfoForTheHost() {
+        listOf(
+            "http://127.0.0.1:80@evil.example/hook",
+            "http://127.0.0.1@evil.example/hook",
+            "http://127.0.0.1\\@evil.example/hook",
+        ).forEach { url ->
+            val failure = assertFailsWith<ConfigException>(url) {
+                ConfigLoader.parse(sequenceOf("webhookUrl=$url"), environment = emptyMap())
+            }
+
+            assertContains(assertNotNull(failure.message), "webhookUrl must use HTTPS")
+        }
+    }
+
+    /** Userinfo in front of a genuine loopback host is still loopback, and still cleartext-safe. */
+    @Test
+    fun acceptsCredentialsInFrontOfALoopbackHost() {
+        val config = ConfigLoader.parse(
+            lines = sequenceOf("webhookUrl=http://user:secret@127.0.0.1:9000/hook"),
+            environment = emptyMap(),
+        )
+
+        assertEquals(
+            "http://user:secret@127.0.0.1:9000/hook",
+            config.notifications.webhookUrl,
+        )
     }
 }

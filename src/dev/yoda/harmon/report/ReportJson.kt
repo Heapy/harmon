@@ -16,8 +16,10 @@ object ReportJson {
     }
 
     /**
-     * [newAlertKeys] tells the consumer which of the reported alerts crossed their threshold on
-     * this sample; `alerts` stays the complete list.
+     * [newAlertKeys] tells the consumer which of the reported alerts have not been delivered
+     * before; `alerts` carries the capped list and `suppressedAlertKeys` names the keys that are
+     * still firing but did not fit it, so a consumer diffing the list cannot mistake a demoted
+     * alert for a cleared one.
      */
     fun encode(
         report: MonitoringReport,
@@ -158,6 +160,7 @@ object ReportJson {
             ),
             alerts = alerts.map { it.toDto() },
             newAlertKeys = newAlertKeys,
+            suppressedAlertKeys = suppressedAlertKeys,
         )
     }
 
@@ -253,6 +256,7 @@ private data class ReportEventDto(
     val processes: ProcessSetDto,
     val alerts: List<AlertDto>,
     val newAlertKeys: List<String>,
+    val suppressedAlertKeys: List<String>,
 )
 
 @Serializable

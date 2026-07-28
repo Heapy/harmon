@@ -76,6 +76,27 @@ class ReportJsonTest {
         )
     }
 
+    /**
+     * A consumer diffing the alert list has to be able to tell a demoted alert from a cleared one:
+     * the alert state still holds a demoted key as firing, so it is never pushed as new again.
+     */
+    @Test
+    fun namesTheFiringKeysThatDidNotFitTheCappedAlertList() {
+        val report = MonitoringReport(
+            usage = systemUsage(processes = listOf(processUsage())),
+            alerts = listOf(alert(key = "memory:kept")),
+            topProcessCount = 5,
+            suppressedAlertKeys = listOf("memory:demoted"),
+        )
+
+        val payload = Json.parseToJsonElement(ReportJson.encode(report)).jsonObject
+
+        assertEquals(
+            listOf("memory:demoted"),
+            payload.getValue("suppressedAlertKeys").jsonArray.map { it.jsonPrimitive.content },
+        )
+    }
+
     @Test
     fun treatsEveryAlertAsNewWhenTheCallerDoesNotSayOtherwise() {
         val report = MonitoringReport(
