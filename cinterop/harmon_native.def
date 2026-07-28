@@ -44,6 +44,7 @@ extern "C" {
 #define HM_PROCESS_ISSUE_RUSAGE 1
 #define HM_PROCESS_ISSUE_CAPACITY 2
 #define HM_MAX_VM_REGIONS 32768
+#define HM_ATTRIBUTION_REGION_LIMIT 8192
 #define HM_MAX_JSON_FRAME_SIZE (32U * 1024U * 1024U)
 
 typedef struct {
@@ -514,20 +515,43 @@ static inline int hm_count_processes(void) {
     return proc_listallpids(NULL, 0);
 }
 
+/**
+ * Sums the compressed or paged-out pages of `pid` by walking its VM regions.
+ *
+ * `region_limit` caps how many regions the walk may read; it is clamped to
+ * HM_MAX_VM_REGIONS, which stays the absolute safety stop. `consumed_regions`
+ * receives the number of proc_pidinfo calls actually made so the caller can
+ * charge them against a sample-wide budget.
+ *
+ * Returns 0 when the walk reached the end of the address space and the sum is
+ * complete, 1 when it stopped at `region_limit` and the sum is therefore an
+ * undercount, and -1 when the process could not be read at all. Only a 0 result
+ * may be reported as a measured value.
+ */
 static inline int hm_read_compressed_or_paged_out(
     pid_t pid,
+    int region_limit,
     uint64_t *output_bytes,
-    int32_t *output_regions
+    int32_t *output_regions,
+    int *consumed_regions
 ) {
-    if (output_bytes == NULL || output_regions == NULL) {
+    if (output_bytes == NULL ||
+        output_regions == NULL ||
+        consumed_regions == NULL ||
+        region_limit <= 0) {
         errno = EINVAL;
         return -1;
     }
+    *consumed_regions = 0;
 
+    int limit = region_limit < HM_MAX_VM_REGIONS
+        ? region_limit
+        : HM_MAX_VM_REGIONS;
     uint64_t address = 0;
     uint64_t pages = 0;
     int32_t regions = 0;
-    while (regions < HM_MAX_VM_REGIONS) {
+    int truncated = 1;
+    while (regions < limit) {
         struct proc_regioninfo region;
         memset(&region, 0, sizeof(region));
         int result = proc_pidinfo(
@@ -537,10 +561,12 @@ static inline int hm_read_compressed_or_paged_out(
             &region,
             (int)sizeof(region)
         );
+        ++(*consumed_regions);
         if (result != (int)sizeof(region)) {
             if (regions == 0) {
                 return -1;
             }
+            truncated = 0;
             break;
         }
 
@@ -552,6 +578,7 @@ static inline int hm_read_compressed_or_paged_out(
 
         uint64_t next_address = region.pri_address + region.pri_size;
         if (next_address <= address || next_address < region.pri_address) {
+            truncated = 0;
             break;
         }
         address = next_address;
@@ -562,7 +589,7 @@ static inline int hm_read_compressed_or_paged_out(
         (uint64_t)getpagesize()
     );
     *output_regions = regions;
-    return 0;
+    return truncated;
 }
 
 typedef struct {
@@ -651,6 +678,7 @@ static inline int hm_list_processes(
     HMProcessIssue *issues,
     int issue_capacity,
     int attribution_process_limit,
+    int attribution_region_budget,
     int *total_processes,
     int *inaccessible_processes,
     int *written_issues
@@ -659,7 +687,8 @@ static inline int hm_list_processes(
         output_capacity <= 0 ||
         issues == NULL ||
         issue_capacity <= 0 ||
-        attribution_process_limit < 0) {
+        attribution_process_limit < 0 ||
+        attribution_region_budget < 0) {
         errno = EINVAL;
         return -1;
     }
@@ -818,7 +847,7 @@ static inline int hm_list_processes(
         ++written;
     }
 
-    if (written > 0 && attribution_process_limit > 0) {
+    if (written > 0 && attribution_process_limit > 0 && attribution_region_budget > 0) {
         HMProcessAttributionCandidate *candidates =
             (HMProcessAttributionCandidate *)calloc(
                 (size_t)written,
@@ -840,16 +869,25 @@ static inline int hm_list_processes(
             int attempts = attribution_process_limit < written
                 ? attribution_process_limit
                 : written;
+            int remaining_budget = attribution_region_budget;
             for (int candidate_index = 0;
-                 candidate_index < attempts;
+                 candidate_index < attempts && remaining_budget > 0;
                  ++candidate_index) {
+                int region_limit = remaining_budget < HM_ATTRIBUTION_REGION_LIMIT
+                    ? remaining_budget
+                    : HM_ATTRIBUTION_REGION_LIMIT;
                 HMProcessSample *sample = &output[candidates[candidate_index].index];
                 sample->compressed_attribution_attempted = 1;
-                if (hm_read_compressed_or_paged_out(
-                        sample->pid,
-                        &sample->compressed_or_paged_out_bytes,
-                        &sample->virtual_memory_region_count
-                    ) == 0) {
+                int consumed = 0;
+                int status = hm_read_compressed_or_paged_out(
+                    sample->pid,
+                    region_limit,
+                    &sample->compressed_or_paged_out_bytes,
+                    &sample->virtual_memory_region_count,
+                    &consumed
+                );
+                remaining_budget -= consumed;
+                if (status == 0) {
                     sample->compressed_attribution_available = 1;
                 }
             }

@@ -78,12 +78,16 @@ class DarwinSystemCollector(
     private val issueCapacity: Int = DEFAULT_ISSUE_CAPACITY,
     private val compressedAttributionProcessLimit: Int =
         DEFAULT_COMPRESSED_ATTRIBUTION_PROCESS_LIMIT,
+    private val attributionRegionBudget: Int = DEFAULT_ATTRIBUTION_REGION_BUDGET,
 ) : SystemCollector {
     init {
         require(processCapacity > 0) { "processCapacity must be positive" }
         require(issueCapacity > 0) { "issueCapacity must be positive" }
         require(compressedAttributionProcessLimit >= 0) {
             "compressedAttributionProcessLimit must not be negative"
+        }
+        require(attributionRegionBudget >= 0) {
+            "attributionRegionBudget must not be negative"
         }
     }
 
@@ -103,6 +107,7 @@ class DarwinSystemCollector(
             nativeIssues,
             issueSlots,
             compressedAttributionProcessLimit,
+            attributionRegionBudget,
             totalProcesses.ptr,
             inaccessibleProcesses.ptr,
             writtenIssues.ptr,
@@ -337,5 +342,6 @@ class DarwinSystemCollector(
         const val DEFAULT_PROCESS_CAPACITY = 16_384
         const val DEFAULT_ISSUE_CAPACITY = 4_096
         const val DEFAULT_COMPRESSED_ATTRIBUTION_PROCESS_LIMIT = 256
+        const val DEFAULT_ATTRIBUTION_REGION_BUDGET = 100_000
     }
 }

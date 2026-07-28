@@ -160,7 +160,12 @@ It never labels this value “per-process swap bytes.”
 
 Walking every VM region of every process would make the monitor itself
 expensive. Harmon sorts readable processes by physical footprint and attempts
-region attribution for the largest 256. Each walk is capped at 32,768 regions.
+region attribution for the largest 256. Three limits bound the work:
+
+- a per-process limit of 8,192 regions;
+- a sample-wide budget of 100,000 regions shared by all attempted processes;
+- `HM_MAX_VM_REGIONS` (32,768) as the absolute safety stop.
+
 Reports expose:
 
 - `compressedAttributionProcessCount`;
@@ -169,6 +174,30 @@ Reports expose:
 
 A process outside that bounded set has `null`, which is distinct from a
 measured value of zero.
+
+The counters mean exactly what they say:
+
+- a walk cut short by the per-process limit or by the exhausted budget is *not*
+  reported as measured. Its partial sum is discarded and
+  `compressedOrPagedOutBytes` stays `null`, because an undercount must never
+  look like a measurement;
+- such a truncated walk is counted in `compressedAttributionFailureCount`: it
+  was attempted and it did not produce a usable value;
+- a process the budget never reached is not counted at all — neither attempted
+  nor failed. It is simply outside the bounded set, like every process below
+  the top 256.
+
+A walk that ends exactly on the last allowed region is reported as truncated
+even when the address space happened to end there too. The bias is deliberate
+and one-directional: a missed measurement is recoverable on the next sample, a
+fabricated one is not.
+
+On a workstation running an IDE, a browser, and a virtual machine the budget,
+not the 256-process limit, is what actually ends attribution: the largest tens
+of processes consume it, and coverage settles near 55 measured processes rather
+than 256. That is the intended trade. Attribution is a bounded proxy, and the
+bound now costs a predictable number of system calls per sample instead of up
+to 8.4 million.
 
 ### Why root still does not make this exact
 
