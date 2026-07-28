@@ -1,4 +1,5 @@
 import dev.yoda.harmon.analysis.ApplicationGrouper
+import dev.yoda.harmon.config.ConfigLoader
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertNotEquals
@@ -197,5 +198,65 @@ class ApplicationGrouperTest {
 
         assertEquals("helper", application.name)
         assertEquals(null, application.bundlePath)
+    }
+
+    @Test
+    fun usesTheBuiltInTerminalListWhenConstructedWithoutArguments() {
+        val applications = ApplicationGrouper().group(shellUnder(TERMINAL_APP))
+
+        assertEquals(listOf(600), applications.single { it.name == "Terminal" }.processIds)
+        assertEquals(null, applications.single { it.rootPid == 601 }.bundlePath)
+    }
+
+    @Test
+    fun aConfiguredListReplacesTheDefaultTerminalsOutright() {
+        val config = ConfigLoader.parse(
+            lines = sequenceOf("terminalApplications=foo,bar"),
+            environment = emptyMap(),
+        )
+
+        val applications = ApplicationGrouper(config.terminalApplications)
+            .group(shellUnder(TERMINAL_APP) + shellUnder("/Applications/Foo.app", pid = 700))
+
+        assertEquals(
+            listOf(600, 601),
+            applications.single { it.name == "Terminal" }.processIds,
+        )
+        assertEquals(listOf(700), applications.single { it.name == "Foo" }.processIds)
+        assertEquals(null, applications.single { it.rootPid == 701 }.bundlePath)
+    }
+
+    @Test
+    fun anEmptyConfiguredListTurnsOffTheTerminalBoundary() {
+        val config = ConfigLoader.parse(
+            lines = sequenceOf("terminalApplications="),
+            environment = emptyMap(),
+        )
+
+        val applications = ApplicationGrouper(config.terminalApplications)
+            .group(shellUnder(TERMINAL_APP))
+
+        assertEquals(
+            listOf(600, 601),
+            applications.single { it.name == "Terminal" }.processIds,
+        )
+    }
+
+    private fun shellUnder(bundlePath: String, pid: Int = 600) = listOf(
+        processUsage(
+            pid = pid,
+            name = bundlePath.substringAfterLast('/').removeSuffix(".app"),
+            executablePath = "$bundlePath/Contents/MacOS/terminal",
+        ),
+        processUsage(
+            pid = pid + 1,
+            parentPid = pid,
+            name = "zsh",
+            executablePath = "/bin/zsh",
+        ),
+    )
+
+    private companion object {
+        const val TERMINAL_APP = "/Applications/Terminal.app"
     }
 }

@@ -135,4 +135,40 @@ class UsageCalculatorTest {
             UsageCalculator().calculate(previous, current)
         }
     }
+
+    /**
+     * The configured terminal list has to reach the grouper that actually builds the applications,
+     * not stop at the constructor.
+     */
+    @Test
+    fun handsTheConfiguredTerminalListToTheApplicationGrouper() {
+        val processes = listOf(
+            rawProcess(
+                pid = 600,
+                startedAt = 1u,
+                name = "Terminal",
+                executablePath = "/Applications/Terminal.app/Contents/MacOS/Terminal",
+            ),
+            rawProcess(
+                pid = 601,
+                startedAt = 2u,
+                parentPid = 600,
+                name = "zsh",
+                executablePath = "/bin/zsh",
+            ),
+        )
+        val previous = rawSnapshot(monotonicNs = 1_000_000_000u, processes = processes)
+        val current = rawSnapshot(monotonicNs = 2_000_000_000u, processes = processes)
+
+        val withoutTerminals = UsageCalculator(terminalApplications = emptySet())
+            .calculate(previous, current)
+            .applications
+        val withDefaults = UsageCalculator().calculate(previous, current).applications
+
+        assertEquals(
+            listOf(600, 601),
+            withoutTerminals.single { it.name == "Terminal" }.processIds,
+        )
+        assertEquals(listOf(600), withDefaults.single { it.name == "Terminal" }.processIds)
+    }
 }

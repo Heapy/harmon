@@ -691,17 +691,36 @@ reified-расширение: `CollectorEnvelope` приватный, а чле�
 - Modify: `README.md`
 - Modify: `docs/collection.md`
 
-- [ ] написать тест: процесс, запущенный из `Terminal.app`, не наследует бандл терминала
-- [ ] написать тест: `terminalApplications=foo,bar` из конфига заменяет список целиком
-- [ ] написать тест: пустое значение ключа отключает границу терминалов
-- [ ] написать тест: `ApplicationGrouper()` без аргументов сохраняет поведение по умолчанию
+- [x] написать тест: процесс, запущенный из `Terminal.app`, не наследует бандл терминала
+- [x] написать тест: `terminalApplications=foo,bar` из конфига заменяет список целиком
+- [x] написать тест: пустое значение ключа отключает границу терминалов
+- [x] написать тест: `ApplicationGrouper()` без аргументов сохраняет поведение по умолчанию
       (`test/TestFixtures.kt:258` вызывает его именно так)
-- [ ] добавить ключ `terminalApplications` (список через запятую) с дефолтом
+- [x] добавить ключ `terminalApplications` (список через запятую) с дефолтом
       `terminal, iterm2, iterm, alacritty, wezterm, kitty, ghostty, warp, hyper, tabby, agterm`
-- [ ] пробросить список через конструкторы `ApplicationGrouper` и `UsageCalculator` (с дефолтами)
-- [ ] добавить ключ в `redactedDescription`, `knownKeys`, `config/harmon.conf.example`
-- [ ] обновить `README.md:44` и `README.md:160-180` (блок defaults), `docs/collection.md:287-289`
-- [ ] запустить `./kotlin test` — должно пройти до перехода к задаче 14
+- [x] пробросить список через конструкторы `ApplicationGrouper` и `UsageCalculator` (с дефолтами)
+- [x] добавить ключ в `redactedDescription`, `knownKeys`, `config/harmon.conf.example`
+- [x] обновить `README.md:44` и `README.md:160-180` (блок defaults), `docs/collection.md:287-289`
+- [x] запустить `./kotlin test` — должно пройти до перехода к задаче 14
+
+➕ Дефолтный список живёт в `config/Config.kt` как публичная top-level `DEFAULT_TERMINAL_APPLICATIONS`,
+а не в компаньоне `ApplicationGrouper`: это конфиг-дефолт наравне с порогами, и направление
+зависимостей остаётся прежним (`analysis` → `config`, как в `AlertAnalyzer`). Обратное размещение
+дало бы цикл `config` → `analysis`.
+
+➕ `UsageCalculator` получил `terminalApplications` **первым** параметром, а прежний
+`applicationGrouper` остался вторым со значением `ApplicationGrouper(terminalApplications)`:
+DI-шов для грувера не удалён, `UsageCalculator()` продолжает работать, а порядок обязателен —
+дефолт параметра может ссылаться только на объявленные раньше. `HarmonService` строит калькулятор
+как `UsageCalculator(config.terminalApplications)`, иначе ключ парсился бы и терялся.
+
+➕ Тест `UsageCalculatorTest.handsTheConfiguredTerminalListToTheApplicationGrouper` сверх чеклиста:
+чеклист проверяет только `ApplicationGrouper`, а сломаться цепочка может ровно на участке
+`UsageCalculator` → грувер. Тест сравнивает группировку при `terminalApplications = emptySet()`
+и при дефолте на одних и тех же снимках.
+
+➕ Тест `ConfigLoaderTest.keepsTheDefaultTerminalListWhenTheKeyIsAbsent` заодно проверяет строку
+в `redactedDescription` — без этого новый ключ в выводе `check-config` ничем не покрыт.
 
 ### Task 14: Свести границу --sample-seconds к одному источнику
 

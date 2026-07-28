@@ -42,7 +42,7 @@ fun sleepSliceMillis(remainingNs: ULong, maxSliceMs: ULong): ULong {
 class HarmonService(
     private val config: HarmonConfig,
     private val collector: SystemCollector = CollectorClient(config.collectorSocket),
-    private val calculator: UsageCalculator = UsageCalculator(),
+    private val calculator: UsageCalculator = UsageCalculator(config.terminalApplications),
     private val analyzer: AlertAnalyzer = AlertAnalyzer(),
     private val notifications: Lazy<NotificationDispatcher> =
         lazy { NotificationDispatcher.from(config.notifications) },

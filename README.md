@@ -41,8 +41,9 @@ boundary.
 - root-filesystem capacity;
 - system CPU, 1/5/15-minute load averages, physical memory, and power state;
 - automatic `.app` grouping, including Firefox, Chromium, Electron, and other
-  multi-process applications, with Ghostty and agterm treated as terminal
-  boundaries rather than owners of every command they launch;
+  multi-process applications, with the terminals listed in
+  `terminalApplications` treated as boundaries rather than owners of every
+  command they launch;
 - alerts on crossing a threshold for CPU, memory, physical storage writes, swap
   usage, swap-out traffic, likely battery impact, and low battery.
 
@@ -167,6 +168,7 @@ Important defaults:
 ```properties
 collectorSocket=/var/run/harmon.collector.sock
 intervalSeconds=300
+terminalApplications=terminal,iterm2,iterm,alacritty,wezterm,kitty,ghostty,warp,hyper,tabby,agterm
 applicationCpuAlertPercent=150
 applicationMemoryAlertMiB=2048
 applicationDiskWriteAlertMiBPerSecond=50
@@ -178,7 +180,10 @@ systemNotifications=true
 notifyEverySample=false
 ```
 
-A threshold of `0` disables that rule. The old
+A threshold of `0` disables that rule. `terminalApplications` is a
+comma-separated list of bundle names without `.app`, matched case-insensitively;
+it replaces the built-in list outright, and an empty value turns the terminal
+boundary off. The old
 `processCpuAlertPercent`, `processMemoryAlertMiB`, and
 `batteryImpactAlertScore` keys remain accepted as compatibility aliases.
 `alertCooldownSeconds` no longer does anything — alerts are pushed when a

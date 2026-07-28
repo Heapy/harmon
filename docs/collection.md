@@ -284,9 +284,13 @@ Rules and primary reports operate on applications, not isolated helper PIDs:
 
 1. A process inside an `.app` belongs to its outermost application bundle.
 2. An unbundled process inherits the nearest readable ancestor's bundle.
-3. `Ghostty.app` and `agterm.app` are terminal boundaries. Their own bundled
-   helpers remain grouped with the terminal, but shells and other external
-   descendants do not inherit the terminal bundle.
+3. The bundles named by the `terminalApplications` config key are terminal
+   boundaries. Their own bundled helpers remain grouped with the terminal, but
+   shells and other external descendants do not inherit the terminal bundle.
+   The key holds a comma-separated list of bundle names without `.app`, matched
+   case-insensitively, defaulting to `terminal, iterm2, iterm, alacritty,
+   wezterm, kitty, ghostty, warp, hyper, tabby, agterm`. It replaces the default
+   list outright; an empty value disables this rule.
 4. If none of these rules resolves a bundle, the process remains its own group.
 
 For example, all of these belong to `/Applications/Firefox.app`:

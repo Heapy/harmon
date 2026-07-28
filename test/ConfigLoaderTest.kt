@@ -1,5 +1,6 @@
 import dev.yoda.harmon.config.ConfigException
 import dev.yoda.harmon.config.ConfigLoader
+import dev.yoda.harmon.config.DEFAULT_TERMINAL_APPLICATIONS
 import kotlin.test.Test
 import kotlin.test.assertContains
 import kotlin.test.assertEquals
@@ -107,6 +108,34 @@ class ConfigLoaderTest {
 
         assertEquals(1_048_576L, config.thresholds.applicationMemoryMiB)
         assertEquals(1_048_576L, config.thresholds.swapUsedMiB)
+    }
+
+    @Test
+    fun readsTerminalApplicationsAsALowerCasedListThatReplacesTheDefaults() {
+        val config = ConfigLoader.parse(
+            lines = sequenceOf("terminalApplications= Foo , bar ,, Foo "),
+            environment = emptyMap(),
+        )
+
+        assertEquals(setOf("foo", "bar"), config.terminalApplications)
+    }
+
+    @Test
+    fun readsAnEmptyTerminalApplicationsValueAsNoTerminalsAtAll() {
+        val config = ConfigLoader.parse(
+            lines = sequenceOf("terminalApplications="),
+            environment = emptyMap(),
+        )
+
+        assertEquals(emptySet(), config.terminalApplications)
+    }
+
+    @Test
+    fun keepsTheDefaultTerminalListWhenTheKeyIsAbsent() {
+        val config = ConfigLoader.parse(lines = emptySequence(), environment = emptyMap())
+
+        assertEquals(DEFAULT_TERMINAL_APPLICATIONS, config.terminalApplications)
+        assertContains(config.redactedDescription(), "terminalApplications=terminal,iterm2")
     }
 
     @Test

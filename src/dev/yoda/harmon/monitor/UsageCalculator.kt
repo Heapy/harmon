@@ -1,6 +1,7 @@
 package dev.yoda.harmon.monitor
 
 import dev.yoda.harmon.analysis.ApplicationGrouper
+import dev.yoda.harmon.config.DEFAULT_TERMINAL_APPLICATIONS
 import dev.yoda.harmon.model.ProcessorCounters
 import dev.yoda.harmon.model.ProcessorUsage
 import dev.yoda.harmon.model.ProcessUsage
@@ -11,7 +12,9 @@ import dev.yoda.harmon.model.SystemUsage
 import dev.yoda.harmon.model.VirtualMemoryUsage
 
 class UsageCalculator(
-    private val applicationGrouper: ApplicationGrouper = ApplicationGrouper(),
+    terminalApplications: Set<String> = DEFAULT_TERMINAL_APPLICATIONS,
+    private val applicationGrouper: ApplicationGrouper =
+        ApplicationGrouper(terminalApplications),
 ) {
     fun calculate(
         previous: RawSystemSnapshot,

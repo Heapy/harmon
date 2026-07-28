@@ -13,6 +13,26 @@ import platform.posix.fgets
 import platform.posix.fopen
 import platform.posix.getenv
 
+/**
+ * Applications whose bundle stops being inherited by descendants that live outside it.
+ *
+ * A terminal launches unrelated commands, so charging them to the terminal would hide whatever
+ * they actually are. The list is user-specific — hence a config key rather than a constant.
+ */
+val DEFAULT_TERMINAL_APPLICATIONS: Set<String> = setOf(
+    "terminal",
+    "iterm2",
+    "iterm",
+    "alacritty",
+    "wezterm",
+    "kitty",
+    "ghostty",
+    "warp",
+    "hyper",
+    "tabby",
+    "agterm",
+)
+
 data class AlertThresholds(
     val applicationCpuPercent: Double? = 150.0,
     val applicationMemoryMiB: Long? = 2_048,
@@ -39,6 +59,7 @@ data class HarmonConfig(
     val onceSampleSeconds: Long = 2,
     val topProcessCount: Int = 8,
     val maxAlertsPerCategory: Int = 3,
+    val terminalApplications: Set<String> = DEFAULT_TERMINAL_APPLICATIONS,
     val thresholds: AlertThresholds = AlertThresholds(),
     val notifications: NotificationConfig = NotificationConfig(),
 ) {
@@ -48,6 +69,7 @@ data class HarmonConfig(
         appendLine("onceSampleSeconds=$onceSampleSeconds")
         appendLine("topProcessCount=$topProcessCount")
         appendLine("maxAlertsPerCategory=$maxAlertsPerCategory")
+        appendLine("terminalApplications=${terminalApplications.joinToString(",")}")
         appendLine("applicationCpuAlertPercent=${thresholds.applicationCpuPercent ?: 0}")
         appendLine("applicationMemoryAlertMiB=${thresholds.applicationMemoryMiB ?: 0}")
         appendLine(
@@ -114,6 +136,7 @@ object ConfigLoader {
         "onceSampleSeconds",
         "topProcessCount",
         "maxAlertsPerCategory",
+        "terminalApplications",
         "applicationCpuAlertPercent",
         "applicationMemoryAlertMiB",
         "applicationDiskWriteAlertMiBPerSecond",
@@ -206,6 +229,10 @@ object ConfigLoader {
             maxAlertsPerCategory = values.positiveInt(
                 "maxAlertsPerCategory",
                 defaults.maxAlertsPerCategory,
+            ),
+            terminalApplications = values.lowercaseNameSet(
+                "terminalApplications",
+                defaults.terminalApplications,
             ),
             thresholds = AlertThresholds(
                 applicationCpuPercent = values.optionalPositiveDouble(
@@ -427,6 +454,20 @@ private fun Map<String, String>.boolean(key: String, default: Boolean): Boolean 
         "false", "no", "0", "off" -> false
         else -> throw ConfigException("$key must be true or false, got '$raw'")
     }
+
+/**
+ * A comma-separated list, folded to lower case for case-insensitive matching. The key replaces the
+ * default list outright, so an empty value is a deliberate "no entries" rather than "use defaults".
+ */
+private fun Map<String, String>.lowercaseNameSet(
+    key: String,
+    default: Set<String>,
+): Set<String> {
+    val raw = this[key] ?: return default
+    return raw.split(',')
+        .map { it.trim().lowercase() }
+        .filterTo(mutableSetOf()) { it.isNotEmpty() }
+}
 
 private fun Map<String, String>.nonBlankOrNull(key: String): String? =
     this[key]?.takeIf { it.isNotBlank() }
