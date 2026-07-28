@@ -20,6 +20,7 @@ import dev.yoda.harmon.nativebridge.HM_PROCESS_ISSUE_CAPACITY
 import dev.yoda.harmon.nativebridge.HMStorageSample
 import dev.yoda.harmon.nativebridge.HMSwapSample
 import dev.yoda.harmon.nativebridge.HMVirtualMemorySample
+import dev.yoda.harmon.nativebridge.hm_count_processes
 import dev.yoda.harmon.nativebridge.hm_list_processes
 import dev.yoda.harmon.nativebridge.hm_monotonic_time_ns
 import dev.yoda.harmon.nativebridge.hm_read_battery
@@ -46,6 +47,26 @@ import platform.posix.EPERM
 import platform.posix.ESRCH
 import kotlin.time.Clock
 
+const val MIN_PROCESS_CAPACITY = 512
+const val PROCESS_CAPACITY_HEADROOM = 256
+
+/**
+ * Number of sample slots to reserve for [count] processes, never more than [capacity].
+ *
+ * [count] is the kernel's PID count taken just before the collection; [PROCESS_CAPACITY_HEADROOM]
+ * covers processes that start between counting and listing, and [MIN_PROCESS_CAPACITY] keeps a
+ * small machine from re-sizing on every sample. A non-positive [count] means the kernel refused
+ * to answer, so the full [capacity] is reserved as before. Public so the arithmetic can be tested
+ * without touching the native bridge.
+ */
+fun processCapacityFor(count: Int, capacity: Int): Int {
+    if (count <= 0) {
+        return capacity
+    }
+    val requested = maxOf(count.toLong() + PROCESS_CAPACITY_HEADROOM, MIN_PROCESS_CAPACITY.toLong())
+    return minOf(requested, capacity.toLong()).toInt()
+}
+
 interface SystemCollector {
     fun capture(): RawSystemSnapshot
 }
@@ -68,16 +89,19 @@ class DarwinSystemCollector(
 
     @OptIn(ExperimentalForeignApi::class)
     override fun capture(): RawSystemSnapshot = memScoped {
-        val nativeProcesses = allocArray<HMProcessSample>(processCapacity)
-        val nativeIssues = allocArray<HMProcessIssue>(issueCapacity)
+        val pidCount = hm_count_processes()
+        val sampleSlots = processCapacityFor(pidCount, processCapacity)
+        val issueSlots = processCapacityFor(pidCount, issueCapacity)
+        val nativeProcesses = allocArray<HMProcessSample>(sampleSlots)
+        val nativeIssues = allocArray<HMProcessIssue>(issueSlots)
         val totalProcesses = alloc<IntVar>()
         val inaccessibleProcesses = alloc<IntVar>()
         val writtenIssues = alloc<IntVar>()
         val processCount = hm_list_processes(
             nativeProcesses,
-            processCapacity,
+            sampleSlots,
             nativeIssues,
-            issueCapacity,
+            issueSlots,
             compressedAttributionProcessLimit,
             totalProcesses.ptr,
             inaccessibleProcesses.ptr,

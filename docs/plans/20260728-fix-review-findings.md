@@ -753,14 +753,39 @@ DI-шов для грувера не удалён, `UsageCalculator()` прод�
 - Modify: `src/dev/yoda/harmon/monitor/DarwinSystemCollector.kt`
 - Create: `test/ProcessCapacityTest.kt`
 
-- [ ] написать тест на `internal fun processCapacityFor(count, capacity)`: типовое число процессов
+- [x] написать тест на `internal fun processCapacityFor(count, capacity)`: типовое число процессов
       даёт `count + HEADROOM`, ноль и отрицательное — полную `capacity`, значение выше `capacity`
       обрезается до `capacity`, результат не меньше `MIN_PROCESS_CAPACITY`
-- [ ] вынести расчёт ёмкости в `internal` функцию
-- [ ] добавить `hm_count_processes()` (`proc_listallpids(NULL, 0)`) в нативный мост
-- [ ] аллоцировать массивы процессов и issue по вычисленной ёмкости вместо фиксированных 16384/4096
-- [ ] проверить вручную: `harmon diagnose` отдаёт то же число процессов, что и до правки
-- [ ] запустить `./kotlin test` — должно пройти до перехода к задаче 16
+- [x] вынести расчёт ёмкости в `internal` функцию (публичную — см. ⚠️ задачи 1)
+- [x] добавить `hm_count_processes()` (`proc_listallpids(NULL, 0)`) в нативный мост
+- [x] аллоцировать массивы процессов и issue по вычисленной ёмкости вместо фиксированных 16384/4096
+- [x] проверить вручную: `harmon diagnose` отдаёт то же число процессов, что и до правки
+- [x] запустить `./kotlin test` — должно пройти до перехода к задаче 16
+
+➕ `MIN_PROCESS_CAPACITY = 512`, `PROCESS_CAPACITY_HEADROOM = 256` (в плане значения не заданы).
+Первая попытка с полом 1024 провалила собственный тест: на реальной машине ~700 PID, и пол
+проглатывал ветку `count + HEADROOM` целиком — типовой сбор всегда упирался бы в константу.
+Пол в 512 оставляет обе ветки достижимыми; тест
+`neverReservesFewerThanTheMinimumForASmallMachine` содержит утверждение
+`MIN_PROCESS_CAPACITY < TYPICAL + HEADROOM`, чтобы регрессия пола ловилась сразу.
+
+➕ Массив issue тоже считается через `processCapacityFor`, но со своим потолком (`issueCapacity`):
+число issue сверху ограничено числом PID, так что общий множитель корректен, а прежние 4096
+остаются недостижимым максимумом. Шестой тест сверх чеклиста —
+`letsTheCapacityWinOverTheMinimumWhenTheCallerAsksForLess`: потолок конструктора должен побеждать
+пол, иначе `DarwinSystemCollector(processCapacity = 64)` аллоцировал бы больше запрошенного.
+
+⚠️ Ограничение из задачи 9 (тестовый бинарь не линкует cinterop-клиб) на `processCapacityFor` не
+распространяется, хотя функция и лежит top-level в `DarwinSystemCollector.kt`, который импортирует
+`nativebridge`: partial linkage в Kotlin/Native работает по месту вызова, а не по файлу. Тест
+вызывает только чистую арифметику над `Int` и проходит — отдельный файл ради изоляции не понадобился.
+
+⚠️ Ручная проверка сделана честным A/B: pre-change бинарь собран из `git stash`, оба коллектора
+подняты одновременно на разных сокетах (`/tmp/harmon-dev-old.sock` и `/tmp/harmon-dev.sock`),
+`diagnose --sample-seconds 2` прогнан по три раза вперемежку. Число процессов совпадает:
+468/467 readable + 208 inaccessible у обоих (расхождение в 1 процесс — дрейф популяции между
+запросами), `capacity-limit` в issue не появился ни разу, время сбора не изменилось (3.4–3.5 с).
+Пиковый RSS коллектора во время сбора: **48080 КБ → 25200 КБ** (−22.9 МБ, −48%).
 
 ### Task 16: Ограничить бюджет системных вызовов при обходе VM-регионов
 
