@@ -44,6 +44,18 @@ private val C_HARNESS_CHECKS = setOf(
     "snapshot.processor-counters-advance",
     "snapshot.swap-and-virtual-memory-readable",
     "snapshot.storage-and-battery-readable",
+    "framing.send-rejects-null",
+    "framing.send-rejects-empty",
+    "framing.round-trips-a-frame",
+    "framing.receive-rejects-oversized-length",
+    "framing.receive-rejects-length-above-maximum",
+    "framing.receive-rejects-zero-length",
+    "framing.receive-rejects-embedded-nul",
+    "framing.receive-frees-rejected-frame",
+    "framing.receive-rejects-truncated-header",
+    "framing.receive-rejects-truncated-payload",
+    "framing.receive-assembles-split-payload",
+    "framing.send-completes-partial-write",
 )
 
 class NativeCTest {
