@@ -1,0 +1,469 @@
+# Покрыть тестами нативный C-слой
+
+## Overview
+
+`cinterop/harmon_native.def` — 1528 строк, крупнейший файл проекта и единственное место без
+тестов. Ревьюверы находят там баги регулярно: **четыре последних коммита, тронувших этот файл**
+(`d111b24`, `be88557`, `3748814`, `881195d`), — все правки по ревью, и каждая находка сделана
+глазами, а не тестом.
+
+Настоящая причина не в том, что код непроверяем, а в том, что **к нему нет ни одной точки
+доступа из тестов**: [KTC-5573](https://youtrack.jetbrains.com/issue/KTC-5573) — cinterop-klib
+регистрируется только для не-тестового фрагмента, тестовая компиляция запрашивает артефакт с
+`isTest=true`, его нет, квантификатор `AnyOrNone` пропускает провал молча. Issue открыт;
+окружение совпадает с нашим (toolchain 0.11.x, Kotlin 2.4.10, `macosArm64`).
+
+Что это чинит по существу:
+
+- регрессии в контракте с ядром (`EINVAL` против `ESRCH` как признак конца адресного
+  пространства — баг `be88557`, из-за которого неполный обход помечался измеренным) ловятся
+  автоматически, а не «standalone probe», который написали и выбросили;
+- граничные случаи фрейминга IPC (нулевая длина, превышение лимита, встроенный `\0`, частичные
+  `read`/`write`) получают точные проверки;
+- шлюз контроля доступа коллектора (`hm_unix_accept` → `-2`/`EACCES` для чужого uid) проверяется
+  без root;
+- дублирование capacity-арифметики между C и Kotlin, из-за которого копии разъехались в
+  `881195d`, перестаёт быть возможным — инвариант становится структурным;
+- корректность привязки cinterop (раскладка структур, отображение `uint64_t`) проверяется на
+  каждом прогоне.
+
+## Context (from discovery)
+
+- **Проект**: Kotlin/Native, JetBrains Kotlin Toolchain (Amper) 0.11.x, `macosArm64`,
+  Kotlin 2.4.10, `allWarningsAsErrors: true`. Сборка `./kotlin build`, тесты `./kotlin test`.
+- **Файлы под правку**: `cinterop/harmon_native.def` (переезжает и делится), `module.yaml`,
+  `src/dev/yoda/harmon/monitor/DarwinSystemCollector.kt`, `docs/collection.md`, `CLAUDE.md`,
+  `README.md`; новые модули `nativebridge/` и `selftest/`; новый каталог `test/native/`;
+  новый файл в существующем `scripts/`.
+- **Существующий шов**: `SystemCollector` как интерфейс, фейки `ScriptedCollector`,
+  `FlakyCollector`, `UnusedCollector` в `test/HarmonServiceAlertFlowTest.kt`. Логика **выше**
+  cinterop уже покрыта нормальными юнит-тестами — этот слой не трогаем.
+- **Ограничение проекта**: тестовый source set не видит `internal` из `src/`. Любой хелпер,
+  выделенный ради тестируемости, обязан быть `public`.
+
+### Результаты спайка (проверено на живой машине, затем откачено)
+
+| Допущение | Результат |
+| --- | --- |
+| `kmp/lib` из одного `.def` без Kotlin-исходников собирается | подтвердилось, `cinteropMacosArm64` отработал |
+| cinterop из зависимости работает в main-компиляции | подтвердилось, `harmon` собрался и слинковался |
+| `kmp/lib` как зависимость `macos/app` | подтвердилось |
+| `selftest` (`macos/app`) вызывает `hm_*` из `main()` | подтвердилось на `hm_saturating_add_u64` и `hm_read_compressed_or_paged_out(getpid())` |
+| KTC-5573 действует и на зависимости | **подтвердилось**: `unresolved reference 'nativebridge'` в тестовой компиляции `harmon` |
+| `./kotlin test` собирает бинарник `selftest` | **опровергнуто** — защита от протухания обязательна |
+| новые модули наследуют `settings.kotlin` корня | **опровергнуто** — нужен общий шаблон модуля |
+
+Прочее из спайка: пути **зависимостей** относительны модулю (`../nativebridge` из `selftest`,
+`./nativebridge` из корня) — для `apply:` это отдельно не проверялось, см. задачи 2 и 12;
+бинарник ложится в `build/tasks/_selftest_linkMacosArm64Debug/selftest.kexe`.
+
+### Установлено ревью плана (проверено отдельно, репозиторий не тронут)
+
+| Факт | Значение для плана |
+| --- | --- |
+| заголовок, вынесенный из `.def`, компилируется `clang -std=c11 -Wall -Wextra -Werror` начисто | задача 3 безопасна, паритет с `allWarningsAsErrors` достижим без правки продакшен-кода |
+| проверки контракта атрибуции и `hm_list_processes` выполнимы из чистого C | перенесены из `selftest` в C-гарнесс (задачи 7, 8) |
+| `NativeTestTask` передаёт `moduleDir` как рабочий каталог тестового процесса | относительные пути в мосте резолвятся от корня проекта; ломается при `--build-dir`/`--project-dir` (задача 5) |
+| `hm_unix_server_open` при протухшем сокете **своего** euid делает `unlink` и биндится заново | `EEXIST` — только для не-сокета или чужого uid (задача 10) |
+| `hm_unix_accept` возвращает `-2`/`EACCES` при чужом uid пира | шлюз контроля доступа, тестируется без root (задача 10) |
+| `hm_list_processes` содержит `if (capacity <= 0) return -1` | после рефакторинга ветка становится мёртвой (задача 11) |
+| в `docs/` и `README.md` нет ссылок на путь `cinterop/` | переезд каталога документацию не задевает; правки требует только изменение sizing (задача 11) |
+
+## Development Approach
+
+- **testing approach**: Regular — гарнесс сначала, проверки поверх него. Для C-тестов и проверок
+  `selftest` каждая проверка сама является тестом, отдельного «теста на тест» не пишем; для
+  Kotlin-хелперов (парсер вывода, сторож протухания) — обычные юнит-тесты.
+- complete each task fully before moving to the next
+- make small, focused changes
+- **CRITICAL: every task MUST include new/updated tests** for code changes in that task
+- **CRITICAL: all tests must pass before starting next task** — no exceptions
+- **CRITICAL: update this plan file when scope changes during implementation**
+- run `./kotlin build && ./kotlin test` after each change
+- maintain backward compatibility
+
+## Testing Strategy
+
+- **C-тесты**: `test/native/*.c`, компилируются `scripts/test-native.sh` через `clang`,
+  самодостаточны — пересобираются каждый прогон, устареть нечему. Основной гарнесс.
+- **selftest**: `selftest/src/main.kt`, `macos/app`, только то, что требует пересечения стыка
+  Kotlin↔C. Требует предварительного `./kotlin build`, защищён сторожем протухания.
+- **unit tests**: `kotlin.test` в плоской `test/` — парсер вывода, обработка кода возврата и
+  сигналов, сторож протухания.
+- **e2e**: в проекте нет UI, e2e-тестов не заводим. Сквозная проверка остаётся за
+  `harmon diagnose` и рецептом A/B из `CLAUDE.md`.
+
+## Progress Tracking
+
+- mark completed items with `[x]` immediately when done
+- add newly discovered tasks with ➕ prefix
+- document issues/blockers with ⚠️ prefix
+- update plan if implementation deviates from original scope
+- keep plan in sync with actual work done
+
+## Solution Overview
+
+**Два новых гарнесса плюс существующий шов**, разделённые по вопросу «что именно проверяет
+ассерт»:
+
+| Гарнесс | Что покрывает | Почему именно он |
+| --- | --- | --- |
+| C-тесты (`clang`) — основной | чистые функции, контракт с ядром, снимки состояния, фрейминг IPC, сокеты | точные значения, прямой `errno`, реальные `socketpair`; самодостаточен, не требует сборки Kotlin |
+| `selftest` (`macos/app`) — минимальный | только то, что пересекает стык Kotlin↔C | единственный, кто проверяет привязку: раскладку структур и отображение типов |
+| Шов `SystemCollector` + фейки | логика выше cinterop | уже существует, не трогаем |
+
+**Граница между гарнессами.** Ревью эмпирически показало, что проверки контракта атрибуции и
+`hm_list_processes` выполнимы из чистого C, поэтому они живут там: так они не тянут за собой
+сборочную зависимость и сторожа протухания, а итерация идёт секундами вместо пересборки модуля.
+В `selftest` остаётся только то, что без Kotlin бессмысленно. Одно исключение сделано осознанно:
+`attribution.self-walk-completes` дублируется в `selftest`, потому что адресное пространство
+Kotlin/Native-процесса богаче регионами, чем 30-килобайтного C-бинарника, и обход там
+содержательнее; заодно это и есть проверка привязки в её самой осмысленной форме.
+
+**Раскладка модулей.** `project.yaml` в корне; `nativebridge/` (`kmp/lib`, `macosArm64`) держит
+`.def` и вынесенный `.h`; корневой `harmon` (`macos/app`) и `selftest/` (`macos/app`) от него
+зависят. Строка `package = dev.yoda.harmon.nativebridge` в `.def` не меняется, поэтому импорты в
+`DarwinSystemCollector.kt` остаются как есть — переезд файла не трогает ни строки Kotlin.
+
+**Порядок задач.** Вынос заголовка (задача 3) идёт **до** постройки любого гарнесса, чтобы мост
+и сторож с самого начала знали финальные пути. Иначе задача, меняющая раскладку файлов посреди
+плана, тихо ломает сторожа, построенного на старых путях.
+
+### Принятые пробелы покрытия
+
+Перечислены явно, чтобы Overview не читался как обещание покрыть всё:
+
+- `hm_http_post_json` — требует локального HTTP-сервера в тестах, вынесено за скоуп;
+- откат `RUSAGE_INFO_V6 → V4` — срабатывает только на старых версиях macOS, воспроизвести на
+  машине разработки нельзя;
+- ветка `chown` в `hm_unix_server_open` — исполняется только под root;
+- `hm_read_battery` на машине без батареи — проверяется только флаг доступности;
+- `DarwinSystemCollector` как потребитель моста: `selftest` не может зависеть от
+  модуля-приложения, поэтому проверяет мост, но не то, как коллектор им пользуется. Аргументы
+  коллектора покрыты `DarwinCollectorLimitsTest`, сквозная проверка — за `harmon diagnose`.
+  Переносить `DarwinSystemCollector` в `nativebridge` не будем, он потянет `model/`.
+
+### Отвергнутые варианты
+
+- **Подкоманда `harmon selftest` внутри продакшен-бинарника** — тестовый код едет в поставку.
+- **Полный перенос счёта процессов в Kotlin** — расширяет окно гонки, см. задачу 11.
+- **Только интеграционные тесты через `harmon diagnose`** — не могут вынудить интересные ветки,
+  а регрессия `EINVAL`/`ESRCH` выглядела бы там как слегка заниженные цифры.
+- **Отдельный модуль как способ открыть cinterop тестам** — проверено спайком, не работает:
+  KTC-5573 действует и на зависимости.
+- **Custom command через `commands:` / `./kotlin do`, зависящая от задачи линковки `selftest`** —
+  сделала бы протухание структурно невозможным и убрала бы сторожа с mtime. Может потребовать
+  механизма плагинов Amper, то есть выйти дороже моста; заслуживает 15 минут спайка перед
+  задачей 12 — если сработает, задача 12 упрощается радикально. Записано как развилка, а не как
+  принятое решение.
+
+## Technical Details
+
+**Протокол вывода** (общий для C-тестов и `selftest`):
+
+```
+ok   attribution.self-walk-completes
+fail attribution.region-limit-undercount: expected available=0, got 1
+```
+
+Код возврата 0/1, необязательный аргумент — префикс-фильтр для ручного прогона одной проверки.
+Скрытый флаг `--self-check` добавляет заведомо падающую проверку: без него ветка `fail` не
+исполняется ни разу, и молчаливо сломанный `check()` дал бы «всегда зелено».
+
+**Мост из `kotlin.test`**: тест запускает бинарник через `popen`, читает строки, каждую `fail`
+превращает в отдельный assert с её текстом — падает конкретная проверка, а не «нативный набор».
+Одного разбора строк недостаточно: упавший на середине гарнесс выдаст только `ok` и пройдёт.
+Поэтому мост дополнительно требует нормального завершения с кодом 0, отдельно сообщает об
+аварийном завершении по сигналу, падает на пустом выводе (когда фильтр не задан) и сверяет
+множество имён выполненных проверок с ожидаемым списком — выпавшая из гарнесса проверка не
+должна исчезать молча.
+
+**Рабочий каталог.** `NativeTestTask` передаёт `moduleDir` как рабочий каталог тестового
+процесса, поэтому относительные пути резолвятся от каталога корневого модуля (он же корень
+проекта). Допущение ломается при `--build-dir`/`--project-dir`, поэтому сообщения об ошибках
+содержат *абсолютный* разрешённый путь, а пути переопределяются переменными окружения
+`HARMON_SELFTEST_BIN` и `HARMON_NATIVE_TEST_SCRIPT`.
+
+**Защита от протухания** (несущая, не подстраховка — `./kotlin test` бинарник `selftest` не
+собирает):
+
+1. бинарника нет → тест **падает** с текстом «сначала `./kotlin build`» и абсолютным путём;
+   молчаливый скип запрещён;
+2. mtime бинарника старше максимума mtime по `selftest/src/**` и C-источнику в
+   `nativebridge/cinterop/` → тест падает. Смотреть только на `.def` мало: чаще всего меняются
+   как раз исходники проверок;
+3. путь `_selftest_linkMacosArm64Debug` привязан к debug-варианту — после
+   `./kotlin build --variant release` debug-бинарник останется старым, и сторож это поймает.
+
+У C-тестов этой проблемы нет: скрипт компилирует их каждый прогон.
+
+**Таймауты.** Пары от `socketpair` не наследуют `SO_SNDTIMEO`/`SO_RCVTIMEO` из
+`hm_set_socket_options`, поэтому промах по пробуждению в тесте частичной записи повесил бы весь
+`./kotlin test` навсегда. C-гарнесс ставит `alarm(N)` в `main`, а тестовые сокеты получают явные
+таймауты.
+
+**Разрыв дублирования capacity.** Сейчас C реконструирует то, что Kotlin уже посчитал, из-за
+чего `HM_PROCESS_LIST_HEADROOM` обязан зеркалить `PROCESS_CAPACITY_HEADROOM`. Вместо
+реконструкции C берёт максимум со свежим счётом и с уже переданным `output_capacity`:
+
+```c
+static inline int hm_process_list_capacity(int counted, int output_capacity);
+```
+
+Свежий `proc_listallpids(NULL, 0)` **остаётся в C** непосредственно перед заполнением буфера.
+Параметр `pid_count` используется только в этом расчёте, поэтому уходит из сигнатуры
+`hm_list_processes` вместе с аргументом на стороне Kotlin. Ветка `if (capacity <= 0) return -1`
+становится мёртвой: `output_capacity > 0` провалидирован выше, поэтому провал `proc_listallpids`
+всплывёт одним `calloc` позже.
+
+## What Goes Where
+
+- **Implementation Steps** (`[ ]`): всё, что делается в этом репозитории.
+- **Post-Completion** (без чекбоксов): ручная сверка на живой машине и наблюдение за KTC-5573.
+
+## Implementation Steps
+
+### Task 1: Общий шаблон настроек Kotlin для всех модулей
+
+Спайк показал, что новые модули не наследуют `settings.kotlin` корня — без шаблона
+`allWarningsAsErrors` тихо не подействует на `nativebridge` и `selftest`.
+
+**Files:**
+- Create: `harmon.module-template.yaml`
+- Modify: `module.yaml`
+
+- [ ] создать `harmon.module-template.yaml` с блоком `settings.kotlin` (version, languageVersion, apiVersion, progressiveMode, allWarningsAsErrors); `serialization: json` оставить в корневом `module.yaml`, он нужен только приложению
+- [ ] в `module.yaml` заменить встроенный `settings.kotlin` на `apply: [./harmon.module-template.yaml]`, сохранив `serialization: json`
+- [ ] проверить `./kotlin show settings` — эффективные настройки корня не изменились
+- [ ] проверить, что строгость жива: временно добавить неиспользуемый импорт, убедиться что сборка падает, откатить
+- [ ] запустить `./kotlin build && ./kotlin test` — должно пройти до перехода к задаче 2
+
+### Task 2: Выделить модуль nativebridge
+
+**Files:**
+- Create: `project.yaml`
+- Create: `nativebridge/module.yaml`
+- Modify: `module.yaml`
+- Move: `cinterop/harmon_native.def` → `nativebridge/cinterop/harmon_native.def`
+
+- [ ] создать `project.yaml` со списком `modules: [./nativebridge]`
+- [ ] создать `nativebridge/module.yaml`: `product: {type: kmp/lib, platforms: [macosArm64]}`, `apply: [../harmon.module-template.yaml]`
+- [ ] ⚠️ проверить допущение: принимает ли `apply:` путь за пределы каталога модуля. Спайк подтверждал относительные пути **зависимостей**, не шаблонов. Если не принимает — положить копию шаблона в модуль либо отказаться от шаблона для `nativebridge` (Kotlin-исходников там нет, строгость носит характер единообразия). Зафиксировать выбор здесь же
+- [ ] перенести `.def` через `git mv cinterop nativebridge/cinterop` (сохранить историю файла)
+- [ ] в корневой `module.yaml` добавить `dependencies: [./nativebridge]`
+- [ ] проверить `./kotlin show modules` — корневой модуль виден неявно, без перечисления в `project.yaml`; оба модуля на месте
+- [ ] убедиться, что `package = dev.yoda.harmon.nativebridge` в `.def` не менялся и импорты в `DarwinSystemCollector.kt` остались нетронутыми
+- [ ] запустить `./kotlin build && ./kotlin test` — 150 существующих тестов должны пройти без правок
+
+### Task 3: Вынести C-заголовок из .def
+
+Идёт до постройки гарнессов, чтобы мост и сторож сразу знали финальные пути.
+
+**Files:**
+- Create: `nativebridge/cinterop/harmon_native.h`
+- Modify: `nativebridge/cinterop/harmon_native.def`
+
+- [ ] перенести блок после разделителя `---` в `harmon_native.h`, оставив в `.def` конфиг плюс `headers = harmon_native.h` и `compilerOpts` с `-I` на каталог
+- [ ] собрать и убедиться, что `cinteropMacosArm64` отрабатывает и `harmon` линкуется как прежде
+- [ ] ⚠️ при первом же сопротивлении cinterop — не подбирать форму `-I`, а сразу откатить `.def` к текущему виду и генерировать заголовок в `scripts/test-native.sh` командой `sed '1,/^---$/d'`; `.def` остаётся источником правды. Ревью подтвердило, что этот путь полностью работоспособен. Зафиксировать выбранный вариант здесь же — от него зависят списки файлов задач 5 и 11
+- [ ] проверить `clang -std=c11 -Wall -Wextra -Werror -fsyntax-only` на полученном заголовке — ревью показало, что он компилируется начисто
+- [ ] запустить `./kotlin build && ./kotlin test`
+
+### Task 4: Каркас C-тестов и самопроверка отказа
+
+**Files:**
+- Create: `scripts/test-native.sh`
+- Create: `test/native/harness.h`
+- Create: `test/native/main.c`
+- Create: `test/native/pure_test.c`
+
+- [ ] решить схему сборки сразу и записать её: `test/native/main.c` вызывает объявленные в `harness.h` `hm_run_pure_tests()`, `hm_run_kernel_tests()`, `hm_run_framing_tests()`, `hm_run_socket_tests()`; в каждом `*_test.c` нет своего `main`
+- [ ] создать `scripts/test-native.sh`: компиляция всех `test/native/*.c` в один бинарник через `clang` с `-framework IOKit -framework CoreFoundation -lcurl` (повтор `linkerOpts`) и `-Wall -Wextra -Werror`, вывод бинарника под `build/` (уже в `.gitignore`), затем запуск
+- [ ] в `harness.h` реализовать макрос `CHECK(name, cond, fmt, ...)` со счётчиком провалов, построчным выводом `ok`/`fail`, префикс-фильтром из `argv[1]` и `alarm(N)` в `main` против зависаний
+- [ ] добавить флаг `--self-check`: заведомо падающая проверка, чтобы ветка `fail` исполнялась
+- [ ] в `pure_test.c` добавить одну проверку-дымоход
+- [ ] прогнать скрипт вручную: обычный запуск даёт код 0, `--self-check` — код 1 и строку `fail`
+- [ ] убедиться, что `-Werror` действительно включён: временно внести предупреждение, увидеть падение, откатить
+
+### Task 5: Мост из kotlin.test к внешним бинарникам
+
+**Files:**
+- Create: `test/NativeHarness.kt`
+- Create: `test/NativeCTest.kt`
+
+- [ ] в `NativeHarness.kt` реализовать `public` парсер вывода: строка → результат проверки (`ok`/`fail` + имя + деталь), с обработкой мусорных строк
+- [ ] реализовать запуск процесса через `popen` и чтение строк; `pclose` → требовать нормального завершения с кодом 0, аварийное завершение по сигналу сообщать отдельным assert с номером сигнала
+- [ ] падать на пустом выводе, когда префикс-фильтр не задан
+- [ ] сверять множество имён выполненных проверок с ожидаемым списком, чтобы выпавшая проверка не исчезла молча
+- [ ] поддержать переопределение путей через `HARMON_NATIVE_TEST_SCRIPT` и включать абсолютный разрешённый путь в текст любой ошибки
+- [ ] в `NativeCTest.kt` запустить `scripts/test-native.sh` и превратить каждую `fail` в отдельный assert
+- [ ] написать юнит-тесты парсера: `ok`, `fail` с деталью, `fail` с двоеточием внутри детали, пустая и мусорная строки
+- [ ] написать юнит-тест на то, что гарнесс умеет падать: запуск с `--self-check` даёт `fail` и ненулевой код
+- [ ] запустить `./kotlin test` — C-тесты должны выполниться из общей точки входа
+
+### Task 6: C-тесты чистых функций
+
+**Files:**
+- Modify: `test/native/pure_test.c`
+
+- [ ] `hm_saturating_add_u64`: нули, обычная сумма, ровно `UINT64_MAX`, переполнение на единицу, оба аргумента `UINT64_MAX`
+- [ ] `hm_saturating_multiply_u64`: нулевой множитель, единица, ровная граница, переполнение
+- [ ] `hm_uint32_counter`: `0`, `-1`, `INT32_MIN`, `INT32_MAX`
+- [ ] `hm_compare_process_candidates`: убывание по footprint, тай-брейк по индексу при равных значениях, устойчивость на равных парах
+- [ ] `hm_mach_time_to_ns`: подать тики, сверить с `mach_timebase_info` — функция несёт комментарий про баг с timebase на Apple Silicon и при этом чистая
+- [ ] `hm_discard_http_response`: возвращает произведение размера на количество
+- [ ] прогнать `./kotlin test`
+
+### Task 7: C-тесты контракта атрибуции
+
+Закрывает регрессию `be88557`: `EINVAL` — конец адресного пространства, `ESRCH` — процесс исчез.
+
+**Files:**
+- Create: `test/native/kernel_test.c`
+
+- [ ] `attribution.self-walk-completes`: обход `getpid()` с `HM_ATTRIBUTION_REGION_LIMIT` возвращает 0 (полный) и ненулевое число регионов
+- [ ] `attribution.dead-pid-not-measured`: обход заведомо несуществующего pid возвращает -1 с `ESRCH`
+- [ ] `attribution.region-limit-undercount`: обход с `region_limit = 1` возвращает 1 (недоучёт), а не 0
+- [ ] `attribution.rejects-invalid-arguments`: `region_limit = 0` и `NULL`-выходы дают -1 с `EINVAL`
+- [ ] `attribution.consumed-is-reported`: счётчик израсходованных вызовов положителен и не превышает лимит
+- [ ] прогнать `./kotlin test`
+
+### Task 8: C-тесты снимков машинного состояния
+
+**Files:**
+- Modify: `test/native/kernel_test.c`
+
+- [ ] `processes.listing-is-consistent`: результат `hm_list_processes` положителен, `total >= written`, число issue в пределах ёмкости
+- [ ] `processes.samples-are-well-formed`: у каждого сэмпла `pid > 0`, имя завершено нулём внутри `HM_PROCESS_NAME_SIZE`, путь — внутри `HM_PROCESS_PATH_SIZE`
+- [ ] `processes.rejects-invalid-arguments`: нулевая ёмкость и `NULL`-массивы дают -1 с `EINVAL`
+- [ ] `snapshot.memory-and-load-are-plausible`: физическая память ненулевая, load average неотрицательны
+- [ ] `snapshot.processor-counters-advance`: счётчики процессора не убывают между двумя вызовами
+- [ ] `snapshot.swap-and-virtual-memory-readable`: `hm_read_swap` и `hm_read_virtual_memory` возвращают 0, значения неотрицательны
+- [ ] `snapshot.storage-and-battery-readable`: `hm_read_storage` возвращает 0; для `hm_read_battery` проверяется только флаг доступности (машина может быть без батареи)
+- [ ] прогнать `./kotlin test`
+
+### Task 9: C-тесты фрейминга IPC
+
+**Files:**
+- Create: `test/native/framing_test.c`
+
+- [ ] `hm_send_json_frame`: `NULL` даёт `EINVAL`, пустая строка — `EMSGSIZE`; корректный кадр читается обратно `hm_receive_json_frame` поверх `socketpair`
+- [ ] `hm_receive_json_frame`: заявленная длина сверх `HM_MAX_JSON_FRAME_SIZE` даёт `EMSGSIZE`; сверх переданного `maximum_size` — `EMSGSIZE`; нулевая длина — `EMSGSIZE`
+- [ ] встроенный `\0` в полезной нагрузке даёт `EILSEQ` и не течёт памятью
+- [ ] обрыв на середине четырёхбайтового заголовка длины и обрыв внутри полезной нагрузки дают ошибку, а не частичный кадр
+- [ ] частичный `read`: полезная нагрузка отдаётся двумя записями, `hm_receive_all` собирает её целиком
+- [ ] частичный `write`: урезанный `SO_SNDBUF` и встречный читатель в `pthread`, крупный кадр доходит целиком; на тестовых сокетах выставлены явные таймауты, `alarm` из задачи 4 страхует от зависания
+- [ ] прогнать `./kotlin test`
+
+### Task 10: C-тесты Unix-сокетов
+
+Ожидания сверены с фактическим кодом: `EEXIST` — только для не-сокета или чужого uid.
+
+**Files:**
+- Create: `test/native/socket_test.c`
+
+- [ ] `socket.rejects-bad-path`: `NULL` и пустая строка дают `EINVAL`; путь длиной ≥ `sizeof(sun_path)` — `ENAMETOOLONG`
+- [ ] `socket.refuses-foreign-occupant`: обычный файл по пути даёт `EEXIST`
+- [ ] `socket.replaces-stale-socket`: протухший сокет **своего** euid переоткрывается успешно (`unlink` + повторный bind)
+- [ ] `socket.mode-is-0660`: права на файл сокета после открытия равны `0660`; ветка `chown` доступна только под root и в скоуп не входит
+- [ ] `socket.connect-to-live-and-missing`: `hm_unix_connect` к живому серверу успешен, к несуществующему пути — ошибка
+- [ ] `socket.accept-returns-peer-credentials`: `hm_unix_accept` отдаёт дескриптор и заполняет uid пира
+- [ ] `socket.accept-rejects-foreign-uid`: подключение к своему же серверу с заведомо чужим `allowed_user_id` даёт **-2 с `EACCES`** — шлюз контроля доступа коллектора
+- [ ] `socket.remove-handles-bad-input`: `hm_remove_socket` на `NULL`, пустой строке и несуществующем пути даёт ошибку без падения
+- [ ] убедиться, что временный каталог убирается за собой при любом исходе
+- [ ] прогнать `./kotlin test`
+
+### Task 11: Разорвать дублирование capacity-арифметики
+
+Изменение продакшен-поведения — единственное в плане. По правилу `CLAUDE.md` документация идёт
+тем же коммитом.
+
+**Files:**
+- Modify: C-источник правды из задачи 3 (`nativebridge/cinterop/harmon_native.h` либо `.def`)
+- Modify: `src/dev/yoda/harmon/monitor/DarwinSystemCollector.kt`
+- Modify: `test/native/pure_test.c`
+- Modify: `docs/collection.md`
+
+- [ ] выделить `static inline int hm_process_list_capacity(int counted, int output_capacity)`: максимум из аргументов, прибавление `HM_PROCESS_LIST_HEADROOM` с защитой от переполнения через `HM_MAX_PROCESS_LIST`, пол `HM_MIN_PROCESS_LIST`
+- [ ] в `hm_list_processes` вызвать её как `hm_process_list_capacity(proc_listallpids(NULL, 0), output_capacity)`, сохранив свежий счёт непосредственно перед заполнением буфера; удалить ставшую мёртвой ветку `if (capacity <= 0) return -1`
+- [ ] удалить неиспользуемый параметр `pid_count` из сигнатуры и соответствующий аргумент в `DarwinSystemCollector.kt`
+- [ ] переписать комментарий: инвариант «список PID не уже массивов вызывающего» теперь структурный, зеркалить `PROCESS_CAPACITY_HEADROOM`/`MIN_PROCESS_CAPACITY` больше не требуется; поправить встречное упоминание в `processCapacityFor`
+- [ ] обновить `docs/collection.md` — описание sizing массивов процессов меняется (тем же коммитом)
+- [ ] написать C-тесты: провал свежего счёта (`counted <= 0`) даёт `output_capacity + HM_PROCESS_LIST_HEADROOM`, счёт меньше `output_capacity`, счёт больше, значения у `HM_MAX_PROCESS_LIST`, результат ниже `HM_MIN_PROCESS_LIST`
+- [ ] прогнать `./kotlin build && ./kotlin test`, убедиться что `DarwinCollectorLimitsTest` и проверки задачи 8 не сломались
+- [ ] выполнить A/B по рецепту `CLAUDE.md`: два коллектора на двух сокетах, бинарники до и после, сверить вывод `diagnose`
+
+### Task 12: Модуль selftest и мост к нему
+
+**Files:**
+- Create: `selftest/module.yaml`
+- Create: `selftest/src/main.kt`
+- Create: `test/SelftestBridgeTest.kt`
+- Modify: `project.yaml`
+- Modify: `test/NativeHarness.kt`
+
+- [ ] ⚠️ развилка: перед реализацией потратить до 15 минут на проверку `commands:` / `./kotlin do` с зависимостью от задачи линковки `selftest`. Если сработает — сторож протухания не нужен, протухание становится структурно невозможным, и часть пунктов ниже отпадает. Зафиксировать результат здесь же
+- [ ] создать `selftest/module.yaml`: `macos/app`, `dependencies: [../nativebridge]`, `apply: [../harmon.module-template.yaml]`; добавить `./selftest` в `project.yaml`
+- [ ] проверить `./kotlin show settings` для `nativebridge` и `selftest` — `allWarningsAsErrors: true` действительно применился
+- [ ] в `main.kt` реализовать гарнесс: счётчик провалов, `check(name, condition, detail)`, код возврата, префикс-фильтр, флаг `--self-check`
+- [ ] в `NativeHarness.kt` добавить сторожа протухания: отсутствие бинарника → падение с абсолютным путём и текстом «сначала `./kotlin build`»; mtime бинарника старше максимума по `selftest/src/**` и C-источнику → падение; поддержать `HARMON_SELFTEST_BIN`
+- [ ] в `SelftestBridgeTest.kt` запустить `selftest.kexe` через ту же машинерию, что и C-тесты
+- [ ] написать юнит-тесты сторожа: несуществующий бинарник (ожидается падение, а не скип), бинарник старше исходников
+- [ ] развести конфликт с правилом пустого вывода: несуществующий префикс-фильтр даёт `ok harness.no-checks-selected`, а не пустой вывод
+- [ ] прогнать `./kotlin build && ./kotlin test`
+
+### Task 13: Проверки привязки cinterop в selftest
+
+Единственное, что C-тесты не покрывают по построению.
+
+**Files:**
+- Modify: `selftest/src/main.kt`
+
+- [ ] `binding.uint32-counter-wraps`: `hm_uint32_counter(-1)` приходит в Kotlin как `4294967295uL`
+- [ ] `binding.process-sample-readable`: реальный вызов `hm_list_processes` через cinterop, у сэмплов `pid > 0`, имя непусто, footprint правдоподобен — разъехавшуюся раскладку это ловит надёжнее, чем сверка `sizeOf` с захардкоженным числом (`HM_PROCESS_PATH_SIZE` — константа SDK, а не проекта)
+- [ ] `binding.struct-sizes-agree`: сверить `sizeOf<HMProcessSample>()` и `sizeOf<HMProcessIssue>()` со значениями, которые отдаёт сам C (через `hm_process_sample_size()` / `hm_process_issue_size()`), а не с литералами
+- [ ] `binding.monotonic-clock-advances`: два вызова `hm_monotonic_time_ns` дают неубывающие значения
+- [ ] `attribution.self-walk-completes`: осознанное дублирование задачи 7 — адресное пространство Kotlin/Native-процесса богаче регионами, обход содержательнее
+- [ ] обновить ожидаемый список имён проверок в мосте (задача 5) и прогнать `./kotlin build && ./kotlin test`
+
+### Task 14: Verify acceptance criteria
+
+- [ ] проверить, что все требования из Overview реализованы
+- [ ] проверить, что каждая находка из четырёх review-коммитов теперь имеет проверку: `EINVAL`/`ESRCH` (задача 7), недоучёт обхода (задача 7), sizing списка PID (задача 11)
+- [ ] убедиться, что `./kotlin test` — единая точка входа и гоняет оба внешних гарнесса
+- [ ] проверить сторожа протухания: удалить бинарник selftest — тест падает с внятным текстом; тронуть `selftest/src/main.kt` без пересборки — тест падает
+- [ ] проверить, что оба гарнесса умеют падать: `--self-check` даёт ненулевой код и строку `fail` в каждом
+- [ ] убедиться, что список принятых пробелов покрытия соответствует фактическому положению дел
+- [ ] запустить полный набор: `./kotlin build && ./kotlin test`
+- [ ] прогнать `harmon diagnose` на живой машине и сверить, что вывод не изменился относительно текущего поведения
+
+### Task 15: [Final] Update documentation
+
+- [ ] в `CLAUDE.md` дополнить второе «проверенное ограничение» ссылкой на KTC-5573 как на причину **и исправить симптом**: после задачи 2 тестовые исходники не могут сослаться на `nativebridge` вовсе (`unresolved reference`), а не только падают в рантайме с `IrLinkageError`
+- [ ] заменить утверждение о том, что нативный слой проверяется запуском `harmon diagnose`, а не юнит-тестами, описанием двух новых гарнессов, их границы и списка принятых пробелов
+- [ ] задокументировать требование `./kotlin build` перед `./kotlin test`, поведение сторожа протухания и привязку пути к debug-варианту
+- [ ] задокументировать эмпирически установленное: рабочий каталог тестового процесса — `moduleDir`, переопределения через `HARMON_SELFTEST_BIN` / `HARMON_NATIVE_TEST_SCRIPT`
+- [ ] обновить раздел Layout: `nativebridge/`, `selftest/`, `test/native/`, `scripts/test-native.sh`, `harmon.module-template.yaml`
+- [ ] в `README.md` изменить порядок команд в разделе Build and test — сейчас `./kotlin test` стоит перед `./kotlin build`, после плана этот порядок обязателен
+- [ ] сверить `docs/architecture.md` на упоминания раскладки модулей
+- [ ] переместить этот план в `docs/plans/completed/`
+
+## Post-Completion
+
+*Требуют ручного вмешательства или внешних систем — без чекбоксов, справочно.*
+
+**Ручная проверка:**
+
+- прогон `harmon diagnose --sample-seconds 2` через локальный неприв. коллектор на dev-сокете по
+  рецепту из `CLAUDE.md` — сквозная проверка, которую ни один из гарнессов не заменяет;
+- проверка на машине с другим профилем нагрузки: проверки правдоподобия из задачи 8 теоретически
+  чувствительны к состоянию системы (например, счётчики процессора при крайне низкой
+  активности), а `hm_read_battery` — к наличию батареи.
+
+**Наблюдение за внешним:**
+
+- [KTC-5573](https://youtrack.jetbrains.com/issue/KTC-5573) открыт. Когда его починят, модуль
+  `selftest` схлопывается в обычные `kotlin.test`-тесты почти механически — ассерты уже написаны
+  на Kotlin, переносится тело проверок, а мост и сторож протухания удаляются. C-тесты при этом
+  остаются: они покрывают то, до чего Kotlin-тесты не дотягиваются удобно (прямой `errno`,
+  `static inline` внутренности, граничные случаи фрейминга).
