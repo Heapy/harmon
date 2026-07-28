@@ -328,14 +328,33 @@ the build like an error»), которое задача 15 должна попр
 - Create: `test/native/harness.h`
 - Create: `test/native/main.c`
 - Create: `test/native/pure_test.c`
+- ➕ Create: `test/native/kernel_test.c`, `test/native/framing_test.c`, `test/native/socket_test.c` — пустые заглушки суит, см. развилку ниже
 
-- [ ] решить схему сборки сразу и записать её: `test/native/main.c` вызывает объявленные в `harness.h` `hm_run_pure_tests()`, `hm_run_kernel_tests()`, `hm_run_framing_tests()`, `hm_run_socket_tests()`; в каждом `*_test.c` нет своего `main`
-- [ ] создать `scripts/test-native.sh`: сначала генерация заголовка из `.def` (`sed '1,/^---$/d' nativebridge/cinterop/harmon_native.def > build/native-test/harmon_native.h`, решение задачи 3), затем компиляция всех `test/native/*.c` в один бинарник через `clang` с `-Ibuild/native-test`, `-framework IOKit -framework CoreFoundation -lcurl` (повтор `linkerOpts`) и `-std=c11 -Wall -Wextra -Werror`, вывод бинарника под `build/` (уже в `.gitignore`), затем запуск
-- [ ] в `harness.h` реализовать макрос `CHECK(name, cond, fmt, ...)` со счётчиком провалов, построчным выводом `ok`/`fail`, префикс-фильтром из `argv[1]` и `alarm(N)` в `main` против зависаний
-- [ ] добавить флаг `--self-check`: заведомо падающая проверка, чтобы ветка `fail` исполнялась
-- [ ] в `pure_test.c` добавить одну проверку-дымоход
-- [ ] прогнать скрипт вручную: обычный запуск даёт код 0, `--self-check` — код 1 и строку `fail`
-- [ ] убедиться, что `-Werror` действительно включён: временно внести предупреждение, увидеть падение, откатить
+- [x] решить схему сборки сразу и записать её: `test/native/main.c` вызывает объявленные в `harness.h` `hm_run_pure_tests()`, `hm_run_kernel_tests()`, `hm_run_framing_tests()`, `hm_run_socket_tests()`; в каждом `*_test.c` нет своего `main`
+- [x] создать `scripts/test-native.sh`: сначала генерация заголовка из `.def` (`sed '1,/^---$/d' nativebridge/cinterop/harmon_native.def > build/native-test/harmon_native.h`, решение задачи 3), затем компиляция всех `test/native/*.c` в один бинарник через `clang` с `-Ibuild/native-test`, `-framework IOKit -framework CoreFoundation -lcurl` (повтор `linkerOpts`) и `-std=c11 -Wall -Wextra -Werror`, вывод бинарника под `build/` (уже в `.gitignore`), затем запуск
+- [x] в `harness.h` реализовать макрос `CHECK(name, cond, fmt, ...)` со счётчиком провалов, построчным выводом `ok`/`fail`, префикс-фильтром из `argv[1]` и `alarm(N)` в `main` против зависаний
+- [x] добавить флаг `--self-check`: заведомо падающая проверка, чтобы ветка `fail` исполнялась
+- [x] в `pure_test.c` добавить одну проверку-дымоход
+- [x] прогнать скрипт вручную: обычный запуск даёт код 0, `--self-check` — код 1 и строку `fail`
+- [x] убедиться, что `-Werror` действительно включён: временно внести предупреждение, увидеть падение, откатить
+
+✅ **Схема сборки зафиксирована** (записана комментарием в `test/native/harness.h`). Состояние
+гарнесса — `extern int hm_test_failures` и `extern const char *hm_test_filter`, определённые в
+`main.c`; `CHECK` разворачивается в `hm_test_report`, помеченную
+`__attribute__((format(printf, 3, 4)))`, поэтому формат детали проверяется компилятором.
+Фильтр — первый аргумент, не начинающийся с `--`; лишний аргумент даёт код 2. `alarm(60)`
+взводится до первой суиты. Скрипт резолвит корень проекта от собственного пути
+(`CDPATH= cd -- "$(dirname -- "$0")"`, как в `scripts/install.sh`), поэтому не зависит от
+рабочего каталога — ограничение `moduleDir` из Technical Details его не задевает.
+
+⚠️ **Заглушки суит созданы досрочно.** `main.c` по условию задачи вызывает все четыре суиты, а
+`kernel_test.c` / `framing_test.c` / `socket_test.c` появляются только в задачах 7, 9 и 10, —
+без них бинарник не слинкуется. Созданы пустые определения суит; задачи 7, 9, 10 **правят** эти
+файлы вместо создания и точку входа больше не трогают.
+
+ℹ️ **`-Werror` подтверждён дважды**: сначала непреднамеренно (`-Wcomment` на `/*` внутри
+блочного комментария в первой редакции `harness.h`), затем намеренной пробой
+`-Wunused-variable`. Обе проваливали сборку, проба откачена.
 
 ### Task 5: Мост из kotlin.test к внешним бинарникам
 
