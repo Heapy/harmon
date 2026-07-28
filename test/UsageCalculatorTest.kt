@@ -1,7 +1,10 @@
+import dev.yoda.harmon.monitor.CollectionException
 import dev.yoda.harmon.monitor.UsageCalculator
 import kotlin.test.Test
 import kotlin.test.assertEquals
+import kotlin.test.assertFailsWith
 import kotlin.test.assertFalse
+import kotlin.test.assertTrue
 
 class UsageCalculatorTest {
     @Test
@@ -102,5 +105,34 @@ class UsageCalculatorTest {
 
         assertFalse(storage.available)
         assertEquals(0.0, storage.writeBytesPerSecond)
+    }
+
+    /**
+     * A stalled clock is a collection problem, not a programming error: the agent loop logs
+     * [CollectionException] and keeps sampling, while an [IllegalArgumentException] from `require`
+     * reads as a bug and carries no numbers to diagnose it with.
+     */
+    @Test
+    fun rejectsSnapshotsThatDidNotAdvanceTheMonotonicClock() {
+        val previous = rawSnapshot(monotonicNs = 1_000_000_000u, processes = emptyList())
+        val current = rawSnapshot(monotonicNs = 1_000_000_000u, processes = emptyList())
+
+        val failure = assertFailsWith<CollectionException> {
+            UsageCalculator().calculate(previous, current)
+        }
+
+        val message = failure.message.orEmpty()
+        assertTrue(message.contains("monotonic"), message)
+        assertTrue(message.contains("1000000000"), message)
+    }
+
+    @Test
+    fun rejectsSnapshotsInReverseOrder() {
+        val previous = rawSnapshot(monotonicNs = 2_000_000_000u, processes = emptyList())
+        val current = rawSnapshot(monotonicNs = 1_000_000_000u, processes = emptyList())
+
+        assertFailsWith<CollectionException> {
+            UsageCalculator().calculate(previous, current)
+        }
     }
 }

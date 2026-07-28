@@ -47,9 +47,18 @@ class HarmonService(
                 continue
             }
 
+            // The window advances before the sample is handled, so a pair that blows up is not
+            // replayed against every following capture.
             val sampleStart = previous
             previous = current
-            handleSample(sampleStart, current)
+            try {
+                handleSample(sampleStart, current)
+            } catch (failure: Throwable) {
+                logError(
+                    "${Clock.System.now()} sample handling failed: " +
+                        (failure.message ?: failure::class.simpleName),
+                )
+            }
         }
     }
 
@@ -109,9 +118,22 @@ class HarmonService(
      * The state is committed on every sample, the samples without a delivery included: a key that
      * stopped firing has to leave the delivered set, otherwise its next appearance would be
      * mistaken for a repeat and never pushed.
+     *
+     * A delivery that throws — building the dispatcher boots AppKit, and that can fail — is
+     * reported and treated as delivering nothing. Letting it escape would skip the commit and
+     * strand the state on the sample before it.
      */
     private fun deliverIfNeeded(report: MonitoringReport, reportText: String) {
-        alertState.commit(report.alerts, deliverSample(report, reportText))
+        val delivered = try {
+            deliverSample(report, reportText)
+        } catch (failure: Throwable) {
+            logError(
+                "${Clock.System.now()} notification delivery failed: " +
+                    (failure.message ?: failure::class.simpleName),
+            )
+            emptySet()
+        }
+        alertState.commit(report.alerts, delivered)
     }
 
     /**

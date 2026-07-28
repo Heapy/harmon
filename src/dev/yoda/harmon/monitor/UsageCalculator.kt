@@ -17,8 +17,12 @@ class UsageCalculator(
         previous: RawSystemSnapshot,
         current: RawSystemSnapshot,
     ): SystemUsage {
-        require(current.monotonicTimeNs > previous.monotonicTimeNs) {
-            "Snapshots must be ordered by monotonic time"
+        if (current.monotonicTimeNs <= previous.monotonicTimeNs) {
+            throw CollectionException(
+                "Snapshots must advance the monotonic clock, but the previous one reads " +
+                    "${previous.monotonicTimeNs} ns and the current one " +
+                    "${current.monotonicTimeNs} ns",
+            )
         }
 
         val elapsedNanoseconds = current.monotonicTimeNs - previous.monotonicTimeNs

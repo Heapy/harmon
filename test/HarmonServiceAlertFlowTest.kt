@@ -168,6 +168,59 @@ class HarmonServiceAlertFlowTest {
         assertEquals(1, channel.payloads.size)
     }
 
+    /**
+     * Building the dispatcher runs arbitrary AppKit code and can fail. The sample has to survive
+     * it: the agent loop is a daemon, and a thrown push would otherwise end it.
+     */
+    @Test
+    fun logsADeliveryFailureInsteadOfPropagatingIt() {
+        val errors = mutableListOf<String>()
+        val service = HarmonService(
+            config = alertConfig(),
+            collector = UnusedCollector,
+            notifications = lazy { error("dispatcher unavailable") },
+            log = {},
+            logError = { errors += it },
+        )
+
+        service.handleSample(snapshot(0uL, ALERTING_FOOTPRINT), snapshot(1uL, ALERTING_FOOTPRINT))
+
+        assertTrue(errors.single().contains("dispatcher unavailable"), errors.toString())
+    }
+
+    /**
+     * Two things at once: the sample after a thrown delivery is handled normally, and the throwing
+     * sample still committed its state. The second footprint sits below the threshold, so it only
+     * alerts — and only reaches the channel — because the failed sample committed the key as
+     * firing (see [aFootprintBelowTheThresholdAlertsOnlyBecauseOfTheCommittedState]).
+     */
+    @Test
+    fun handlesTheNextSampleAfterADeliveryThrows() {
+        var attempts = 0
+        val channel = RecordingChannel()
+        val service = HarmonService(
+            config = alertConfig(),
+            collector = UnusedCollector,
+            notifications = lazy {
+                attempts += 1
+                if (attempts == 1) error("dispatcher unavailable")
+                NotificationDispatcher(listOf(channel))
+            },
+            log = {},
+            logError = {},
+        )
+
+        service.handleSample(snapshot(0uL, ALERTING_FOOTPRINT), snapshot(1uL, ALERTING_FOOTPRINT))
+        service.handleSample(
+            snapshot(1uL, HYSTERESIS_FOOTPRINT),
+            snapshot(2uL, HYSTERESIS_FOOTPRINT),
+        )
+
+        assertEquals(2, attempts)
+        assertEquals(1, channel.payloads.size)
+        assertTrue(channel.payloads.single().text.endsWith("memory"))
+    }
+
     /** Guards the ordering: nothing about the dispatcher may be read before the push decision. */
     @Test
     fun aSampleWithoutNewAlertsLeavesTheDispatcherUnbuilt() {

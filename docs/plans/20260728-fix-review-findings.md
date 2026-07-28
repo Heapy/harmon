@@ -519,14 +519,31 @@ fun decisiveSuccess(results: List<DeliveryResult>): Boolean {
 - Modify: `test/UsageCalculatorTest.kt`
 - Modify: `test/HarmonServiceAlertFlowTest.kt`
 
-- [ ] написать тест: два снимка с одинаковым `monotonicTimeNs` дают `CollectionException`
+- [x] написать тест: два снимка с одинаковым `monotonicTimeNs` дают `CollectionException`
       с внятным сообщением, а не `IllegalArgumentException`
-- [ ] написать тест: исключение из доставки логируется, а `handleSample` не пробрасывает его наружу
-- [ ] написать тест: после исключения на одном сэмпле следующий сэмпл обрабатывается нормально
-- [ ] обернуть вызов `handleSample` в `try/catch` с логированием
-- [ ] обновлять `previous = current` сразу после успешного `capture()`, до анализа
-- [ ] заменить `require` в `UsageCalculator` на явный `CollectionException`
-- [ ] запустить `./kotlin test` — должно пройти до перехода к задаче 9
+- [x] написать тест: исключение из доставки логируется, а `handleSample` не пробрасывает его наружу
+- [x] написать тест: после исключения на одном сэмпле следующий сэмпл обрабатывается нормально
+- [x] обернуть вызов `handleSample` в `try/catch` с логированием
+- [x] обновлять `previous = current` сразу после успешного `capture()`, до анализа
+      (уже было сделано в задаче 6; добавлен комментарий, объясняющий зачем)
+- [x] заменить `require` в `UsageCalculator` на явный `CollectionException`
+- [x] запустить `./kotlin test` — должно пройти до перехода к задаче 9
+
+➕ Два уровня перехвата вместо одного. `try/catch` вокруг `handleSample` в `runForever` из плана
+недостаточен для чекбокса «`handleSample` не пробрасывает исключение наружу»: он ловит уже снаружи
+метода, а безусловный `commit` при этом теряется — состояние застревает на предыдущем сэмпле, и
+после задач 6/7 это ровно тот тихий сбой, который чинит edge detection. Поэтому `deliverIfNeeded`
+ловит бросок из `deliverSample` (реальный источник — ленивое построение диспетчера, поднимающее
+AppKit), логирует его и коммитит с пустым множеством доставленных ключей; `try/catch` в
+`runForever` остаётся внешним поясом для `createReport` и `ReportFormatter.text`.
+
+➕ Тест `handlesTheNextSampleAfterADeliveryThrows` покрывает оба пункта разом: второй сэмпл
+(1950 MiB при пороге 2048) доставляется только потому, что упавший первый всё-таки закоммитил ключ
+в `firing`. Парный контрольный тест — `aFootprintBelowTheThresholdAlertsOnlyBecauseOfTheCommittedState`
+из задачи 6.
+
+➕ Второй тест на `UsageCalculator` — `rejectsSnapshotsInReverseOrder`: правка меняет `require(a > b)`
+на `if (a <= b) throw`, и без него ветка «снимки переставлены местами» осталась бы непокрытой.
 
 ### Task 9: Заменить опрос часов монотонным сном
 
