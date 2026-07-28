@@ -129,6 +129,23 @@ class AlertAnalyzerTest {
     }
 
     @Test
+    fun raisesNoBatteryAlertsOnAMachineWithoutABattery() {
+        val sampled = systemUsage(processes = emptyList(), batteryPercentage = 5)
+        val usage = sampled.copy(
+            power = sampled.power.copy(
+                batteryAvailable = false,
+                onBattery = false,
+                percentage = null,
+                minutesRemaining = null,
+            ),
+        )
+
+        val alerts = AlertAnalyzer().analyze(usage, HarmonConfig(), setOf("battery-low"))
+
+        assertEquals(emptyList(), alerts.filter { it.key.startsWith("battery") })
+    }
+
+    @Test
     fun keepsActiveKeyThatFellOutOfTheTopSlice() {
         val usage = systemUsage(
             processes = listOf(

@@ -895,14 +895,57 @@ highlighted, rankings, reportText)`), поэтому `once`/`diagnose` прод�
 
 ### Task 18: Verify acceptance criteria
 
-- [ ] пройти таблицу «находка → задача» из Context и отметить каждую закрытой
-- [ ] проверить edge cases: пустой список алертов, отсутствие каналов уведомлений, отсутствие батареи
-- [ ] прогнать полный набор тестов: `./kotlin test`
-- [ ] собрать релиз: `./kotlin build --variant release` — предупреждений быть не должно
-- [ ] прогнать локальный IPC smoke-тест из README (`collector --allow-unprivileged` + `once --config`)
-- [ ] прогнать `harmon check-config` со старым конфигом, содержащим `alertCooldownSeconds`
-- [ ] прогнать `harmon once --notify` и убедиться, что HTML-отчёт содержит все активные алерты,
+- [x] пройти таблицу «находка → задача» из Context и отметить каждую закрытой
+- [x] проверить edge cases: пустой список алертов, отсутствие каналов уведомлений, отсутствие батареи
+- [x] прогнать полный набор тестов: `./kotlin test`
+- [x] собрать релиз: `./kotlin build --variant release` — предупреждений быть не должно
+- [x] прогнать локальный IPC smoke-тест из README (`collector --allow-unprivileged` + `once --config`)
+- [x] прогнать `harmon check-config` со старым конфигом, содержащим `alertCooldownSeconds`
+- [x] прогнать `harmon once --notify` и убедиться, что HTML-отчёт содержит все активные алерты,
       а пуш — только новые
+
+Все 15 находок перепроверены по коду, а не по чекбоксам: 1 и 9 — `AlertState` +
+`bestEffort`/`decisiveSuccess`; 2 — `classifyAccept` без `throw` в ветке `else`; 3 и 5 —
+монотонный дедлайн и реальный сон в `sleepSeconds`; 4 — насыщающие `mebibytesToBytes`/`doubled`
+плюс граница 1048576 в `validate`; 6 — `try/catch` в `runForever` и в `deliverIfNeeded`; 7 —
+`indexOf(APP_BUNDLE_MARKER, ignoreCase = true)`; 8 — `terminalApplications` в конфиге; 10 —
+`attribution_region_budget` в `hm_list_processes`; 11 — версия читается из разобранного
+`JsonElement`; 12 — `Lazy<NotificationDispatcher>` с тремя чтениями `.value`; 13 —
+`hm_count_processes` + `processCapacityFor`; 14 — `SAMPLE_SECONDS_RANGE` в `config`; 15 —
+`ApplicationRankings` и `reportText` параметром.
+
+Прогоны на живой машине (коллектор `--allow-unprivileged` на `/tmp/harmon-dev.sock`):
+`once` и `diagnose --sample-seconds 2` — 2.76 с на команду (сбор снимка ≈0.38 с),
+`check-config` со строкой `alertCooldownSeconds=1800` — exit 0, «Configuration is valid.» плюс
+предупреждение в stderr; edge cases: все пороги `0` → пустой список алертов, доставка webhook
+HTTP 200 с `alerts: []` и `newAlertKeys: []`; конфиг без каналов → `once --notify` молча
+завершается, `test-notifications` печатает «No notification channels are enabled.», агент
+продолжает сэмплировать.
+
+⚠️ `once --notify` расхождение пуша и отчёта показать не может: состояние пустое, поэтому
+`highlighted == report.alerts` и `newAlertKeys` совпадает со всеми ключами (проверено, webhook
+получил 4 алерта и 4 ключа). Расхождение проверено агентом `harmon run` на трёх сэмплах с
+локальным webhook-листенером: сэмпл 1 — 4 алерта, все новые, пуш ушёл; сэмпл 2 — тот же набор,
+пуша нет вовсе; сэмпл 3 (после запуска процесса, занявшего ядро) — в отчёте 5 алертов, в
+`newAlertKeys` ровно один `cpu:process:…`, а `latest.html`, который открывает клик по
+уведомлению, содержит все 5. Текст доставленного системного уведомления обратно не читается
+(база Notification Center закрыта TCC); его состав гарантируется тем, что `newAlertKeys` —
+это `highlighted.map { it.key }`, тот же список, из которого строятся `title`/`subtitle`/`text`.
+
+⚠️ **Дефект, найденный проверкой и исправленный здесь же (вне списка 15 находок).**
+`proc_pid_rusage` отдаёт `ri_user_time`/`ri_system_time` в mach absolute time, а мост клал их в
+`user_time_ns`/`system_time_ns` как наносекунды. На Apple Silicon тик — 125/3 нс, поэтому
+процесс, занимающий ядро целиком, показывался как **2.4 % CPU** при `ps` = 100 %: правило
+`applicationCpuAlertPercent` (дефолт 150) не могло сработать в принципе, а `batteryImpactScore`
+занижался вместе с ним. Правка минимальная — `hm_mach_time_to_ns` в `cinterop/harmon_native.def`
+и два вызова на присваиваниях. После неё тот же процесс — 99.7–100.0 % и в debug, и в release.
+Юнит-тестом не покрывается (нативный слой из тестов недостижим, ⚠️ задачи 9); проверено A/B на
+живой машине против `ps`. `started_at` (`ri_proc_start_abstime`) намеренно не конвертируется —
+это непрозрачный идентификатор в ключах алертов, а не длительность.
+
+➕ Тест `AlertAnalyzerTest.raisesNoBatteryAlertsOnAMachineWithoutABattery`: edge case «отсутствие
+батареи» на ноутбуке с батареей рантайм-прогоном не воспроизводится, поэтому проверяется тестом —
+`batteryAvailable = false` при 5 % заряда не даёт ни `battery-low`, ни `battery-impact`.
 
 ### Task 19: [Final] Update documentation
 

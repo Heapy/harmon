@@ -262,6 +262,11 @@ cpuPercent = userCpuPercent + systemCpuPercent
 
 A process can exceed 100% by using multiple logical cores.
 
+`proc_pid_rusage` reports its CPU counters in mach absolute time, so the
+collector converts them with `mach_timebase_info` before storing them as
+`userTimeNs`/`systemTimeNs`. On Apple Silicon a tick is 125/3 ns; reading the
+counters raw would understate every process by a factor of ~41.
+
 Energy is converted to average accounted power:
 
 ```text

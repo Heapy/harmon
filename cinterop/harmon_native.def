@@ -20,6 +20,7 @@ linkerOpts = -framework IOKit -framework CoreFoundation -lcurl
 #include <mach/host_info.h>
 #include <mach/mach.h>
 #include <mach/mach_host.h>
+#include <mach/mach_time.h>
 #include <mach/vm_statistics.h>
 #include <stdint.h>
 #include <stdio.h>
@@ -506,6 +507,26 @@ static inline uint64_t hm_saturating_multiply_u64(uint64_t left, uint64_t right)
     return UINT64_MAX / left < right ? UINT64_MAX : left * right;
 }
 
+/*
+ * The CPU counters of `proc_pid_rusage` are mach absolute time, not nanoseconds.
+ * The two units coincide on Intel, but an Apple Silicon tick is 125/3 ns, so
+ * reading them raw reports a process pinning one core as using 2.4% of it.
+ */
+static inline uint64_t hm_mach_time_to_ns(uint64_t ticks) {
+    static mach_timebase_info_data_t timebase = {0, 0};
+    if (timebase.denom == 0) {
+        if (mach_timebase_info(&timebase) != KERN_SUCCESS || timebase.denom == 0) {
+            timebase.numer = 1;
+            timebase.denom = 1;
+        }
+    }
+    if (timebase.numer == timebase.denom) {
+        return ticks;
+    }
+    return hm_saturating_multiply_u64(ticks, (uint64_t)timebase.numer) /
+        (uint64_t)timebase.denom;
+}
+
 /**
  * Number of PIDs the kernel is currently willing to report, or a negative value when the
  * count is unavailable. Callers size their sample arrays from it instead of reserving a
@@ -789,8 +810,8 @@ static inline int hm_list_processes(
         sample->pid = pid;
         sample->uid = UINT32_MAX;
         sample->started_at = usage.ri_proc_start_abstime;
-        sample->user_time_ns = usage.ri_user_time;
-        sample->system_time_ns = usage.ri_system_time;
+        sample->user_time_ns = hm_mach_time_to_ns(usage.ri_user_time);
+        sample->system_time_ns = hm_mach_time_to_ns(usage.ri_system_time);
         sample->package_idle_wakeups = usage.ri_pkg_idle_wkups;
         sample->interrupt_wakeups = usage.ri_interrupt_wkups;
         sample->pageins = usage.ri_pageins;
