@@ -8,7 +8,12 @@ import kotlin.test.assertTrue
  * list: a check that stops being executed would otherwise vanish without a line turning red.
  */
 private val SELFTEST_CHECKS = setOf(
+    "attribution.self-walk-completes",
     "binding.bridge-is-linked",
+    "binding.monotonic-clock-advances",
+    "binding.process-sample-readable",
+    "binding.struct-sizes-agree",
+    "binding.uint32-counter-wraps",
 )
 
 /**

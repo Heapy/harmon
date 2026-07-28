@@ -676,13 +676,43 @@ unix-сокету завершается, как только соединени
 
 **Files:**
 - Modify: `selftest/src/main.kt`
+- ➕ Modify: `nativebridge/cinterop/harmon_native.def` (`hm_process_sample_size` / `hm_process_issue_size`)
+- ➕ Modify: `test/SelftestBridgeTest.kt` (список `SELFTEST_CHECKS`)
 
-- [ ] `binding.uint32-counter-wraps`: `hm_uint32_counter(-1)` приходит в Kotlin как `4294967295uL`
-- [ ] `binding.process-sample-readable`: реальный вызов `hm_list_processes` через cinterop, у сэмплов `pid > 0`, имя непусто, footprint правдоподобен — разъехавшуюся раскладку это ловит надёжнее, чем сверка `sizeOf` с захардкоженным числом (`HM_PROCESS_PATH_SIZE` — константа SDK, а не проекта)
-- [ ] `binding.struct-sizes-agree`: сверить `sizeOf<HMProcessSample>()` и `sizeOf<HMProcessIssue>()` со значениями, которые отдаёт сам C (через `hm_process_sample_size()` / `hm_process_issue_size()`), а не с литералами
-- [ ] `binding.monotonic-clock-advances`: два вызова `hm_monotonic_time_ns` дают неубывающие значения
-- [ ] `attribution.self-walk-completes`: осознанное дублирование задачи 7 — адресное пространство Kotlin/Native-процесса богаче регионами, обход содержательнее
-- [ ] обновить ожидаемый список имён проверок в мосте (задача 5) и прогнать `./kotlin build && ./kotlin test`
+- [x] `binding.uint32-counter-wraps`: `hm_uint32_counter(-1)` приходит в Kotlin как `4294967295uL`
+- [x] `binding.process-sample-readable`: реальный вызов `hm_list_processes` через cinterop, у сэмплов `pid > 0`, имя непусто, footprint правдоподобен — разъехавшуюся раскладку это ловит надёжнее, чем сверка `sizeOf` с захардкоженным числом (`HM_PROCESS_PATH_SIZE` — константа SDK, а не проекта)
+- [x] `binding.struct-sizes-agree`: сверить `sizeOf<HMProcessSample>()` и `sizeOf<HMProcessIssue>()` со значениями, которые отдаёт сам C (через `hm_process_sample_size()` / `hm_process_issue_size()`), а не с литералами
+- [x] `binding.monotonic-clock-advances`: два вызова `hm_monotonic_time_ns` дают неубывающие значения
+- [x] `attribution.self-walk-completes`: осознанное дублирование задачи 7 — адресное пространство Kotlin/Native-процесса богаче регионами, обход содержательнее
+- [x] обновить ожидаемый список имён проверок в мосте (задача 5) и прогнать `./kotlin build && ./kotlin test`
+
+⚠️ **Двух функций размера в `.def` не было — добавлены.** План называет
+`hm_process_sample_size()` / `hm_process_issue_size()` как источник «того, что отдаёт сам C», но
+в мосте их не существовало, а другого независимого от cinterop источника размера нет: Kotlin-ская
+`sizeOf` и модель структуры в cinterop приходят из одного разбора заголовка и ошиблись бы вместе.
+Добавлены две `static inline size_t` сразу после `HMProcessIssue`; вызов из Kotlin идёт через
+стаб, скомпилированный C-компилятором, поэтому сравниваются два независимо полученных числа.
+Поведение продакшена не тронуто — функций-читателей ни у кого, кроме `selftest`, нет.
+
+✅ **Все пять проверок подтверждены мутациями `.def`** (каждая откачена): сигн-расширение в
+`hm_uint32_counter` роняет `uint32-counter-wraps`, `sizeof(HMProcessSample) + 8` —
+`struct-sizes-agree`, обнулённый `hm_monotonic_time_ns` — `monotonic-clock-advances`,
+`physical_footprint_bytes = 0` — `process-sample-readable`, снятый `complete = 1` на `EINVAL` —
+`attribution.self-walk-completes` (`status 1 over 75 regions in 76 calls`).
+
+ℹ️ **Ветку пустого имени пришлось ронять двойной мутацией.** Снятие одного лишь запасного
+`snprintf(..., "pid-%d", ...)` проверку не роняет: на живой машине `proc_name` называет все
+процессы, и запасное имя не срабатывает ни разу. Пустое имя добирается до сэмпла только когда
+снято и заполнение имени, и запасной вариант — в этой форме проверка падает с
+`sample 0 of 540 (pid 89192) has an empty name`.
+
+ℹ️ **Правдоподобие footprint меряется по собственному процессу.** Листинг берётся во всю ширину
+(`hm_count_processes() + 256`, пол 512), чтобы в него попал сам `selftest`, и его
+`physical_footprint_bytes` обязан лежать между байтом и `hw.memsize`. Сдвинутая раскладка не
+роняет компиляцию — она отдаёт Kotlin соседнее поле по правильному смещению, — поэтому ассерт
+держится на значениях, которыми ничто другое быть не может: положительный pid, непустое имя
+(мост гарантирует запасное `pid-N`) и footprint внутри установленной памяти. Атрибуция при этом
+выключена, как и в C-суите: её обход — следующая проверка.
 
 ### Task 14: Verify acceptance criteria
 
