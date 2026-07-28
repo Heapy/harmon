@@ -253,14 +253,26 @@ the build like an error»), которое задача 15 должна попр
 - Modify: `module.yaml`
 - Move: `cinterop/harmon_native.def` → `nativebridge/cinterop/harmon_native.def`
 
-- [ ] создать `project.yaml` со списком `modules: [./nativebridge]`
-- [ ] создать `nativebridge/module.yaml`: `product: {type: kmp/lib, platforms: [macosArm64]}`, `apply: [../harmon.module-template.yaml]`
-- [ ] ⚠️ проверить допущение: принимает ли `apply:` путь за пределы каталога модуля. Спайк подтверждал относительные пути **зависимостей**, не шаблонов. Если не принимает — положить копию шаблона в модуль либо отказаться от шаблона для `nativebridge` (Kotlin-исходников там нет, строгость носит характер единообразия). Зафиксировать выбор здесь же
-- [ ] перенести `.def` через `git mv cinterop nativebridge/cinterop` (сохранить историю файла)
-- [ ] в корневой `module.yaml` добавить `dependencies: [./nativebridge]`
-- [ ] проверить `./kotlin show modules` — корневой модуль виден неявно, без перечисления в `project.yaml`; оба модуля на месте
-- [ ] убедиться, что `package = dev.yoda.harmon.nativebridge` в `.def` не менялся и импорты в `DarwinSystemCollector.kt` остались нетронутыми
-- [ ] запустить `./kotlin build && ./kotlin test` — 150 существующих тестов должны пройти без правок
+- [x] создать `project.yaml` со списком `modules: [./nativebridge]`
+- [x] создать `nativebridge/module.yaml`: `product: {type: kmp/lib, platforms: [macosArm64]}`, `apply: [../harmon.module-template.yaml]`
+- [x] ⚠️ проверить допущение: принимает ли `apply:` путь за пределы каталога модуля. Спайк подтверждал относительные пути **зависимостей**, не шаблонов. Если не принимает — положить копию шаблона в модуль либо отказаться от шаблона для `nativebridge` (Kotlin-исходников там нет, строгость носит характер единообразия). Зафиксировать выбор здесь же
+- [x] перенести `.def` через `git mv cinterop nativebridge/cinterop` (сохранить историю файла)
+- [x] в корневой `module.yaml` добавить `dependencies: [./nativebridge]`
+- [x] проверить `./kotlin show modules` — корневой модуль виден неявно, без перечисления в `project.yaml`; оба модуля на месте
+- [x] убедиться, что `package = dev.yoda.harmon.nativebridge` в `.def` не менялся и импорты в `DarwinSystemCollector.kt` остались нетронутыми
+- [x] запустить `./kotlin build && ./kotlin test` — 150 существующих тестов должны пройти без правок
+
+✅ **Развилка `apply:` закрыта.** Путь за пределы каталога модуля принимается:
+`apply: [../harmon.module-template.yaml]` из `nativebridge/module.yaml` работает, копия шаблона
+в модуле не нужна. Подтверждено `./kotlin show settings -m nativebridge` — строки помечены
+источником `# harmon.module-template.yaml`, `allWarningsAsErrors: true` применился. Эффективные
+настройки корневого модуля не изменились, `serialization: json` на месте.
+
+ℹ️ **Имя корневого модуля берётся из имени каталога.** В worktree это даёт
+`build/tasks/_native-bridge-tests_linkMacosArm64Debug/`, а не `_harmon_...`; ключа `name:` в
+`module.yaml` нет, задать имя нельзя. На план это не влияет: `selftest` лежит в собственном
+каталоге, поэтому `_selftest_linkMacosArm64Debug` из задачи 12 стабилен, а C-гарнесс собирает
+свой бинарник сам. Затрагивает только рецепт в `CLAUDE.md` (задача 15).
 
 ### Task 3: Вынести C-заголовок из .def
 

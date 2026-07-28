@@ -1,0 +1,4 @@
+# The root module `harmon` is included implicitly; only the extra modules are
+# listed here.
+modules:
+  - ./nativebridge

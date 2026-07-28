@@ -1,0 +1,9 @@
+# The C bridge. Holds `cinterop/harmon_native.def` and no Kotlin sources: the
+# cinterop tool picks the `.def` up by convention, and every consumer gets the
+# generated bindings by depending on this module.
+
+product:
+  type: kmp/lib
+  platforms: [macosArm64]
+
+apply: [../harmon.module-template.yaml]

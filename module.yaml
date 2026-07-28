@@ -4,6 +4,9 @@ product:
 
 apply: [./harmon.module-template.yaml]
 
+dependencies:
+  - ./nativebridge
+
 settings:
   kotlin:
     serialization: json
