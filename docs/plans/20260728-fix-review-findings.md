@@ -730,12 +730,21 @@ DI-шов для грувера не удалён, `UsageCalculator()` прод�
 - Modify: `src/dev/yoda/harmon/runtime/HarmonService.kt`
 - Modify: `test/CliParserTest.kt`
 
-- [ ] написать тест: `once --sample-seconds 99999999999` отвергается парсером CLI
-- [ ] написать тест: `once --sample-seconds 300` принимается, `301` — нет
-- [ ] написать тест: сообщение об ошибке называет допустимый диапазон
-- [ ] вынести `SAMPLE_SECONDS_RANGE = 1L..300L` в `config` и использовать в `ConfigLoader.validate`,
+- [x] написать тест: `once --sample-seconds 99999999999` отвергается парсером CLI
+- [x] написать тест: `once --sample-seconds 300` принимается, `301` — нет
+- [x] написать тест: сообщение об ошибке называет допустимый диапазон
+- [x] вынести `SAMPLE_SECONDS_RANGE = 1L..300L` в `config` и использовать в `ConfigLoader.validate`,
       `CliParser` и `HarmonService.sampleOnce` (сейчас там свой `require(sampleSeconds > 0)`)
-- [ ] запустить `./kotlin test` — должно пройти до перехода к задаче 15
+- [x] запустить `./kotlin test` — должно пройти до перехода к задаче 15
+
+➕ `SAMPLE_SECONDS_RANGE` — публичная top-level `val` в `config/Config.kt`, рядом с
+`DEFAULT_TERMINAL_APPLICATIONS`, а не `private const` внутри `ConfigLoader`: диапазон читают
+`cli` и `runtime`, а тест сравнивает границы с ним же, а не с литералами (⚠️ задачи 1 — тесты
+не видят `internal`/`private`). `LongRange` не может быть `const`.
+
+➕ Сообщение `sampleOnce` дописывает фактическое значение (`got $sampleSeconds`): `require`
+срабатывает только на программном вызове в обход CLI, и без значения из лога непонятно, что
+именно пришло. CLI-сообщение значение не повторяет — пользователь только что его набрал.
 
 ### Task 15: Аллоцировать массивы процессов по реальному числу PID
 

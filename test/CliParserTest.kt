@@ -1,8 +1,12 @@
+import dev.yoda.harmon.cli.CliException
 import dev.yoda.harmon.cli.CliParser
 import dev.yoda.harmon.cli.Command
+import dev.yoda.harmon.config.SAMPLE_SECONDS_RANGE
 import kotlin.test.Test
 import kotlin.test.assertEquals
+import kotlin.test.assertFailsWith
 import kotlin.test.assertIs
+import kotlin.test.assertTrue
 
 class CliParserTest {
     @Test
@@ -44,5 +48,38 @@ class CliParserTest {
         assertEquals(501u, command.allowedUserId)
         assertEquals(20u, command.socketGroupId)
         assertEquals(true, command.allowUnprivileged)
+    }
+
+    @Test
+    fun rejectsASampleWindowFarBeyondTheAllowedRange() {
+        assertFailsWith<CliException> {
+            CliParser.parse(arrayOf("once", "--sample-seconds", "99999999999"))
+        }
+    }
+
+    @Test
+    fun acceptsTheLargestAllowedSampleWindowAndRejectsTheNextSecond() {
+        val command = assertIs<Command.Once>(
+            CliParser.parse(arrayOf("once", "--sample-seconds", "300")),
+        )
+        assertEquals(SAMPLE_SECONDS_RANGE.last, command.sampleSeconds)
+
+        assertFailsWith<CliException> {
+            CliParser.parse(arrayOf("once", "--sample-seconds", "301"))
+        }
+    }
+
+    @Test
+    fun namesTheAllowedRangeWhenTheSampleWindowIsRejected() {
+        val failure = assertFailsWith<CliException> {
+            CliParser.parse(arrayOf("once", "--sample-seconds", "0"))
+        }
+
+        val message = failure.message.orEmpty()
+        assertTrue(
+            message.contains(SAMPLE_SECONDS_RANGE.first.toString()) &&
+                message.contains(SAMPLE_SECONDS_RANGE.last.toString()),
+            "expected the allowed range in '$message'",
+        )
     }
 }

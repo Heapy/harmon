@@ -3,6 +3,7 @@ package dev.yoda.harmon.runtime
 import dev.yoda.harmon.analysis.AlertAnalyzer
 import dev.yoda.harmon.analysis.AlertState
 import dev.yoda.harmon.config.HarmonConfig
+import dev.yoda.harmon.config.SAMPLE_SECONDS_RANGE
 import dev.yoda.harmon.ipc.CollectorClient
 import dev.yoda.harmon.model.MonitoringReport
 import dev.yoda.harmon.model.RawSystemSnapshot
@@ -94,7 +95,10 @@ class HarmonService(
     }
 
     fun sampleOnce(sampleSeconds: Long = config.onceSampleSeconds): MonitoringReport {
-        require(sampleSeconds > 0) { "sampleSeconds must be positive" }
+        require(sampleSeconds in SAMPLE_SECONDS_RANGE) {
+            "sampleSeconds must be between ${SAMPLE_SECONDS_RANGE.first} " +
+                "and ${SAMPLE_SECONDS_RANGE.last}, got $sampleSeconds"
+        }
         val previous = collector.capture()
         sleepSeconds(sampleSeconds)
         val current = collector.capture()

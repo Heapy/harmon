@@ -33,6 +33,15 @@ val DEFAULT_TERMINAL_APPLICATIONS: Set<String> = setOf(
     "agterm",
 )
 
+/**
+ * How long a single sample window may last, in seconds.
+ *
+ * The one source of truth for `onceSampleSeconds`, the `--sample-seconds` option and
+ * [dev.yoda.harmon.runtime.HarmonService.sampleOnce] — the three places that used to enforce
+ * their own, drifting bounds.
+ */
+val SAMPLE_SECONDS_RANGE: LongRange = 1L..300L
+
 data class AlertThresholds(
     val applicationCpuPercent: Double? = 150.0,
     val applicationMemoryMiB: Long? = 2_048,
@@ -322,8 +331,11 @@ object ConfigLoader {
         if (config.intervalSeconds !in 1..86_400) {
             throw ConfigException("intervalSeconds must be between 1 and 86400")
         }
-        if (config.onceSampleSeconds !in 1..300) {
-            throw ConfigException("onceSampleSeconds must be between 1 and 300")
+        if (config.onceSampleSeconds !in SAMPLE_SECONDS_RANGE) {
+            throw ConfigException(
+                "onceSampleSeconds must be between ${SAMPLE_SECONDS_RANGE.first} " +
+                    "and ${SAMPLE_SECONDS_RANGE.last}",
+            )
         }
         if (config.topProcessCount !in 1..100) {
             throw ConfigException("topProcessCount must be between 1 and 100")

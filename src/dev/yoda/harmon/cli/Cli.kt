@@ -2,6 +2,7 @@ package dev.yoda.harmon.cli
 
 import dev.yoda.harmon.config.ConfigException
 import dev.yoda.harmon.config.ConfigLoader
+import dev.yoda.harmon.config.SAMPLE_SECONDS_RANGE
 import dev.yoda.harmon.ipc.CollectorServer
 import dev.yoda.harmon.report.ReportFormatter
 import dev.yoda.harmon.runtime.HarmonService
@@ -183,8 +184,12 @@ object CliParser {
                 }
                 "--sample-seconds" -> {
                     val raw = arguments.valueAfter(index, option)
-                    sampleSeconds = raw.toLongOrNull()?.takeIf { it > 0 }
-                        ?: throw CliException("--sample-seconds must be a positive integer")
+                    sampleSeconds = raw.toLongOrNull()
+                        ?.takeIf { it in SAMPLE_SECONDS_RANGE }
+                        ?: throw CliException(
+                            "--sample-seconds must be an integer between " +
+                                "${SAMPLE_SECONDS_RANGE.first} and ${SAMPLE_SECONDS_RANGE.last}",
+                        )
                     index += 2
                 }
                 "--notify" -> {
