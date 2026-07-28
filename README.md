@@ -75,10 +75,12 @@ per-sample budget of 100,000 regions is spent. Most of that budget goes to the
 largest processes first — they are what the compressed-memory ranking is made
 of, and a share too small to finish one produces nothing — and the reserved
 remainder is split over the rest of the candidates. On a loaded machine the
-budget, rather than the 256-process limit, is what ends attribution, so coverage
-settles well below 256 measured processes. Reports include the attribution
-coverage and failure count. The proxy must not be summed and presented as exact
-disk swap.
+budget, rather than the 256-process limit, is what ends attribution: the head of
+the ranking is measured completely and most of the tail is truncated, so a
+minority of the 256 candidates yields a value. Reports include the attribution
+coverage and failure count; see [the collection model](docs/collection.md) for
+the measured coverage figures. The proxy must not be summed and presented as
+exact disk swap.
 
 ### Root access
 

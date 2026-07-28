@@ -228,16 +228,26 @@ and one-directional: a missed measurement is recoverable on the next sample, a
 fabricated one is not.
 
 On a workstation running an IDE, a browser, and a virtual machine the budget,
-not the 256-process limit, is what actually ends attribution, so coverage stays
-well below 256 measured processes. A measured run on such a machine — 484
-readable processes, 256 attempted — reports 84 processes measured and 172
-attempts truncated, with the virtual machine, the terminal, and the browser at
-the top of the ranking. The truncated attempts are the price of covering the
-tail: they were attempted and produced nothing, and they are counted as
-failures rather than hidden. Splitting the budget changes which processes are
-covered rather than how much work a sample costs. Attribution is a bounded
-proxy, and the bound costs a predictable number of system calls per sample
-instead of up to 8.4 million.
+not the 256-process limit, is what actually ends attribution. Every sample still
+attempts 256 candidates; on such a machine roughly 80 to 85 of them are measured
+and the remaining 170 to 175 are truncated by the share they were given. Those
+are measured figures from a real machine, not a target: 83 to 84 measured of 494
+readable processes while a virtual machine, Firefox, and an IDE were running,
+82 of 524 readable on an idle sample, 80 of 1118 readable under a burst of 600
+extra processes. The count barely moves with the number of processes because the
+budget, not the candidate list, is what runs out, and it varies mainly with how
+many VM regions the largest processes happen to hold, so no single number should
+be read as a guarantee.
+
+What the split does hold is the head of the ranking. In those runs the largest
+processes by physical footprint were all measured — the virtual machine at
+6.4 GiB, Firefox at 2.9 GiB, the terminal at 2.7 GiB — which is what the
+compressed-memory ranking is for. The truncated attempts are the price of
+covering the tail: they were attempted and produced nothing, and they are
+counted as failures rather than hidden. Splitting the budget changes which
+processes are covered rather than how much work a sample costs. Attribution is
+a bounded proxy, and the bound costs a predictable number of system calls per
+sample instead of up to 8.4 million.
 
 ### Why root still does not make this exact
 
