@@ -1,4 +1,6 @@
+.claude/
 .DS_Store
+.idea/
 .kotlin-home/
 .kotlin/
 .konan/
