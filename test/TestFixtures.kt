@@ -1,4 +1,5 @@
 import dev.yoda.harmon.analysis.ApplicationGrouper
+import dev.yoda.harmon.model.Alert
 import dev.yoda.harmon.model.LoadAverages
 import dev.yoda.harmon.model.PowerState
 import dev.yoda.harmon.model.ProcessorCounters
@@ -7,6 +8,7 @@ import dev.yoda.harmon.model.ProcessIdentity
 import dev.yoda.harmon.model.ProcessUsage
 import dev.yoda.harmon.model.RawProcessSample
 import dev.yoda.harmon.model.RawSystemSnapshot
+import dev.yoda.harmon.model.Severity
 import dev.yoda.harmon.model.StorageCounters
 import dev.yoda.harmon.model.StorageUsage
 import dev.yoda.harmon.model.SwapUsage
@@ -257,4 +259,16 @@ fun systemUsage(
     processes = processes,
     applications = ApplicationGrouper().group(processes),
     processIssues = emptyList(),
+)
+
+fun alert(
+    key: String,
+    severity: Severity = Severity.WARNING,
+    title: String = "title of $key",
+    message: String = "message of $key",
+): Alert = Alert(
+    key = key,
+    severity = severity,
+    title = title,
+    message = message,
 )

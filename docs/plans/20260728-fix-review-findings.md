@@ -386,16 +386,25 @@ fun decisiveSuccess(results: List<DeliveryResult>): Boolean {
 - Modify: `test/ReportFormatterTest.kt`
 - Modify: `test/ReportJsonTest.kt`
 
-- [ ] написать тест: при 1 новом и 5 активных алертах `payload.text` содержит только новый
-- [ ] написать тест: при тех же данных `payload.html` содержит все 5 в секции `Alerts:`
-- [ ] написать тест: `payload.json` содержит все 5 алертов и `newAlertKeys` из одного ключа
-- [ ] написать тест: `notification(report)` без `highlighted` ведёт себя как раньше
-- [ ] написать тест: переданный `reportText` попадает в HTML без повторного рендера
+- [x] написать тест: при 1 новом и 5 активных алертах `payload.text` содержит только новый
+- [x] написать тест: при тех же данных `payload.html` содержит все 5 в секции `Alerts:`
+- [x] написать тест: `payload.json` содержит все 5 алертов и `newAlertKeys` из одного ключа
+- [x] написать тест: `notification(report)` без `highlighted` ведёт себя как раньше
+- [x] написать тест: переданный `reportText` попадает в HTML без повторного рендера
       (маркерная строка вместо настоящего отчёта)
-- [ ] изменить сигнатуру на `notification(report, highlighted = report.alerts, reportText = text(report))`
-- [ ] строить `title`/`subtitle`/`text` из `highlighted`, HTML и JSON — из полного `report`
-- [ ] добавить `newAlertKeys` в DTO `ReportJson`
-- [ ] запустить `./kotlin test` — должно пройти до перехода к задаче 5
+- [x] изменить сигнатуру на `notification(report, highlighted = report.alerts, reportText = text(report))`
+- [x] строить `title`/`subtitle`/`text` из `highlighted`, HTML и JSON — из полного `report`
+- [x] добавить `newAlertKeys` в DTO `ReportJson`
+- [x] запустить `./kotlin test` — должно пройти до перехода к задаче 5
+
+➕ Общая фикстура `alert(key, severity, title, message)` вынесена в `test/TestFixtures.kt` —
+нужна и в `ReportFormatterTest`, и в `ReportJsonTest`.
+
+➕ `ReportJson.encode` и `ReportFormatter.json` получили параметр
+`newAlertKeys: List<String> = report.alerts.map { it.key }`. Дефолт «все алерты новые», а не
+пустой список: без edge detection (прямой вызов `json(report)`, `harmon once`) вся выборка и есть
+то новое, что видит потребитель. Тест `treatsEveryAlertAsNewWhenTheCallerDoesNotSayOtherwise`
+фиксирует это.
 
 ### Task 5: Пометить системный канал как best-effort и починить учёт успеха
 

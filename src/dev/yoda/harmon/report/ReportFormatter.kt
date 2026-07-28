@@ -1,5 +1,6 @@
 package dev.yoda.harmon.report
 
+import dev.yoda.harmon.model.Alert
 import dev.yoda.harmon.model.ApplicationUsage
 import dev.yoda.harmon.model.MonitoringReport
 import dev.yoda.harmon.model.NotificationPayload
@@ -193,23 +194,32 @@ object ReportFormatter {
         )
     }.trimEnd()
 
-    fun notification(report: MonitoringReport): NotificationPayload {
-        val alerts = report.alerts
+    /**
+     * The push itself carries only [highlighted] — the alerts that crossed their threshold on
+     * this sample — while the attached HTML and JSON carry the whole [report], so the reader
+     * still sees the full picture. [reportText] is accepted already rendered to avoid a second
+     * pass over the same report.
+     */
+    fun notification(
+        report: MonitoringReport,
+        highlighted: List<Alert> = report.alerts,
+        reportText: String = text(report),
+    ): NotificationPayload {
         val title = when {
-            alerts.any { it.severity == Severity.CRITICAL } -> "Harmon: critical alert"
-            alerts.isNotEmpty() -> "Harmon: system warning"
+            highlighted.any { it.severity == Severity.CRITICAL } -> "Harmon: critical alert"
+            highlighted.isNotEmpty() -> "Harmon: system warning"
             else -> "Harmon: system sample"
         }
-        val subtitle = when (alerts.size) {
+        val subtitle = when (highlighted.size) {
             0 -> powerText(report.usage.power)
-            1 -> alerts.single().title
-            else -> "${alerts.size} alerts"
+            1 -> highlighted.single().title
+            else -> "${highlighted.size} alerts"
         }
-        val message = if (alerts.isEmpty()) {
+        val message = if (highlighted.isEmpty()) {
             "Swap ${Format.bytes(report.usage.swap.usedBytes)}; " +
                 "top CPU ${topCpuSummary(report)}"
         } else {
-            alerts.joinToString(separator = "\n") { it.message }.take(MAX_NOTIFICATION_TEXT)
+            highlighted.joinToString(separator = "\n") { it.message }.take(MAX_NOTIFICATION_TEXT)
         }
 
         return NotificationPayload(
@@ -220,13 +230,16 @@ object ReportFormatter {
             html = ReportHtml.document(
                 title = title,
                 subtitle = subtitle,
-                reportText = text(report),
+                reportText = reportText,
             ),
-            json = json(report),
+            json = json(report, highlighted.map { it.key }),
         )
     }
 
-    fun json(report: MonitoringReport): String = ReportJson.encode(report)
+    fun json(
+        report: MonitoringReport,
+        newAlertKeys: List<String> = report.alerts.map { it.key },
+    ): String = ReportJson.encode(report, newAlertKeys)
 
     fun testPayload(): NotificationPayload = NotificationPayload(
         identifier = "harmon-notification-test",

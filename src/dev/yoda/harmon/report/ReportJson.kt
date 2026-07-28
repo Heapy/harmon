@@ -15,8 +15,14 @@ object ReportJson {
         explicitNulls = true
     }
 
-    fun encode(report: MonitoringReport): String =
-        json.encodeToString(report.toDto())
+    /**
+     * [newAlertKeys] tells the consumer which of the reported alerts crossed their threshold on
+     * this sample; `alerts` stays the complete list.
+     */
+    fun encode(
+        report: MonitoringReport,
+        newAlertKeys: List<String> = report.alerts.map { it.key },
+    ): String = json.encodeToString(report.toDto(newAlertKeys))
 
     fun testEvent(): String =
         json.encodeToString(
@@ -33,7 +39,7 @@ object ReportJson {
             ),
         )
 
-    private fun MonitoringReport.toDto(): ReportEventDto {
+    private fun MonitoringReport.toDto(newAlertKeys: List<String>): ReportEventDto {
         val usage = usage
         return ReportEventDto(
             capturedAt = usage.capturedAt.toString(),
@@ -171,6 +177,7 @@ object ReportJson {
                     .map { it.toDto() },
             ),
             alerts = alerts.map { it.toDto() },
+            newAlertKeys = newAlertKeys,
         )
     }
 
@@ -265,6 +272,7 @@ private data class ReportEventDto(
     val applications: ApplicationSetDto,
     val processes: ProcessSetDto,
     val alerts: List<AlertDto>,
+    val newAlertKeys: List<String>,
 )
 
 @Serializable

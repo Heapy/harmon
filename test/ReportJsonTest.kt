@@ -1,6 +1,7 @@
 import dev.yoda.harmon.model.MonitoringReport
 import dev.yoda.harmon.report.ReportJson
 import kotlinx.serialization.json.Json
+import kotlinx.serialization.json.jsonArray
 import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
 import kotlin.test.Test
@@ -48,6 +49,46 @@ class ReportJsonTest {
         assertTrue(virtualMemory.containsKey("swapBackedUncompressedBytes"))
         assertFalse(virtualMemory.containsKey("swappedBytes"))
         assertFalse("/Applications/Private.app" in ReportJson.encode(report))
+    }
+
+    @Test
+    fun reportsEveryAlertAlongsideTheKeysThatAreNewOnThisSample() {
+        val report = MonitoringReport(
+            usage = systemUsage(processes = listOf(processUsage())),
+            alerts = List(5) { index -> alert(key = "alert-$index") },
+            topProcessCount = 5,
+        )
+
+        val payload = Json
+            .parseToJsonElement(ReportJson.encode(report, listOf("alert-0")))
+            .jsonObject
+
+        assertEquals(
+            List(5) { index -> "alert-$index" },
+            payload.getValue("alerts").jsonArray.map {
+                it.jsonObject.getValue("key").jsonPrimitive.content
+            },
+        )
+        assertEquals(
+            listOf("alert-0"),
+            payload.getValue("newAlertKeys").jsonArray.map { it.jsonPrimitive.content },
+        )
+    }
+
+    @Test
+    fun treatsEveryAlertAsNewWhenTheCallerDoesNotSayOtherwise() {
+        val report = MonitoringReport(
+            usage = systemUsage(processes = listOf(processUsage())),
+            alerts = listOf(alert(key = "swap")),
+            topProcessCount = 5,
+        )
+
+        val payload = Json.parseToJsonElement(ReportJson.encode(report)).jsonObject
+
+        assertEquals(
+            listOf("swap"),
+            payload.getValue("newAlertKeys").jsonArray.map { it.jsonPrimitive.content },
+        )
     }
 
     @Test
