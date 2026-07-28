@@ -432,14 +432,29 @@ the build like an error»), которое задача 15 должна попр
 Закрывает регрессию `be88557`: `EINVAL` — конец адресного пространства, `ESRCH` — процесс исчез.
 
 **Files:**
-- Create: `test/native/kernel_test.c`
+- Modify: `test/native/kernel_test.c` (заглушка суиты создана досрочно в задаче 4)
+- ➕ Modify: `test/NativeCTest.kt` (список `C_HARNESS_CHECKS`)
 
-- [ ] `attribution.self-walk-completes`: обход `getpid()` с `HM_ATTRIBUTION_REGION_LIMIT` возвращает 0 (полный) и ненулевое число регионов
-- [ ] `attribution.dead-pid-not-measured`: обход заведомо несуществующего pid возвращает -1 с `ESRCH`
-- [ ] `attribution.region-limit-undercount`: обход с `region_limit = 1` возвращает 1 (недоучёт), а не 0
-- [ ] `attribution.rejects-invalid-arguments`: `region_limit = 0` и `NULL`-выходы дают -1 с `EINVAL`
-- [ ] `attribution.consumed-is-reported`: счётчик израсходованных вызовов положителен и не превышает лимит
-- [ ] прогнать `./kotlin test`
+- [x] `attribution.self-walk-completes`: обход `getpid()` с `HM_ATTRIBUTION_REGION_LIMIT` возвращает 0 (полный) и ненулевое число регионов
+- [x] `attribution.dead-pid-not-measured`: обход заведомо несуществующего pid возвращает -1 с `ESRCH`
+- [x] `attribution.region-limit-undercount`: обход с `region_limit = 1` возвращает 1 (недоучёт), а не 0
+- [x] `attribution.rejects-invalid-arguments`: `region_limit = 0` и `NULL`-выходы дают -1 с `EINVAL`
+- [x] `attribution.consumed-is-reported`: счётчик израсходованных вызовов положителен и не превышает лимит
+- [x] прогнать `./kotlin test`
+
+✅ **`ESRCH` подтверждён эмпирически.** Заведомо несуществующий pid берётся не константой, а
+`fork()` → `_exit(0)` → `waitpid()`: pid пожатого потомка гарантированно не резолвится, тогда как
+любая большая константа была бы догадкой о том, что сейчас крутится на машине. `proc_pidinfo`
+по такому pid действительно ставит `ESRCH`, что и есть отличие «процесс исчез» от «регионы
+кончились» (`EINVAL`) — то самое, что чинил `be88557`.
+
+ℹ️ **Проверок пять, вызовов моста — три.** `attribution.self-walk-completes` и
+`attribution.consumed-is-reported` разбирают один и тот же полный обход: второй ассерт добавляет
+инвариант `regions <= consumed <= HM_ATTRIBUTION_REGION_LIMIT` (завершающий вызов считается, а
+регионом не становится). Сверх плана в `rejects-invalid-arguments` добавлен отрицательный
+`region_limit` и разделены три `NULL`-выхода — деталь провала называет, какой именно аргумент
+приняли. `region-limit-undercount` дополнительно требует `consumed == 1`: недоучёт по бюджету
+обязан стоить ровно один вызов, иначе бюджет утекает.
 
 ### Task 8: C-тесты снимков машинного состояния
 

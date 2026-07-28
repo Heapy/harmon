@@ -32,6 +32,11 @@ private val C_HARNESS_CHECKS = setOf(
     "pure.mach-time-matches-timebase",
     "pure.mach-time-converts-zero",
     "pure.discard-http-response-consumes-everything",
+    "attribution.self-walk-completes",
+    "attribution.consumed-is-reported",
+    "attribution.dead-pid-not-measured",
+    "attribution.region-limit-undercount",
+    "attribution.rejects-invalid-arguments",
 )
 
 class NativeCTest {
