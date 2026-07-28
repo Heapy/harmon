@@ -630,15 +630,45 @@ unix-сокету завершается, как только соединени
 - Modify: `project.yaml`
 - Modify: `test/NativeHarness.kt`
 
-- [ ] ⚠️ развилка: перед реализацией потратить до 15 минут на проверку `commands:` / `./kotlin do` с зависимостью от задачи линковки `selftest`. Если сработает — сторож протухания не нужен, протухание становится структурно невозможным, и часть пунктов ниже отпадает. Зафиксировать результат здесь же
-- [ ] создать `selftest/module.yaml`: `macos/app`, `dependencies: [../nativebridge]`, `apply: [../harmon.module-template.yaml]`; добавить `./selftest` в `project.yaml`
-- [ ] проверить `./kotlin show settings` для `nativebridge` и `selftest` — `allWarningsAsErrors: true` действительно применился
-- [ ] в `main.kt` реализовать гарнесс: счётчик провалов, `check(name, condition, detail)`, код возврата, префикс-фильтр, флаг `--self-check`
-- [ ] в `NativeHarness.kt` добавить сторожа протухания: отсутствие бинарника → падение с абсолютным путём и текстом «сначала `./kotlin build`»; mtime бинарника старше максимума по `selftest/src/**` и C-источнику → падение; поддержать `HARMON_SELFTEST_BIN`
-- [ ] в `SelftestBridgeTest.kt` запустить `selftest.kexe` через ту же машинерию, что и C-тесты
-- [ ] написать юнит-тесты сторожа: несуществующий бинарник (ожидается падение, а не скип), бинарник старше исходников
-- [ ] развести конфликт с правилом пустого вывода: несуществующий префикс-фильтр даёт `ok harness.no-checks-selected`, а не пустой вывод
-- [ ] прогнать `./kotlin build && ./kotlin test`
+- [x] ⚠️ развилка: перед реализацией потратить до 15 минут на проверку `commands:` / `./kotlin do` с зависимостью от задачи линковки `selftest`. Если сработает — сторож протухания не нужен, протухание становится структурно невозможным, и часть пунктов ниже отпадает. Зафиксировать результат здесь же
+- [x] создать `selftest/module.yaml`: `macos/app`, `dependencies: [../nativebridge]`, `apply: [../harmon.module-template.yaml]`; добавить `./selftest` в `project.yaml`
+- [x] проверить `./kotlin show settings` для `nativebridge` и `selftest` — `allWarningsAsErrors: true` действительно применился
+- [x] в `main.kt` реализовать гарнесс: счётчик провалов, `check(name, condition, detail)`, код возврата, префикс-фильтр, флаг `--self-check`
+- [x] в `NativeHarness.kt` добавить сторожа протухания: отсутствие бинарника → падение с абсолютным путём и текстом «сначала `./kotlin build`»; mtime бинарника старше максимума по `selftest/src/**` и C-источнику → падение; поддержать `HARMON_SELFTEST_BIN`
+- [x] в `SelftestBridgeTest.kt` запустить `selftest.kexe` через ту же машинерию, что и C-тесты
+- [x] написать юнит-тесты сторожа: несуществующий бинарник (ожидается падение, а не скип), бинарник старше исходников
+- [x] развести конфликт с правилом пустого вывода: несуществующий префикс-фильтр даёт `ok harness.no-checks-selected`, а не пустой вывод
+- [x] прогнать `./kotlin build && ./kotlin test`
+
+❌ **Развилка `commands:` закрыта в пользу сторожа.** Ключ `commands:` в `module.yaml` не
+существует вовсе — `./kotlin show commands` на пробном блоке даёт
+`Unknown property 'commands'`, модель проекта не читается. Custom commands регистрируются только в
+`plugin.yaml` отдельного модуля `jvm/amper-plugin`, а зависимости задач там **выводятся из
+совпадения путей входов и выходов**, ручного синтаксиса зависимостей нет. Даже собранная такая
+команда запускалась бы как `./kotlin do <name>`, то есть мимо `./kotlin test`, — протухание
+осталось бы возможным ровно в том же виде. Проба откачена, `module.yaml` не изменён.
+
+✅ **`./kotlin test` действительно не линкует `selftest`** — подтверждено графом задач:
+`:selftest:testMacosArm64Debug -> :selftest:linkMacosArm64TestDebug`, и ни один тестовый таргет не
+зависит от `:selftest:linkMacosArm64Debug`. Сторож несущий, как и записано в Technical Details.
+
+⚠️ **`enumeratorAtPath` не различает файл и пустой каталог — поймано юнит-тестом.** Документация
+обещает `nil` для не-каталога; фактически возвращается энумератор, не выдающий ни одной записи.
+Первая редакция сторожа опиралась на это `nil` и поэтому **молча игнорировала**
+`nativebridge/cinterop/harmon_native.def` — единственный источник-файл. Тип узла теперь
+определяется по `NSFileType`, а не по результату перечисления; ручная проверка `touch` по `.def`
+роняет `SelftestBridgeTest`, как и `touch` по `selftest/src/main.kt`.
+
+ℹ️ **Одна проверка в `selftest` на этом шаге** — `binding.bridge-is-linked` через
+`hm_saturating_add_u64`, дымоход по образцу задачи 4: она доказывает, что cinterop-klib
+слинкован в модуль, то есть что весь обход KTC-5573 работает. Проверки привязки добавляет
+задача 13. Каталог сторожа — `HarnessSource` + `newestSource` в `NativeHarness.kt`, вызов —
+`assertHarnessIsCurrent(tool, SELFTEST_SOURCES)` перед каждым запуском бинарника.
+
+ℹ️ **Сторож проверен вручную во всех трёх формах:** удалённый бинарник, `touch` по
+`selftest/src/main.kt`, `touch` по `.def` — каждый раз падают все три теста
+`SelftestBridgeTest` с абсолютным путём и текстом «run `./kotlin build`»; переопределение
+`HARMON_SELFTEST_BIN=/tmp/no-such-selftest.kexe` попадает в текст ошибки.
 
 ### Task 13: Проверки привязки cinterop в selftest
 

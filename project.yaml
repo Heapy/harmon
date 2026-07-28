@@ -2,3 +2,4 @@
 # listed here.
 modules:
   - ./nativebridge
+  - ./selftest

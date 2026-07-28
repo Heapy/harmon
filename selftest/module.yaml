@@ -1,0 +1,19 @@
+# The Kotlin side of the native harness.
+#
+# KTC-5573 keeps the cinterop klib out of any test compilation, so the only way
+# to call the bridge from Kotlin under assertions is a separate application that
+# depends on `nativebridge` through an ordinary main compilation. It exists to
+# check the binding — struct layout and type mapping — and nothing that plain C
+# can check on its own; those checks live in `test/native` instead.
+#
+# `./kotlin test` does not link this binary, so `test/SelftestBridgeTest.kt`
+# guards it against going stale.
+
+product:
+  type: macos/app
+  platforms: [macosArm64]
+
+apply: [../harmon.module-template.yaml]
+
+dependencies:
+  - ../nativebridge

@@ -1,10 +1,31 @@
+import kotlinx.cinterop.ByteVar
+import kotlinx.cinterop.ExperimentalForeignApi
+import kotlinx.cinterop.allocArray
+import kotlinx.cinterop.memScoped
+import kotlinx.cinterop.set
+import kotlinx.cinterop.toKString
+import platform.Foundation.NSFileManager
+import platform.posix.fclose
+import platform.posix.fopen
+import platform.posix.fputs
+import platform.posix.mkdtemp
+import platform.posix.usleep
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFailsWith
 import kotlin.test.assertNull
 import kotlin.test.assertTrue
+import kotlin.test.fail
 
 private const val MISSING_HARNESS = "scripts/no-such-harness.sh"
+
+/**
+ * Enough of a gap for two files created in a row to carry distinguishable timestamps.
+ *
+ * The guard compares sub-second times, so this is generous rather than necessary; it costs the
+ * three guard tests a twentieth of a second between them and removes the question entirely.
+ */
+private const val TIMESTAMP_GAP_MICROSECONDS = 20_000u
 
 private fun harnessRun(
     lines: List<String>,
@@ -22,6 +43,54 @@ private fun harnessRun(
     exitCode = exitCode,
     signal = signal,
 )
+
+private fun toolAt(path: String): NativeTool = NativeTool(
+    label = "the selftest binary",
+    environmentKey = "HARMON_SELFTEST_BIN",
+    relativePath = path,
+    override = null,
+)
+
+/**
+ * A scratch directory under `/tmp` rather than `TMPDIR`, matching the C socket suite: the per-user
+ * `TMPDIR` on macOS is long enough to matter and nothing here needs it.
+ */
+@OptIn(ExperimentalForeignApi::class)
+private fun temporaryDirectory(): String = memScoped {
+    val template = "/tmp/harmon-guard-test.XXXXXX"
+    val buffer = allocArray<ByteVar>(template.length + 1)
+    template.encodeToByteArray().forEachIndexed { index, byte -> buffer[index] = byte }
+    buffer[template.length] = 0
+    mkdtemp(buffer)?.toKString() ?: fail("cannot create a temporary directory")
+}
+
+@OptIn(ExperimentalForeignApi::class)
+private fun writeFile(path: String) {
+    val file = fopen(path, "w") ?: fail("cannot create $path")
+    fputs("harmon\n", file)
+    fclose(file)
+}
+
+@OptIn(ExperimentalForeignApi::class)
+private fun createDirectory(path: String) {
+    NSFileManager.defaultManager.createDirectoryAtPath(
+        path = path,
+        withIntermediateDirectories = true,
+        attributes = null,
+        error = null,
+    )
+}
+
+/** Runs [body] against a scratch directory that is removed whatever the outcome. */
+@OptIn(ExperimentalForeignApi::class)
+private fun withTemporaryDirectory(body: (String) -> Unit) {
+    val root = temporaryDirectory()
+    try {
+        body(root)
+    } finally {
+        NSFileManager.defaultManager.removeItemAtPath(root, null)
+    }
+}
 
 class NativeHarnessTest {
     @Test
@@ -250,6 +319,95 @@ class NativeHarnessTest {
         assertTrue(
             failure.message.orEmpty().contains("HARMON_NATIVE_TEST_SCRIPT"),
             "the override key must be in the message, got: ${failure.message}",
+        )
+    }
+
+    /**
+     * `./kotlin test` does not link the selftest binary, so its absence means `./kotlin build` has
+     * not run — and that has to be a failure with instructions, never a skip.
+     */
+    @Test
+    fun failsWhenTheHarnessBinaryWasNeverBuilt() {
+        val tool = toolAt("build/tasks/_selftest_linkMacosArm64Debug/no-such-selftest.kexe")
+
+        val failure = assertFailsWith<AssertionError> {
+            assertHarnessIsCurrent(tool, SELFTEST_SOURCES)
+        }
+
+        assertTrue(
+            failure.message.orEmpty().contains("./kotlin build"),
+            "the message must say how to fix it, got: ${failure.message}",
+        )
+        assertTrue(
+            failure.message.orEmpty().contains(tool.path),
+            "the absolute resolved path must be in the message, got: ${failure.message}",
+        )
+    }
+
+    /**
+     * The binary is only as good as the sources it was linked from, and nothing in `./kotlin test`
+     * relinks it. An edit that was never built must fail rather than be measured by yesterday's
+     * binary.
+     */
+    @Test
+    fun failsWhenTheBinaryIsOlderThanItsSources() = withTemporaryDirectory { root ->
+        val binary = "$root/selftest.kexe"
+        writeFile(binary)
+        usleep(TIMESTAMP_GAP_MICROSECONDS)
+        createDirectory("$root/src")
+        writeFile("$root/src/main.kt")
+
+        val failure = assertFailsWith<AssertionError> {
+            assertHarnessIsCurrent(toolAt(binary), listOf("$root/src"))
+        }
+
+        assertTrue(
+            failure.message.orEmpty().contains("main.kt"),
+            "the message must name the source that moved ahead, got: ${failure.message}",
+        )
+    }
+
+    /**
+     * The tree is walked, not stat'ed at the top: a directory's own timestamp does not move when
+     * the contents of a file inside it change, so an edit nested one level down would otherwise
+     * pass unnoticed.
+     */
+    @Test
+    fun noticesAnEditNestedInTheSourceTree() = withTemporaryDirectory { root ->
+        createDirectory("$root/src/binding")
+        writeFile("$root/src/main.kt")
+        val binary = "$root/selftest.kexe"
+        writeFile(binary)
+        usleep(TIMESTAMP_GAP_MICROSECONDS)
+        writeFile("$root/src/binding/checks.kt")
+
+        val failure = assertFailsWith<AssertionError> {
+            assertHarnessIsCurrent(toolAt(binary), listOf("$root/src"))
+        }
+
+        assertTrue(
+            failure.message.orEmpty().contains("binding"),
+            "the message must name the nested source, got: ${failure.message}",
+        )
+    }
+
+    @Test
+    fun acceptsABinaryNewerThanEverySource() = withTemporaryDirectory { root ->
+        createDirectory("$root/src/binding")
+        writeFile("$root/src/main.kt")
+        writeFile("$root/src/binding/checks.kt")
+        val definition = "$root/harmon_native.def"
+        writeFile(definition)
+        usleep(TIMESTAMP_GAP_MICROSECONDS)
+        val binary = "$root/selftest.kexe"
+        writeFile(binary)
+
+        assertHarnessIsCurrent(toolAt(binary), listOf("$root/src", definition))
+
+        assertEquals(
+            definition,
+            newestSource(definition)?.path,
+            "a source that is a plain file must be read directly, not enumerated",
         )
     }
 }

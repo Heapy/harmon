@@ -4,6 +4,12 @@ import kotlinx.cinterop.allocArray
 import kotlinx.cinterop.convert
 import kotlinx.cinterop.memScoped
 import kotlinx.cinterop.toKString
+import platform.Foundation.NSDate
+import platform.Foundation.NSFileManager
+import platform.Foundation.NSFileModificationDate
+import platform.Foundation.NSFileType
+import platform.Foundation.NSFileTypeDirectory
+import platform.Foundation.timeIntervalSince1970
 import platform.posix.PATH_MAX
 import platform.posix.X_OK
 import platform.posix.access
@@ -116,6 +122,100 @@ fun cTestHarness(): NativeTool = NativeTool(
     environmentKey = "HARMON_NATIVE_TEST_SCRIPT",
     relativePath = "scripts/test-native.sh",
 )
+
+/**
+ * The `selftest` binary, which only `./kotlin build` produces.
+ *
+ * The path is tied to the debug variant deliberately: after `./kotlin build --variant release`
+ * the debug binary stays where it was, and the staleness guard is what notices.
+ */
+fun selftestHarness(): NativeTool = NativeTool(
+    label = "the selftest binary",
+    environmentKey = "HARMON_SELFTEST_BIN",
+    relativePath = "build/tasks/_selftest_linkMacosArm64Debug/selftest.kexe",
+)
+
+/** Everything the selftest binary is built from: its own sources and the bridge it links. */
+val SELFTEST_SOURCES: List<String> = listOf(
+    "selftest/src",
+    "nativebridge/cinterop/harmon_native.def",
+)
+
+/** A file a harness is built from, and when it last changed. */
+data class HarnessSource(val path: String, val modifiedAt: Double)
+
+/**
+ * When [path] last changed, or `null` when it does not exist.
+ *
+ * Seconds since the epoch as a `Double`, because `NSDate` keeps the sub-second part of the file
+ * system timestamp — which is the only thing separating a binary from a source edited moments
+ * before it.
+ */
+@OptIn(ExperimentalForeignApi::class)
+fun modificationTime(path: String): Double? =
+    (
+        NSFileManager.defaultManager.attributesOfItemAtPath(path, null)
+            ?.get(NSFileModificationDate) as? NSDate
+        )?.timeIntervalSince1970
+
+/**
+ * Whether [path] is a directory, and therefore something to walk rather than to read directly.
+ *
+ * `enumeratorAtPath` cannot answer this: handed a plain file it returns an enumerator that yields
+ * nothing at all, which is indistinguishable from an empty directory and would drop the `.def`
+ * from the guard entirely.
+ */
+@OptIn(ExperimentalForeignApi::class)
+private fun isDirectory(path: String): Boolean =
+    NSFileManager.defaultManager.attributesOfItemAtPath(path, null)
+        ?.get(NSFileType) == NSFileTypeDirectory
+
+/**
+ * The most recently changed file at [root], which may be a single file or a directory tree.
+ *
+ * Directories are walked rather than stat'ed: the modification time of a directory does not move
+ * when the contents of a file inside it change, so looking at the directory alone would miss an
+ * ordinary edit — the very case this guard exists for.
+ */
+@OptIn(ExperimentalForeignApi::class)
+fun newestSource(root: String): HarnessSource? {
+    if (!isDirectory(root)) {
+        return modificationTime(root)?.let { HarnessSource(root, it) }
+    }
+    val enumerator = NSFileManager.defaultManager.enumeratorAtPath(root) ?: return null
+
+    val entries = mutableListOf<HarnessSource>()
+    while (true) {
+        val entry = enumerator.nextObject() as? String ?: break
+        val path = "$root/$entry"
+        modificationTime(path)?.let { entries += HarnessSource(path, it) }
+    }
+    return entries.maxByOrNull { it.modifiedAt }
+}
+
+/**
+ * Fails unless [tool] exists and is newer than every file under [sources].
+ *
+ * `./kotlin test` links the test binary and nothing else, so an external harness is whatever the
+ * last `./kotlin build` happened to leave behind: possibly nothing, possibly a binary from before
+ * the change under test. Both have to fail rather than skip — a silent skip is exactly how this
+ * coverage would rot away without a single line turning red.
+ */
+fun assertHarnessIsCurrent(tool: NativeTool, sources: List<String>) {
+    val built = modificationTime(tool.path)
+        ?: fail("${tool.label} has not been built; run `./kotlin build` first: ${tool.location()}")
+
+    val roots = sources.map(::absolutePath)
+    val newest = roots.mapNotNull(::newestSource).maxByOrNull { it.modifiedAt }
+        ?: fail("none of the sources of ${tool.label} exist: $roots; ${tool.location()}")
+
+    if (built < newest.modifiedAt) {
+        fail(
+            "${tool.label} is older than ${newest.path}; run `./kotlin build` again: " +
+                tool.location(),
+        )
+    }
+}
 
 /** What a run produced: its lines, the checks parsed out of them, and how the process ended. */
 class NativeHarnessRun(
