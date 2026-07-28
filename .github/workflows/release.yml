@@ -1,0 +1,75 @@
+name: Release
+
+on:
+  push:
+    tags: ['v*']
+
+# On a v* tag: build the optimized macosArm64 binary and publish it as a GitHub
+# Release asset. The tarball carries `harmon` next to the launchd templates, the
+# Harmon.app resources, and the example config, because an installer that did
+# not build from source still needs all four to bootstrap the two services. Only
+# arm64 is produced: module.yaml declares `platforms: [macosArm64]`.
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: macos-14
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Cache the Kotlin toolchain
+        uses: actions/cache@v6
+        with:
+          # The wrapper puts the CLI distribution under Library/Caches on macOS,
+          # and the Kotlin/Native compiler pulls its own prebuilt into ~/.konan.
+          path: |
+            ~/Library/Caches/JetBrains/Kotlin/cli
+            ~/.konan
+            ~/.kotlin
+            .kotlin
+          key: kotlin-toolchain-${{ runner.os }}-${{ hashFiles('kotlin', 'module.yaml') }}
+          restore-keys: kotlin-toolchain-${{ runner.os }}-
+
+      - name: Build release binary
+        run: ./kotlin build --variant release
+
+      - name: Package
+        id: package
+        run: |
+          set -euo pipefail
+          version="${GITHUB_REF_NAME#v}"
+          binary="build/tasks/_harmon_linkMacosArm64Release/harmon.kexe"
+
+          # The version string lives in src/dev/yoda/harmon/cli/Cli.kt, not in the
+          # build, so a tag can disagree with what the published binary reports.
+          # Asking the binary itself catches that before the release is created.
+          reported="$("$binary" --version)"
+          if [ "$reported" != "harmon $version" ]; then
+            echo "Tag $GITHUB_REF_NAME expects 'harmon $version', binary reports '$reported'." >&2
+            exit 1
+          fi
+
+          stage="harmon-${version}-macos-arm64"
+          mkdir -p "$stage/launchd" "$stage/config"
+          cp "$binary" "$stage/harmon"
+          chmod +x "$stage/harmon"
+          cp launchd/dev.yoda.harmon.agent.plist.template \
+             launchd/dev.yoda.harmon.collector.plist.template \
+             launchd/Harmon.Info.plist \
+             launchd/Harmon.icns \
+             "$stage/launchd/"
+          cp config/harmon.conf.example "$stage/config/"
+          cp README.md LICENSE "$stage/"
+          # scripts/install.sh is deliberately left out: it rebuilds from source
+          # through ./kotlin, which a downloaded tarball has no checkout for.
+          tar -czf "${stage}.tar.gz" "$stage"
+          shasum -a 256 "${stage}.tar.gz" | tee "${stage}.tar.gz.sha256"
+          echo "tarball=${stage}.tar.gz" >> "$GITHUB_OUTPUT"
+
+      - name: Publish release
+        uses: softprops/action-gh-release@v3
+        with:
+          files: |
+            ${{ steps.package.outputs.tarball }}
+            ${{ steps.package.outputs.tarball }}.sha256

@@ -1,0 +1,12 @@
+version: 2
+updates:
+  # The Kotlin Toolchain version is pinned inside the ./kotlin wrapper, not in a
+  # version catalog, so there is no Gradle ecosystem to track here.
+  - package-ecosystem: "github-actions"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+    groups:
+      all:
+        patterns:
+          - "*"
