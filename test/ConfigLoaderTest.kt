@@ -1,6 +1,7 @@
 import dev.yoda.harmon.config.ConfigException
 import dev.yoda.harmon.config.ConfigLoader
 import kotlin.test.Test
+import kotlin.test.assertContains
 import kotlin.test.assertEquals
 import kotlin.test.assertFailsWith
 import kotlin.test.assertNull
@@ -47,6 +48,25 @@ class ConfigLoaderTest {
         assertEquals("https://new.example/events", config.notifications.webhookUrl)
         assertEquals("env-token", config.notifications.telegramBotToken)
         assertEquals("env-chat", config.notifications.telegramChatId)
+    }
+
+    @Test
+    fun acceptsAndReportsTheRetiredCooldownKey() {
+        val warnings = mutableListOf<String>()
+
+        val config = ConfigLoader.parse(
+            lines = sequenceOf(
+                "alertCooldownSeconds=1800",
+                "intervalSeconds=60",
+            ),
+            environment = emptyMap(),
+            warn = { warnings += it },
+        )
+
+        assertEquals(60, config.intervalSeconds)
+        assertEquals(1, warnings.size)
+        assertContains(warnings.single(), "alertCooldownSeconds")
+        assertContains(warnings.single(), "line 1")
     }
 
     @Test

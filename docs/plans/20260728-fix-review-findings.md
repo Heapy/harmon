@@ -442,27 +442,42 @@ fun decisiveSuccess(results: List<DeliveryResult>): Boolean {
 - Modify: `docs/collection.md`
 - Modify: `README.md`
 
-- [ ] написать тест: два вызова `handleSample` с одним и тем же алертом дают одну доставку
-- [ ] написать тест: при `decisiveSuccess == false` алерт доставляется повторно на следующем сэмпле
-- [ ] написать тест: алерт погас на сэмпле без доставок и загорелся снова → приходит пуш
+- [x] написать тест: два вызова `handleSample` с одним и тем же алертом дают одну доставку
+- [x] написать тест: при `decisiveSuccess == false` алерт доставляется повторно на следующем сэмпле
+- [x] написать тест: алерт погас на сэмпле без доставок и загорелся снова → приходит пуш
       (проверяет безусловный `commit`)
-- [ ] написать тест: `notifyEverySample = true` шлёт каждый сэмпл и передаёт в пуш все алерты
-- [ ] написать тест: пустой диспетчер не блокирует обновление состояния
-- [ ] написать тест: конфиг со строкой `alertCooldownSeconds=1800` парсится, значение игнорируется,
+- [x] написать тест: `notifyEverySample = true` шлёт каждый сэмпл и передаёт в пуш все алерты
+- [x] написать тест: пустой диспетчер не блокирует обновление состояния
+- [x] написать тест: конфиг со строкой `alertCooldownSeconds=1800` парсится, значение игнорируется,
       предупреждение уходит в инъектированный `warn`
-- [ ] вынести тело итерации в `internal fun handleSample(previous, current)`, `runForever` свести
-      к сну + `capture` + вызову `handleSample`
-- [ ] заменить `AlertCooldown` на `AlertState`, передавать `state.activeKeys` в `analyzer.analyze`
-- [ ] переписать `deliverIfNeeded`: `newlyActive` → доставка → `commit(alerts, deliveredKeys)`,
+- [x] вынести тело итерации в `internal fun handleSample(previous, current)`, `runForever` свести
+      к сну + `capture` + вызову `handleSample` (публичная — см. ⚠️ задачи 1)
+- [x] заменить `AlertCooldown` на `AlertState`, передавать `state.activeKeys` в `analyzer.analyze`
+- [x] переписать `deliverIfNeeded`: `newlyActive` → доставка → `commit(alerts, deliveredKeys)`,
       причём `commit` вызывается на каждом сэмпле, включая ранние выходы
-- [ ] передавать в `ReportFormatter.notification` `highlighted` и уже отрендеренный текст
-- [ ] удалить `AlertCooldown.kt`
-- [ ] удалить `alertCooldownSeconds` из `HarmonConfig`, `redactedDescription`, парсинга и `validate`
-- [ ] удалить осиротевшую `nonNegativeLong` из `Config.kt` (иначе unused private → ошибка при `allWarningsAsErrors`)
-- [ ] добавить `deprecatedKeys = setOf("alertCooldownSeconds")` и параметр `warn: (String) -> Unit = ::printError`
-- [ ] убрать ключ из `config/harmon.conf.example`, обновить `docs/collection.md:347`
+- [x] передавать в `ReportFormatter.notification` `highlighted` и уже отрендеренный текст
+- [x] удалить `AlertCooldown.kt`
+- [x] удалить `alertCooldownSeconds` из `HarmonConfig`, `redactedDescription`, парсинга и `validate`
+- [x] удалить осиротевшую `nonNegativeLong` из `Config.kt` (иначе unused private → ошибка при `allWarningsAsErrors`)
+- [x] добавить `deprecatedKeys = setOf("alertCooldownSeconds")` и параметр `warn: (String) -> Unit = ::printError`
+- [x] убрать ключ из `config/harmon.conf.example`, обновить `docs/collection.md:347`
       и упоминания кулдауна в `README.md:46,259`
-- [ ] запустить `./kotlin test` — должно пройти до перехода к задаче 7
+- [x] запустить `./kotlin test` — должно пройти до перехода к задаче 7
+
+➕ `deprecatedKeys` — мапа `ключ → причина`, а не `setOf`: предупреждение объясняет, почему ключ
+больше не нужен («alerts now fire when a threshold is crossed»), иначе пользователю непонятно,
+чем его заменить. Стоимость — одна строка.
+
+➕ Пустой диспетчер не даёт наблюдаемой доставки, поэтому тест
+`anEmptyDispatcherDoesNotBlockTheStateUpdate` наблюдает обновление состояния через гистерезис:
+второй сэмпл (1950 MiB при пороге 2048) остаётся алертящим только потому, что первый закоммитил
+ключ в `firing`. Парный контрольный тест
+`aFootprintBelowTheThresholdAlertsOnlyBecauseOfTheCommittedState` показывает, что тот же сэмпл
+в одиночку алерта не даёт — без него первый тест прошёл бы вхолостую.
+
+➕ В `README.md` добавлен абзац рядом с описанием legacy-алиасов: `alertCooldownSeconds`
+принимается, игнорируется и репортится в stderr. Без него из README не следует, что старый
+конфиг не сломает старт агента.
 
 ### Task 7: Создавать NotificationDispatcher лениво
 

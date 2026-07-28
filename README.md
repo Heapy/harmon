@@ -43,7 +43,7 @@ boundary.
 - automatic `.app` grouping, including Firefox, Chromium, Electron, and other
   multi-process applications, with Ghostty and agterm treated as terminal
   boundaries rather than owners of every command they launch;
-- alert cooldowns and thresholds for CPU, memory, physical storage writes, swap
+- alerts on crossing a threshold for CPU, memory, physical storage writes, swap
   usage, swap-out traffic, likely battery impact, and low battery.
 
 All local IPC and outbound JSON is encoded with `kotlinx.serialization`.
@@ -181,6 +181,9 @@ notifyEverySample=false
 A threshold of `0` disables that rule. The old
 `processCpuAlertPercent`, `processMemoryAlertMiB`, and
 `batteryImpactAlertScore` keys remain accepted as compatibility aliases.
+`alertCooldownSeconds` no longer does anything — alerts are pushed when a
+threshold is crossed rather than on a timer — but the key is still accepted and
+reported on stderr instead of failing the config.
 
 Notification destinations can be overridden for manual runs:
 
@@ -256,7 +259,7 @@ logs:
 src/
   ipc/         versioned kotlinx.serialization protocol and Unix socket roles
   monitor/     privileged macOS collection and interval calculations
-  analysis/    application grouping, alert rules, and cooldowns
+  analysis/    application grouping, alert rules, and alert state
   config/      user-agent configuration
   report/      text, local HTML, and kotlinx.serialization JSON reporting
   notify/      Notification Center, webhook, and Telegram delivery

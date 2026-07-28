@@ -4,7 +4,6 @@ intervalSeconds=300
 onceSampleSeconds=2
 topProcessCount=8
 maxAlertsPerCategory=3
-alertCooldownSeconds=1800
 
 # A zero disables the corresponding alert.
 applicationCpuAlertPercent=150

@@ -343,8 +343,12 @@ display brightness, thermal state, or external peripherals.
 | Low battery | 20% | 10% |
 
 Zero disables a threshold. At most `maxAlertsPerCategory` applications are
-selected for each application rule. Delivered alert keys are suppressed for
-`alertCooldownSeconds`; cooldown state resets with the agent.
+selected for each application rule. A push carries only the alerts that crossed
+their threshold on this sample; while the condition holds there is no repeat,
+and a key becomes pushable again only after it stops firing. Delivery has to
+succeed for a key to count as pushed, so a failed webhook or Telegram call is
+retried on the next sample instead of being silently dropped. Alert state
+resets with the agent.
 
 `applicationMemoryAlertMiB` and `swapAlertMiB` are capped at 1,048,576 MiB
 (1 TiB); a larger value is rejected. The MiB-to-byte conversion saturates rather

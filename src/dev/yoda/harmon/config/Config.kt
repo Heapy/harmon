@@ -1,5 +1,6 @@
 package dev.yoda.harmon.config
 
+import dev.yoda.harmon.util.printError
 import kotlinx.cinterop.ByteVar
 import kotlinx.cinterop.ExperimentalForeignApi
 import kotlinx.cinterop.allocArray
@@ -38,7 +39,6 @@ data class HarmonConfig(
     val onceSampleSeconds: Long = 2,
     val topProcessCount: Int = 8,
     val maxAlertsPerCategory: Int = 3,
-    val alertCooldownSeconds: Long = 1_800,
     val thresholds: AlertThresholds = AlertThresholds(),
     val notifications: NotificationConfig = NotificationConfig(),
 ) {
@@ -48,7 +48,6 @@ data class HarmonConfig(
         appendLine("onceSampleSeconds=$onceSampleSeconds")
         appendLine("topProcessCount=$topProcessCount")
         appendLine("maxAlertsPerCategory=$maxAlertsPerCategory")
-        appendLine("alertCooldownSeconds=$alertCooldownSeconds")
         appendLine("applicationCpuAlertPercent=${thresholds.applicationCpuPercent ?: 0}")
         appendLine("applicationMemoryAlertMiB=${thresholds.applicationMemoryMiB ?: 0}")
         appendLine(
@@ -100,13 +99,21 @@ object ConfigLoader {
         "batteryImpactAlertScore" to "applicationBatteryImpactAlertScore",
     )
 
+    /**
+     * Keys that no longer do anything but must not fail an existing config file on agent start.
+     * They are reported once and dropped.
+     */
+    private val deprecatedKeys = mapOf(
+        "alertCooldownSeconds" to
+            "alerts now fire when a threshold is crossed, so repeats are not timed",
+    )
+
     private val knownKeys = setOf(
         "intervalSeconds",
         "collectorSocket",
         "onceSampleSeconds",
         "topProcessCount",
         "maxAlertsPerCategory",
-        "alertCooldownSeconds",
         "applicationCpuAlertPercent",
         "applicationMemoryAlertMiB",
         "applicationDiskWriteAlertMiBPerSecond",
@@ -133,7 +140,11 @@ object ConfigLoader {
     @OptIn(ExperimentalForeignApi::class)
     fun exists(path: String): Boolean = access(path, F_OK) == 0
 
-    fun parse(lines: Sequence<String>, environment: Map<String, String> = environment()): HarmonConfig {
+    fun parse(
+        lines: Sequence<String>,
+        environment: Map<String, String> = environment(),
+        warn: (String) -> Unit = ::printError,
+    ): HarmonConfig {
         val values = linkedMapOf<String, String>()
         lines.forEachIndexed { index, rawLine ->
             val line = rawLine.trim()
@@ -148,6 +159,12 @@ object ConfigLoader {
 
             val key = line.substring(0, separator).trim()
             val value = line.substring(separator + 1).trim()
+            deprecatedKeys[key]?.let { reason ->
+                warn(
+                    "Ignoring deprecated config key '$key' on line ${index + 1}: $reason",
+                )
+                return@forEachIndexed
+            }
             if (key !in knownKeys) {
                 throw ConfigException("Unknown config key '$key' on line ${index + 1}")
             }
@@ -189,10 +206,6 @@ object ConfigLoader {
             maxAlertsPerCategory = values.positiveInt(
                 "maxAlertsPerCategory",
                 defaults.maxAlertsPerCategory,
-            ),
-            alertCooldownSeconds = values.nonNegativeLong(
-                "alertCooldownSeconds",
-                defaults.alertCooldownSeconds,
             ),
             thresholds = AlertThresholds(
                 applicationCpuPercent = values.optionalPositiveDouble(
@@ -291,9 +304,6 @@ object ConfigLoader {
         if (config.maxAlertsPerCategory !in 1..20) {
             throw ConfigException("maxAlertsPerCategory must be between 1 and 20")
         }
-        if (config.alertCooldownSeconds > 604_800) {
-            throw ConfigException("alertCooldownSeconds must not exceed 604800")
-        }
 
         val thresholds = config.thresholds
         if ((thresholds.applicationMemoryMiB ?: 0) > MAX_THRESHOLD_MIB) {
@@ -366,12 +376,6 @@ private fun Map<String, String>.positiveLong(key: String, default: Long): Long {
     val raw = this[key] ?: return default
     return raw.toLongOrNull()?.takeIf { it > 0 }
         ?: throw ConfigException("$key must be a positive integer")
-}
-
-private fun Map<String, String>.nonNegativeLong(key: String, default: Long): Long {
-    val raw = this[key] ?: return default
-    return raw.toLongOrNull()?.takeIf { it >= 0 }
-        ?: throw ConfigException("$key must be a non-negative integer")
 }
 
 private fun Map<String, String>.positiveInt(key: String, default: Int): Int {

@@ -1,10 +1,11 @@
 package dev.yoda.harmon.runtime
 
 import dev.yoda.harmon.analysis.AlertAnalyzer
-import dev.yoda.harmon.analysis.AlertCooldown
+import dev.yoda.harmon.analysis.AlertState
 import dev.yoda.harmon.config.HarmonConfig
 import dev.yoda.harmon.ipc.CollectorClient
 import dev.yoda.harmon.model.MonitoringReport
+import dev.yoda.harmon.model.RawSystemSnapshot
 import dev.yoda.harmon.monitor.SystemCollector
 import dev.yoda.harmon.monitor.UsageCalculator
 import dev.yoda.harmon.nativebridge.hm_sleep_millis
@@ -28,7 +29,7 @@ class HarmonService(
     private val log: (String) -> Unit = ::println,
     private val logError: (String) -> Unit = ::printError,
 ) {
-    private val cooldown = AlertCooldown(config.alertCooldownSeconds)
+    private val alertState = AlertState()
 
     fun runForever(): Nothing {
         log("${Clock.System.now()} Harmon started; interval=${config.intervalSeconds}s")
@@ -46,11 +47,21 @@ class HarmonService(
                 continue
             }
 
-            val report = createReport(previous, current)
+            val sampleStart = previous
             previous = current
-            log(ReportFormatter.text(report))
-            deliverIfNeeded(report)
+            handleSample(sampleStart, current)
         }
+    }
+
+    /**
+     * One iteration of the monitoring loop, without the sleeping and capturing around it. Public
+     * so tests can drive a sequence of samples directly.
+     */
+    fun handleSample(previous: RawSystemSnapshot, current: RawSystemSnapshot) {
+        val report = createReport(previous, current)
+        val reportText = ReportFormatter.text(report)
+        log(reportText)
+        deliverIfNeeded(report, reportText)
     }
 
     fun sampleOnce(sampleSeconds: Long = config.onceSampleSeconds): MonitoringReport {
@@ -68,18 +79,18 @@ class HarmonService(
         notifications.deliver(ReportFormatter.notification(report))
 
     private fun createReport(
-        previous: dev.yoda.harmon.model.RawSystemSnapshot,
-        current: dev.yoda.harmon.model.RawSystemSnapshot,
+        previous: RawSystemSnapshot,
+        current: RawSystemSnapshot,
     ): MonitoringReport {
         val usage = calculator.calculate(previous, current)
         return MonitoringReport(
             usage = usage,
-            alerts = analyzer.analyze(usage, config),
+            alerts = analyzer.analyze(usage, config, alertState.activeKeys),
             topProcessCount = config.topProcessCount,
         )
     }
 
-    private fun captureWithRetry(): dev.yoda.harmon.model.RawSystemSnapshot {
+    private fun captureWithRetry(): RawSystemSnapshot {
         while (true) {
             try {
                 return collector.capture()
@@ -94,27 +105,38 @@ class HarmonService(
         }
     }
 
-    private fun deliverIfNeeded(report: MonitoringReport) {
-        val freshAlerts = cooldown.newAlerts(report.alerts)
-        val shouldDeliver = config.notifications.notifyEverySample || freshAlerts.isNotEmpty()
+    /**
+     * Pushes the alerts that crossed their threshold on this sample and records the outcome.
+     *
+     * The state is committed on every sample, the early returns included: a key that stopped
+     * firing has to leave the delivered set, otherwise its next appearance would be mistaken for
+     * a repeat and never pushed.
+     */
+    private fun deliverIfNeeded(report: MonitoringReport, reportText: String) {
+        val everySample = config.notifications.notifyEverySample
+        val freshAlerts = alertState.newlyActive(report.alerts)
+        val shouldDeliver = everySample || freshAlerts.isNotEmpty()
         if (!shouldDeliver || notifications.isEmpty) {
+            alertState.commit(report.alerts, emptySet())
             return
         }
 
-        val outboundReport = report.copy(
-            alerts = if (config.notifications.notifyEverySample) report.alerts else freshAlerts,
+        val highlighted = if (everySample) report.alerts else freshAlerts
+        val results = notifications.deliver(
+            ReportFormatter.notification(report, highlighted, reportText),
         )
-        val results = notifications.deliver(ReportFormatter.notification(outboundReport))
-        val anySuccess = results.any { it.successful }
         results.forEach { result ->
             val stream = if (result.successful) log else logError
             stream(
                 "${Clock.System.now()} notification ${result.channel}: ${result.detail}",
             )
         }
-        if (anySuccess) {
-            cooldown.markDelivered(freshAlerts)
+        val deliveredKeys = if (notifications.decisiveSuccess(results)) {
+            highlighted.mapTo(mutableSetOf()) { it.key }
+        } else {
+            emptySet()
         }
+        alertState.commit(report.alerts, deliveredKeys)
     }
 
     @OptIn(ExperimentalForeignApi::class)
