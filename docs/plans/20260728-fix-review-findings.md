@@ -485,15 +485,31 @@ fun decisiveSuccess(results: List<DeliveryResult>): Boolean {
 - Modify: `src/dev/yoda/harmon/runtime/HarmonService.kt`
 - Modify: `test/HarmonServiceAlertFlowTest.kt`
 
-- [ ] написать тест: `sampleOnce()` с фейковым коллектором не обращается к `Lazy`-диспетчеру
+- [x] написать тест: `sampleOnce()` с фейковым коллектором не обращается к `Lazy`-диспетчеру
       (счётчик вычислений инициализатора равен нулю)
-- [ ] написать тест: `handleSample` с новым алертом и непустым диспетчером к нему обращается
-- [ ] заменить default-аргумент `notifications` на `Lazy<NotificationDispatcher>`
-- [ ] обращаться к диспетчеру только в `deliver`, `testNotifications` и ветке доставки `deliverIfNeeded`
+- [x] написать тест: `handleSample` с новым алертом и непустым диспетчером к нему обращается
+- [x] заменить default-аргумент `notifications` на `Lazy<NotificationDispatcher>`
+- [x] обращаться к диспетчеру только в `deliver`, `testNotifications` и ветке доставки `deliverIfNeeded`
       (проверка `isEmpty` не должна стоять до решения о доставке)
-- [ ] проверить вручную, что `harmon once` без `--notify`, `harmon diagnose` и `harmon check-config`
+- [x] проверить вручную, что `harmon once` без `--notify`, `harmon diagnose` и `harmon check-config`
       не поднимают AppKit
-- [ ] запустить `./kotlin test` — должно пройти до перехода к задаче 8
+- [x] запустить `./kotlin test` — должно пройти до перехода к задаче 8
+
+➕ Третий тест сверх чеклиста — `aSampleWithoutNewAlertsLeavesTheDispatcherUnbuilt`: именно он
+сторожит порядок «решение о доставке → чтение `Lazy`». Первые два теста прошли бы и с
+`isEmpty`-проверкой на прежнем месте, потому что тихий сэмпл с непустым диспетчером в них
+не встречается.
+
+➕ Тело `deliverIfNeeded` разделено на `deliverIfNeeded` (безусловный `commit`) и
+`deliverSample` (возвращает подтверждённые ключи). Иначе после переноса `isEmpty`-проверки
+получалось два одинаковых блока `commit(alerts, emptySet()); return`, и инвариант «коммит на
+каждом сэмпле» размазывался по трём выходам вместо одного.
+
+⚠️ Проверка «не поднимают AppKit» сделана статически (в `HarmonService` ровно три чтения
+`notifications.value` — `testNotifications`, `deliver`, `deliverSample`, и ни одно не лежит на
+пути `once`/`diagnose`/`check-config`) плюс рантайм-подтверждение: `harmon diagnose` с
+`systemNotifications=true` живёт с тремя потоками и без единого кадра `NSApplication`/
+`NSEventThread` в `sample`. `once --notify` не проверялся — он обязан поднимать AppKit.
 
 ### Task 8: Не ронять агент на исключении в цикле
 

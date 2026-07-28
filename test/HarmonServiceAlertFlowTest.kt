@@ -85,7 +85,7 @@ class HarmonServiceAlertFlowTest {
         val service = HarmonService(
             config = alertConfig(),
             collector = UnusedCollector,
-            notifications = NotificationDispatcher(emptyList()),
+            notifications = lazyOf(NotificationDispatcher(emptyList())),
             log = { reports += it },
             logError = { reports += it },
         )
@@ -107,7 +107,7 @@ class HarmonServiceAlertFlowTest {
         val service = HarmonService(
             config = alertConfig(),
             collector = UnusedCollector,
-            notifications = NotificationDispatcher(emptyList()),
+            notifications = lazyOf(NotificationDispatcher(emptyList())),
             log = { reports += it },
             logError = { reports += it },
         )
@@ -119,6 +119,74 @@ class HarmonServiceAlertFlowTest {
 
         assertFalse(reports.single().contains("Alerts:"))
     }
+
+    /**
+     * Building the dispatcher builds the system channel, and that boots AppKit. Commands that
+     * never push must not pay for it, so the holder has to stay untouched — even on a sample that
+     * would have alerted.
+     */
+    @Test
+    fun sampleOnceNeverBuildsTheDispatcher() {
+        var initializations = 0
+        val service = HarmonService(
+            config = alertConfig(),
+            collector = ScriptedCollector(
+                snapshot(0uL, ALERTING_FOOTPRINT),
+                snapshot(1uL, ALERTING_FOOTPRINT),
+            ),
+            notifications = lazy {
+                initializations += 1
+                NotificationDispatcher(listOf(RecordingChannel()))
+            },
+            log = {},
+            logError = {},
+        )
+
+        service.sampleOnce(sampleSeconds = 1)
+
+        assertEquals(0, initializations)
+    }
+
+    @Test
+    fun handleSampleBuildsTheDispatcherToPushANewAlert() {
+        var initializations = 0
+        val channel = RecordingChannel()
+        val service = HarmonService(
+            config = alertConfig(),
+            collector = UnusedCollector,
+            notifications = lazy {
+                initializations += 1
+                NotificationDispatcher(listOf(channel))
+            },
+            log = {},
+            logError = {},
+        )
+
+        service.handleSample(snapshot(0uL, ALERTING_FOOTPRINT), snapshot(1uL, ALERTING_FOOTPRINT))
+
+        assertEquals(1, initializations)
+        assertEquals(1, channel.payloads.size)
+    }
+
+    /** Guards the ordering: nothing about the dispatcher may be read before the push decision. */
+    @Test
+    fun aSampleWithoutNewAlertsLeavesTheDispatcherUnbuilt() {
+        var initializations = 0
+        val service = HarmonService(
+            config = alertConfig(),
+            collector = UnusedCollector,
+            notifications = lazy {
+                initializations += 1
+                NotificationDispatcher(listOf(RecordingChannel()))
+            },
+            log = {},
+            logError = {},
+        )
+
+        service.handleSample(snapshot(0uL, QUIET_FOOTPRINT), snapshot(1uL, QUIET_FOOTPRINT))
+
+        assertEquals(0, initializations)
+    }
 }
 
 private fun serviceWith(
@@ -127,7 +195,7 @@ private fun serviceWith(
 ): HarmonService = HarmonService(
     config = alertConfig(notifyEverySample),
     collector = UnusedCollector,
-    notifications = NotificationDispatcher(listOf(channel)),
+    notifications = lazyOf(NotificationDispatcher(listOf(channel))),
     log = {},
     logError = {},
 )
@@ -146,6 +214,12 @@ private fun snapshot(seconds: ULong, footprint: ULong): RawSystemSnapshot = rawS
 
 private object UnusedCollector : SystemCollector {
     override fun capture(): RawSystemSnapshot = error("handleSample must not capture")
+}
+
+private class ScriptedCollector(vararg snapshots: RawSystemSnapshot) : SystemCollector {
+    private val remaining = snapshots.toMutableList()
+
+    override fun capture(): RawSystemSnapshot = remaining.removeFirst()
 }
 
 private class RecordingChannel(

@@ -24,8 +24,8 @@ class HarmonService(
     private val collector: SystemCollector = CollectorClient(config.collectorSocket),
     private val calculator: UsageCalculator = UsageCalculator(),
     private val analyzer: AlertAnalyzer = AlertAnalyzer(),
-    private val notifications: NotificationDispatcher =
-        NotificationDispatcher.from(config.notifications),
+    private val notifications: Lazy<NotificationDispatcher> =
+        lazy { NotificationDispatcher.from(config.notifications) },
     private val log: (String) -> Unit = ::println,
     private val logError: (String) -> Unit = ::printError,
 ) {
@@ -73,10 +73,10 @@ class HarmonService(
     }
 
     fun testNotifications() =
-        notifications.deliver(ReportFormatter.testPayload())
+        notifications.value.deliver(ReportFormatter.testPayload())
 
     fun deliver(report: MonitoringReport) =
-        notifications.deliver(ReportFormatter.notification(report))
+        notifications.value.deliver(ReportFormatter.notification(report))
 
     private fun createReport(
         previous: RawSystemSnapshot,
@@ -106,23 +106,36 @@ class HarmonService(
     }
 
     /**
-     * Pushes the alerts that crossed their threshold on this sample and records the outcome.
-     *
-     * The state is committed on every sample, the early returns included: a key that stopped
-     * firing has to leave the delivered set, otherwise its next appearance would be mistaken for
-     * a repeat and never pushed.
+     * The state is committed on every sample, the samples without a delivery included: a key that
+     * stopped firing has to leave the delivered set, otherwise its next appearance would be
+     * mistaken for a repeat and never pushed.
      */
     private fun deliverIfNeeded(report: MonitoringReport, reportText: String) {
+        alertState.commit(report.alerts, deliverSample(report, reportText))
+    }
+
+    /**
+     * Pushes the alerts that crossed their threshold on this sample and returns the keys whose
+     * delivery is confirmed.
+     *
+     * The dispatcher is only touched once this sample is known to need a push. Reading it earlier
+     * — to check [NotificationDispatcher.isEmpty], say — would build the system channel and boot
+     * AppKit on every quiet sample, which is exactly what the lazy holder exists to avoid.
+     */
+    private fun deliverSample(report: MonitoringReport, reportText: String): Set<String> {
         val everySample = config.notifications.notifyEverySample
         val freshAlerts = alertState.newlyActive(report.alerts)
-        val shouldDeliver = everySample || freshAlerts.isNotEmpty()
-        if (!shouldDeliver || notifications.isEmpty) {
-            alertState.commit(report.alerts, emptySet())
-            return
+        if (!everySample && freshAlerts.isEmpty()) {
+            return emptySet()
+        }
+
+        val dispatcher = notifications.value
+        if (dispatcher.isEmpty) {
+            return emptySet()
         }
 
         val highlighted = if (everySample) report.alerts else freshAlerts
-        val results = notifications.deliver(
+        val results = dispatcher.deliver(
             ReportFormatter.notification(report, highlighted, reportText),
         )
         results.forEach { result ->
@@ -131,12 +144,11 @@ class HarmonService(
                 "${Clock.System.now()} notification ${result.channel}: ${result.detail}",
             )
         }
-        val deliveredKeys = if (notifications.decisiveSuccess(results)) {
+        return if (dispatcher.decisiveSuccess(results)) {
             highlighted.mapTo(mutableSetOf()) { it.key }
         } else {
             emptySet()
         }
-        alertState.commit(report.alerts, deliveredKeys)
     }
 
     @OptIn(ExperimentalForeignApi::class)
