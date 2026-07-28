@@ -10,9 +10,14 @@ on:
 # wrapper (JetBrains Kotlin Toolchain, not Gradle), so CI runs on Apple-silicon
 # macOS runners. The suite is pure Kotlin/Native: the test binary does not link
 # the cinterop klib, so nothing here exercises the native bridge.
+#
+# The image is pinned to macos-26 for its SDK, not for the OS: cinterop reads
+# `vm_statistics64.swapped_count`, which the macOS 14 SDK does not declare, and
+# an older image fails the build at `cinteropMacosArm64` with
+# `no member named 'swapped_count' in 'struct vm_statistics64'`.
 jobs:
   build-test:
-    runs-on: macos-14
+    runs-on: macos-26
     steps:
       - uses: actions/checkout@v7
 

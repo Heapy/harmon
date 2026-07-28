@@ -9,12 +9,15 @@ on:
 # Harmon.app resources, and the example config, because an installer that did
 # not build from source still needs all four to bootstrap the two services. Only
 # arm64 is produced: module.yaml declares `platforms: [macosArm64]`.
+#
+# The image is pinned to macos-26 for its SDK: cinterop reads
+# `vm_statistics64.swapped_count`, which the macOS 14 SDK does not declare.
 permissions:
   contents: write
 
 jobs:
   release:
-    runs-on: macos-14
+    runs-on: macos-26
     steps:
       - uses: actions/checkout@v7
 
