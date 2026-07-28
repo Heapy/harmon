@@ -12,7 +12,26 @@ import kotlin.test.assertTrue
  * single line turning red.
  */
 private val C_HARNESS_CHECKS = setOf(
+    "pure.saturating-add-zero",
     "pure.saturating-add-adds",
+    "pure.saturating-add-reaches-max",
+    "pure.saturating-add-clamps-by-one",
+    "pure.saturating-add-clamps-both-max",
+    "pure.saturating-multiply-by-zero",
+    "pure.saturating-multiply-by-one",
+    "pure.saturating-multiply-reaches-max",
+    "pure.saturating-multiply-clamps",
+    "pure.uint32-counter-zero",
+    "pure.uint32-counter-wraps-minus-one",
+    "pure.uint32-counter-int32-min",
+    "pure.uint32-counter-int32-max",
+    "pure.candidates-order-by-footprint",
+    "pure.candidates-tie-breaks-by-index",
+    "pure.candidates-sort-descends",
+    "pure.candidates-sort-keeps-tie-order",
+    "pure.mach-time-matches-timebase",
+    "pure.mach-time-converts-zero",
+    "pure.discard-http-response-consumes-everything",
 )
 
 class NativeCTest {
