@@ -653,15 +653,30 @@ reified-расширение: `CollectorEnvelope` приватный, а чле�
 - Modify: `src/dev/yoda/harmon/analysis/ApplicationGrouper.kt`
 - Modify: `test/ApplicationGrouperTest.kt`
 
-- [ ] написать тест: путь `/Applications/İstanbul.app/Contents/MacOS/app` даёт имя `İstanbul`
-- [ ] написать тест: путь `/İİİ.app/x` не бросает `StringIndexOutOfBoundsException`
+- [x] написать тест: путь `/Applications/İstanbul.app/Contents/MacOS/app` даёт имя `İstanbul`
+- [x] написать тест: путь `/İİİ.app/x` не бросает `StringIndexOutOfBoundsException`
       (при трёх и более символах смещение индекса превышает длину исходной строки)
-- [ ] написать тест: путь `/İİ.app/x` не даёт пустого имени приложения
-- [ ] написать тест: регистронезависимость сохраняется (`/Applications/Foo.APP/Contents/MacOS/foo`)
-- [ ] заменить `lowercase().indexOf(...)` на `indexOf(APP_BUNDLE_MARKER, ignoreCase = true)`
+- [x] написать тест: путь `/İİ.app/x` не даёт пустого имени приложения
+- [x] написать тест: регистронезависимость сохраняется (`/Applications/Foo.APP/Contents/MacOS/foo`)
+- [x] заменить `lowercase().indexOf(...)` на `indexOf(APP_BUNDLE_MARKER, ignoreCase = true)`
       по исходной строке
-- [ ] добавить защиту от выхода за границы и пустого имени приложения
-- [ ] запустить `./kotlin test` — должно пройти до перехода к задаче 13
+- [x] добавить защиту от выхода за границы и пустого имени приложения
+- [x] запустить `./kotlin test` — должно пройти до перехода к задаче 13
+
+⚠️ Отдельной проверки границ не потребовалось: после перехода на `indexOf(..., ignoreCase = true)`
+по исходной строке маркер `.app/` (5 символов) гарантированно лежит целиком внутри строки, поэтому
+`markerIndex + 4` не может выйти за её длину. Явный `coerceAtMost(length)` был бы мёртвой веткой,
+непокрываемой тестом. Оставшаяся часть пункта — защита от пустого имени — реализована как
+`takeIf { it.applicationName().isNotEmpty() }`.
+
+➕ Пятый тест сверх чеклиста — `treatsAPathWithAnEmptyBundleNameAsUnbundled` (`/.app/helper`):
+после правки все три Unicode-теста дают непустое имя, и ветка защиты от пустого имени осталась бы
+непокрытой. Вырожденный путь без имени бандла трактуется как процесс без бандла (`bundlePath = null`,
+ключ `process:<pid>:<startedAt>`), а не как бандл с пустым именем — иначе все такие процессы
+слились бы в одну группу по общему хешу.
+
+➕ Тест `matchesTheBundleMarkerRegardlessOfItsCase` проходил и до правки (`Foo.APP` при
+`lowercase()` не меняет длину) — он остаётся регрессионным сторожем для `ignoreCase = true`.
 
 ### Task 13: Вынести список терминалов в конфиг
 

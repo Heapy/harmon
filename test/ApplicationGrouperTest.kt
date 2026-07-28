@@ -136,4 +136,66 @@ class ApplicationGrouperTest {
         assertEquals(null, applications.single { it.rootPid == 303 }.bundlePath)
         assertEquals(null, applications.single { it.rootPid == 401 }.bundlePath)
     }
+
+    @Test
+    fun namesTheBundleOfAPathWhoseCaseFoldingChangesItsLength() {
+        val application = ApplicationGrouper().group(
+            listOf(
+                processUsage(
+                    pid = 500,
+                    name = "app",
+                    executablePath = "/Applications/İstanbul.app/Contents/MacOS/app",
+                ),
+            ),
+        ).single()
+
+        assertEquals("İstanbul", application.name)
+        assertEquals("/Applications/İstanbul.app", application.bundlePath)
+    }
+
+    @Test
+    fun doesNotOverrunAPathWhoseCaseFoldingGrowsPastTheMarkerOffset() {
+        val application = ApplicationGrouper().group(
+            listOf(processUsage(pid = 501, name = "x", executablePath = "/İİİ.app/x")),
+        ).single()
+
+        assertEquals("İİİ", application.name)
+        assertEquals("/İİİ.app", application.bundlePath)
+    }
+
+    @Test
+    fun namesTheBundleWhenCaseFoldingShiftsTheMarkerPastTheExtension() {
+        val application = ApplicationGrouper().group(
+            listOf(processUsage(pid = 502, name = "x", executablePath = "/İİ.app/x")),
+        ).single()
+
+        assertEquals("İİ", application.name)
+        assertEquals("/İİ.app", application.bundlePath)
+    }
+
+    @Test
+    fun matchesTheBundleMarkerRegardlessOfItsCase() {
+        val application = ApplicationGrouper().group(
+            listOf(
+                processUsage(
+                    pid = 503,
+                    name = "foo",
+                    executablePath = "/Applications/Foo.APP/Contents/MacOS/foo",
+                ),
+            ),
+        ).single()
+
+        assertEquals("Foo", application.name)
+        assertEquals("/Applications/Foo.APP", application.bundlePath)
+    }
+
+    @Test
+    fun treatsAPathWithAnEmptyBundleNameAsUnbundled() {
+        val application = ApplicationGrouper().group(
+            listOf(processUsage(pid = 504, name = "helper", executablePath = "/.app/helper")),
+        ).single()
+
+        assertEquals("helper", application.name)
+        assertEquals(null, application.bundlePath)
+    }
 }

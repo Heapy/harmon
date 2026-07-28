@@ -127,9 +127,18 @@ class ApplicationGrouper {
         )
     }
 
+    /**
+     * The marker is searched case-insensitively in the original string: an index
+     * taken from [lowercase] does not address this string, because case folding
+     * can lengthen it (`İ` becomes two characters).
+     */
     private fun String.outermostApplicationBundle(): String? {
-        val markerIndex = lowercase().indexOf(APP_BUNDLE_MARKER)
-        return takeIf { markerIndex >= 0 }?.substring(0, markerIndex + APP_EXTENSION_LENGTH)
+        val markerIndex = indexOf(APP_BUNDLE_MARKER, ignoreCase = true)
+        if (markerIndex < 0) {
+            return null
+        }
+        return substring(0, markerIndex + APP_EXTENSION_LENGTH)
+            .takeIf { it.applicationName().isNotEmpty() }
     }
 
     private fun String.applicationName(): String =
