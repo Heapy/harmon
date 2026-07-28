@@ -551,17 +551,40 @@ AppKit), логирует его и коммитит с пустым множе�
 - Modify: `src/dev/yoda/harmon/runtime/HarmonService.kt`
 - Create: `test/SleepSliceTest.kt`
 
-- [ ] написать тест на `internal fun sleepSliceMillis(remainingNs, maxSliceMs)`: остаток 0 → 0,
+- [x] написать тест на `internal fun sleepSliceMillis(remainingNs, maxSliceMs)`: остаток 0 → 0,
       остаток больше слайса → слайс, остаток меньше слайса → остаток, остаток меньше миллисекунды → 1
-- [ ] вынести расчёт слайса в `internal` функцию
-- [ ] заменить `CFAbsoluteTimeGetCurrent` на `hm_monotonic_time_ns()` при расчёте дедлайна
-- [ ] заменить `returnAfterSourceHandled = true` на `false`
-- [ ] спать `hm_sleep_millis(slice)` при `kCFRunLoopRunFinished` вместо фиксированных 10 мс,
+- [x] вынести расчёт слайса в `internal` функцию (публичную — см. ⚠️ задачи 1)
+- [x] заменить `CFAbsoluteTimeGetCurrent` на монотонные часы при расчёте дедлайна
+      (`TimeSource.Monotonic`, а не `hm_monotonic_time_ns()` — см. ⚠️ ниже)
+- [x] заменить `returnAfterSourceHandled = true` на `false`
+- [x] спать весь слайс при `kCFRunLoopRunFinished` вместо фиксированных 10 мс,
       run loop пробовать заново на следующем слайсе (защёлки нет — AppKit инициализируется лениво)
-- [ ] обходить run loop полностью при `systemNotifications = false`
-- [ ] проверить вручную: `harmon run` с `systemNotifications=false` и `intervalSeconds=60` —
+- [x] обходить run loop полностью при `systemNotifications = false`
+- [x] проверить вручную: `harmon run` с `systemNotifications=false` и `intervalSeconds=60` —
       около 0% CPU в `top`; с включёнными уведомлениями клик «Open report» продолжает работать
-- [ ] запустить `./kotlin test` — должно пройти до перехода к задаче 10
+      (клик — не автоматизируется, см. ⚠️ ниже)
+- [x] запустить `./kotlin test` — должно пройти до перехода к задаче 10
+
+⚠️ **Нативный мост недоступен из тестового бинаря.** `hm_monotonic_time_ns()`/`hm_sleep_millis()` из
+плана роняют тест `sampleOnceNeverBuildsTheDispatcher` (он реально спит внутри `sampleOnce`):
+`kotlin.internal.IrLinkageError: Function 'hm_monotonic_time_ns' can not be called`. Тестовый
+бинарь не линкует cinterop-клиб проекта — `harmon_test.klib` зависит от `harmon`, но `harmon_native`
+в линковку тестов не попадает (проверено после `./kotlin clean`; в `nm` тестового `.kexe` нет ни
+одного `*_wrapper` из `nativebridge`). Платформенные библиотеки (`CoreFoundation`, `posix`)
+линкуются нормально. Поэтому дедлайн считается по `kotlin.time.TimeSource.Monotonic`
+(на Kotlin/Native это тот же `CLOCK_MONOTONIC`), а слайс спится через `platform.posix.usleep`.
+Семантика плана сохранена целиком: монотонный дедлайн, реальный сон на весь слайс, проба run loop
+на каждом слайсе. Следствие для задач 15 и 16: любой код, вызывающий `nativebridge`, из тестов
+недостижим — тестировать можно только чистые хелперы (`processCapacityFor`), что план и предполагает.
+
+⚠️ Ручная проверка: агент собран, коллектор поднят локально
+(`collector --allow-unprivileged --socket /tmp/harmon-dev.sock`). При `systemNotifications=false`,
+`intervalSeconds=60` — `0.0% CPU`, состояние `sleeping`, +10 мс CPU за 20 с сна. При
+`systemNotifications=true`, `intervalSeconds=10` — три сэмпла подряд (01:53:19, 01:53:29, 01:53:40)
+и `0.22 с` CPU за 35 с, включая загрузку AppKit на первой доставке: после появления источников
+run loop цикл не начинает крутиться. Сам клик по уведомлению требует человека и не
+автоматизируется; косвенное подтверждение — уведомление доставлено и
+`~/Library/Application Support/Harmon/Reports/latest.html` перезаписан на той же секунде.
 
 ### Task 10: Не убивать демон коллектора на ошибке accept
 

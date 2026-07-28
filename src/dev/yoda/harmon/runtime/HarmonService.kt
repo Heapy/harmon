@@ -8,16 +8,36 @@ import dev.yoda.harmon.model.MonitoringReport
 import dev.yoda.harmon.model.RawSystemSnapshot
 import dev.yoda.harmon.monitor.SystemCollector
 import dev.yoda.harmon.monitor.UsageCalculator
-import dev.yoda.harmon.nativebridge.hm_sleep_millis
 import dev.yoda.harmon.notify.NotificationDispatcher
 import dev.yoda.harmon.report.ReportFormatter
 import dev.yoda.harmon.util.printError
 import kotlinx.cinterop.ExperimentalForeignApi
-import platform.CoreFoundation.CFAbsoluteTimeGetCurrent
 import platform.CoreFoundation.CFRunLoopRunInMode
 import platform.CoreFoundation.kCFRunLoopDefaultMode
 import platform.CoreFoundation.kCFRunLoopRunFinished
+import platform.posix.usleep
 import kotlin.time.Clock
+import kotlin.time.Duration
+import kotlin.time.Duration.Companion.seconds
+import kotlin.time.TimeSource
+
+private const val NANOS_PER_MILLISECOND = 1_000_000uL
+private const val MICROS_PER_MILLISECOND = 1_000uL
+private const val MILLIS_PER_SECOND = 1_000.0
+
+/**
+ * Length of the next sleep slice, in milliseconds, for a sleep with [remainingNs] left to run.
+ *
+ * A slice never overshoots the deadline and never rounds a non-zero remainder down to a busy
+ * zero-length wait. Public so the arithmetic can be tested without sleeping.
+ */
+fun sleepSliceMillis(remainingNs: ULong, maxSliceMs: ULong): ULong {
+    if (remainingNs == 0uL) {
+        return 0uL
+    }
+    val requested = maxOf(remainingNs / NANOS_PER_MILLISECOND, 1uL)
+    return minOf(requested, maxSliceMs)
+}
 
 class HarmonService(
     private val config: HarmonConfig,
@@ -173,25 +193,50 @@ class HarmonService(
         }
     }
 
+    /**
+     * Sleeps until [seconds] have passed on the monotonic clock, so a wall-clock adjustment cannot
+     * stretch or collapse the interval. The thread is parked for the whole slice instead of
+     * polling the clock, which is what keeps an idle agent off the CPU.
+     *
+     * With system notifications on, each slice is spent inside the run loop, which is what makes
+     * "Open report" on a delivered notification work. The run loop is re-probed on every slice
+     * rather than latched off after the first [kCFRunLoopRunFinished]: the dispatcher is built
+     * lazily, so AppKit and its run loop sources only exist after the first delivery, and a latch
+     * would leave the notification click dead for the rest of the process lifetime. A probe with
+     * no sources returns immediately, and the slice is then spent parked instead.
+     */
     @OptIn(ExperimentalForeignApi::class)
     private fun sleepSeconds(seconds: Long) {
-        val deadline = CFAbsoluteTimeGetCurrent() + seconds.toDouble()
-        while (CFAbsoluteTimeGetCurrent() < deadline) {
-            val remaining = deadline - CFAbsoluteTimeGetCurrent()
-            val result = CFRunLoopRunInMode(
-                mode = kCFRunLoopDefaultMode,
-                seconds = minOf(remaining, RUN_LOOP_SLICE_SECONDS),
-                returnAfterSourceHandled = true,
-            )
-            if (result == kCFRunLoopRunFinished) {
-                hm_sleep_millis(RUN_LOOP_IDLE_MILLISECONDS)
+        if (seconds <= 0L) {
+            return
+        }
+        val started = TimeSource.Monotonic.markNow()
+        val total = seconds.seconds
+        while (true) {
+            val remaining = total - started.elapsedNow()
+            if (remaining <= Duration.ZERO) {
+                return
             }
+            val sliceMs = sleepSliceMillis(
+                remainingNs = remaining.inWholeNanoseconds.toULong(),
+                maxSliceMs = MAX_SLEEP_SLICE_MILLISECONDS,
+            )
+            if (config.notifications.systemEnabled) {
+                val result = CFRunLoopRunInMode(
+                    mode = kCFRunLoopDefaultMode,
+                    seconds = sliceMs.toDouble() / MILLIS_PER_SECOND,
+                    returnAfterSourceHandled = false,
+                )
+                if (result != kCFRunLoopRunFinished) {
+                    continue
+                }
+            }
+            usleep((sliceMs * MICROS_PER_MILLISECOND).toUInt())
         }
     }
 
     private companion object {
         const val INITIAL_RETRY_SECONDS = 10L
-        const val RUN_LOOP_SLICE_SECONDS = 1.0
-        const val RUN_LOOP_IDLE_MILLISECONDS = 10uL
+        const val MAX_SLEEP_SLICE_MILLISECONDS = 30_000uL
     }
 }
