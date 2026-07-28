@@ -17,13 +17,28 @@ import kotlinx.cinterop.toKString
 import platform.AppKit.NSApplication
 import platform.AppKit.NSApplicationActivationPolicy
 import platform.AppKit.NSWorkspace
+import platform.Foundation.NSDate
+import platform.Foundation.NSRunLoop
 import platform.Foundation.NSUserNotification
 import platform.Foundation.NSUserNotificationCenter
 import platform.Foundation.NSUserNotificationCenterDelegateProtocol
 import platform.Foundation.NSURL
+import platform.Foundation.dateWithTimeIntervalSinceNow
+import platform.Foundation.runUntilDate
 import platform.darwin.NSObject
 
 private const val REPORT_PATH_USER_INFO_KEY = "harmonReportPath"
+
+/**
+ * How long the delivering thread keeps its run loop alive after handing a notification to
+ * Notification Center. `deliverNotification` only enqueues the request, and a process that
+ * returns straight into `exit` — every CLI command does — ends before the connection carrying it
+ * completes: `usernoted` then logs `Denying message 3 from connection <LegacyConnection
+ * identifier: dev.yoda.harmon>` and shows nothing. Measured on macOS 26 by sending three times
+ * each way: without the spin all three were denied, with it all three were accepted and
+ * delivered. 0.2 s already sufficed; the value carries headroom over that.
+ */
+private const val DELIVERY_FLUSH_SECONDS = 0.5
 
 /**
  * Whether the macOS Notification Center channel is best-effort. It is: `deliverNotification`
@@ -153,6 +168,9 @@ internal class SystemNotificationChannel(
             setUserInfo(mapOf(REPORT_PATH_USER_INFO_KEY to reportPath))
         }
         center.deliverNotification(notification)
+        NSRunLoop.mainRunLoop.runUntilDate(
+            NSDate.dateWithTimeIntervalSinceNow(DELIVERY_FLUSH_SECONDS),
+        )
         return DeliveryResult(
             channel = name,
             successful = true,
