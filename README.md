@@ -275,10 +275,13 @@ restarts.
 The push text names only the alerts that fired on this sample. The attached HTML
 report and the JSON webhook payload both carry the sample's whole reported alert
 list, and the payload adds `newAlertKeys` listing the ones the push was about.
-That list is capped at `maxAlertsPerCategory` alerts per rule: an already-firing
-alert that noisier ones push out of the top slice is demoted rather than
-cleared, and `suppressedAlertKeys` names every key demoted that way, so a
-consumer diffing the alert list can tell the two apart. With
+That list is capped at `maxAlertsPerCategory` alerts per rule, and
+`suppressedAlertKeys` names every key over its threshold that the cap left out,
+so a consumer diffing the alert list can tell a dropped alert from a cleared one
+and the count is the whole overflow. An already-firing alert pushed out of the
+top slice is demoted rather than cleared — it stays in the alert state, so its
+return to the list does not push again — while a key crossing its threshold
+below the cut is reported as suppressed without entering that state. With
 `notifyEverySample=true` the agent sends on every sample and treats the whole
 alert list as push content; nothing is deferred in that mode, so `newAlertKeys`
 there names every alert not yet confirmed as delivered, including one whose

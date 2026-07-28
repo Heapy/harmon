@@ -422,13 +422,16 @@ display brightness, thermal state, or external peripherals.
 
 Zero disables a threshold. For each application rule the analyzer selects at
 most `maxAlertsPerCategory` applications by the rule's metric, and every report
-is capped at that number. An already-active key that is still above its cleared
-threshold but did not survive the cut is not reported, yet it stays in the alert
-state as firing: forgetting it there would look like the alert clearing, and its
-return to the top slice would push again as new. Such a key is listed in the
-report's `suppressedAlertKeys` instead. A push carries only the alerts
-that crossed their threshold on this sample; while the condition holds there is
-no repeat, and a key becomes pushable again only after it stops firing.
+is capped at that number. Every key over its threshold that did not survive the
+cut is listed in the report's `suppressedAlertKeys` instead, so the reported
+count is never smaller than what is actually over a threshold. Only an
+already-active one also stays in the alert state as firing: forgetting it there
+would look like the alert clearing, and its return to the top slice would push
+again as new. A key crossing its threshold for the first time below the cut was
+never pushed and does not enter the state, so the next sample compares it
+against the full threshold rather than the lowered one. A push carries only the
+alerts that crossed their threshold on this sample; while the condition holds
+there is no repeat, and a key becomes pushable again only after it stops firing.
 
 Delivery has to succeed for a key to count as pushed, so a failed webhook or
 Telegram call is retried on the next sample instead of being silently dropped. A
@@ -448,11 +451,11 @@ counts and the alert stays pushable. Alert state resets with the agent.
 Only the push text is narrowed that way. The HTML report attached to a system
 notification and the JSON webhook payload both carry the sample's whole reported
 alert list, `newAlertKeys` names the subset the push was about, and
-`suppressedAlertKeys` names the still-firing keys the per-category cap left out
-of the list. With `notifyEverySample=true` the agent sends on every sample and
-treats every reported alert as push content; the backoff defers nothing in that
-mode, so `newAlertKeys` there names every alert not yet confirmed as delivered,
-including one whose earlier deliveries failed.
+`suppressedAlertKeys` names every over-threshold key the per-category cap left
+out of the list. With `notifyEverySample=true` the agent sends on every sample
+and treats every reported alert as push content; the backoff defers nothing in
+that mode, so `newAlertKeys` there names every alert not yet confirmed as
+delivered, including one whose earlier deliveries failed.
 
 `applicationMemoryAlertMiB` and `swapAlertMiB` are capped at 1,048,576 MiB
 (1 TiB); a larger value is rejected. The MiB-to-byte conversion saturates rather
@@ -470,10 +473,17 @@ per-category top slice by noisier applications is demoted, not cleared: it
 leaves the reported alert list, which stays hard-capped at
 `maxAlertsPerCategory` per rule, and stays in the alert state as firing. Without
 that, eviction would look like the alert clearing and the alert would be
-reported as new again on return. Every demoted key is named in
-`suppressedAlertKeys`, in the text and HTML reports as well as in the webhook
-payload, so a consumer diffing the alert list cannot read a demoted alert as a
-cleared one.
+reported as new again on return.
+
+Every key the cap leaves out is named in `suppressedAlertKeys` — the demoted
+ones and the ones that crossed their threshold below the cut alike — in the text
+and HTML reports as well as in the webhook payload. A consumer diffing the alert
+list therefore cannot read a dropped alert as a cleared one, and the "N more
+over threshold" line of a text report counts everything the cap held back, not
+just the keys reported before. Being named there is not the same as being in the
+alert state: a key that was never reported is not firing, gets no lowered clear
+threshold on the next sample, and is pushed as new if it later reaches the top
+slice.
 
 ## Access failures
 
@@ -509,7 +519,7 @@ The standard `harmon.sample` webhook includes:
   energy;
 - the sample's reported alerts, capped at `maxAlertsPerCategory` per rule, with
   `newAlertKeys` naming the ones the push was about and `suppressedAlertKeys`
-  naming the still-firing keys the cap left out;
+  naming every over-threshold key the cap left out;
 - collection coverage counts.
 
 It excludes executable paths and detailed PID collection failures.

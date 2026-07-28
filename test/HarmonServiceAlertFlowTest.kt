@@ -134,15 +134,24 @@ class HarmonServiceAlertFlowTest {
     }
 
     /**
-     * The flaky channel the backoff exists for. `notifyEverySample` pushes whether or not a key's
-     * retry is deferred, so the deferral must not decide what counts as new either: the payload
-     * that finally lands would otherwise carry the alert without naming it, the next sample would
-     * settle it, and a consumer acting on `newAlertKeys` would never see the alert at all.
+     * The flaky channel `notifyEverySample` has to survive. That mode pushes on every sample
+     * regardless, so it records no failures and defers nothing — more failures in a row than the
+     * backoff threshold still produce a push per sample and no retry deferral. The key therefore
+     * stays unsettled and the payload that finally lands names it as new; were it deferred
+     * instead, that payload would carry the alert without naming it, the next sample would settle
+     * it, and a consumer acting on `newAlertKeys` would never see the alert at all.
      */
     @Test
-    fun notifyEverySampleNamesADeferredKeyAsNewOnThePushThatLands() {
+    fun notifyEverySamplePushesEverySampleAndNamesTheRecoveredKeyAsNew() {
         val channel = RecoveringChannel(failures = DELIVERY_RETRY_THRESHOLD)
-        val service = serviceWith(channel, notifyEverySample = true)
+        val errors = mutableListOf<String>()
+        val service = HarmonService(
+            config = alertConfig(notifyEverySample = true),
+            collector = UnusedCollector,
+            notifications = lazyOf(NotificationDispatcher(listOf(channel))),
+            log = {},
+            logError = { errors += it },
+        )
 
         repeat(DELIVERY_RETRY_THRESHOLD + 1) { index ->
             val started = index.toULong()
@@ -152,18 +161,22 @@ class HarmonServiceAlertFlowTest {
             )
         }
 
+        assertEquals(DELIVERY_RETRY_THRESHOLD + 1, channel.payloads.size)
+        assertTrue(errors.none { "retrying it in" in it }, errors.toString())
         val landed = channel.payloads.last()
         assertEquals(1, newAlertKeysOf(landed).size, "the landed push named no new alert")
         assertTrue(landed.text.endsWith("memory"))
     }
 
     /**
-     * A key demoted out of the capped report is still firing, so it must not simply disappear: a
-     * consumer diffing the alert list would read it as cleared, while the alert state holds it as
-     * firing and never pushes it again. The report names it instead, in the text and in the JSON.
+     * Every key the cap leaves out is named, in the text and in the JSON, whether it had been
+     * reported before or not. A demoted one would otherwise read as cleared to a consumer diffing
+     * the alert list, while the alert state holds it as firing and never pushes it again; a key
+     * over its threshold for the first time would vanish from the sample entirely, and the count
+     * a reader takes for the whole overflow would be smaller than the overflow.
      */
     @Test
-    fun namesTheStillFiringKeysThatDidNotFitTheCappedReport() {
+    fun namesEveryKeyOverThresholdThatDidNotFitTheCappedReport() {
         val channel = RecordingChannel()
         val reports = mutableListOf<String>()
         val service = HarmonService(
@@ -176,13 +189,25 @@ class HarmonServiceAlertFlowTest {
         val crowded = listOf(5_000uL, 4_000uL, 3_000uL, 2_500uL).map { it * MIB }
 
         service.handleSample(crowdedSnapshot(0uL, crowded), crowdedSnapshot(1uL, crowded))
+
+        // the smallest of the four was over the threshold on the very first sample, with no
+        // earlier report to be demoted from
+        assertContains(
+            reports.last { it.startsWith("Harmon sample") },
+            "1 more over threshold, past maxAlertsPerCategory: memory:process:13:100",
+        )
+        assertEquals(
+            listOf("memory:process:13:100"),
+            suppressedAlertKeysOf(channel.payloads.last()),
+        )
+
         // the fourth application overtakes the others, demoting the smallest firing key
         val overtaken = listOf(5_000uL, 4_000uL, 3_000uL, 6_000uL).map { it * MIB }
         service.handleSample(crowdedSnapshot(1uL, overtaken), crowdedSnapshot(2uL, overtaken))
 
         assertContains(
             reports.last { it.startsWith("Harmon sample") },
-            "1 more still firing, over maxAlertsPerCategory: memory:",
+            "1 more over threshold, past maxAlertsPerCategory: memory:process:12:100",
         )
         assertEquals(
             listOf("memory:process:12:100"),

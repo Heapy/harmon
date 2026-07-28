@@ -239,6 +239,33 @@ class AlertAnalyzerTest {
         assertEquals(3, outcome.alerts.size)
         assertTrue(demotedKey !in outcome.alerts.map { it.key })
         assertTrue(demotedKey in outcome.firingKeys, outcome.firingKeys.toString())
+        assertEquals(setOf(demotedKey), outcome.suppressedKeys)
+    }
+
+    /**
+     * The overflow a report admits to has to be the whole overflow, so a key crossing its
+     * threshold for the first time below the cut is suppressed, not dropped silently. It still
+     * stays out of the firing set: it was never pushed, and giving it the lowered clear threshold
+     * from the next sample on would keep an application hovering just under the threshold alerting
+     * indefinitely.
+     */
+    @Test
+    fun suppressesAKeyOverTheThresholdForTheFirstTimeWithoutMakingItFire() {
+        val usage = systemUsage(
+            processes = listOf(
+                processUsage(pid = 1, cpuPercent = 400.0),
+                processUsage(pid = 2, cpuPercent = 300.0),
+                processUsage(pid = 3, cpuPercent = 200.0),
+                processUsage(pid = 4, cpuPercent = 160.0),
+            ),
+        )
+        val rankedOutKey = "cpu:process:4:4"
+
+        val outcome = AlertAnalyzer().analyze(usage, HarmonConfig())
+
+        assertEquals(3, outcome.alerts.size)
+        assertEquals(setOf(rankedOutKey), outcome.suppressedKeys)
+        assertTrue(rankedOutKey !in outcome.firingKeys, outcome.firingKeys.toString())
     }
 
     /**
@@ -261,6 +288,7 @@ class AlertAnalyzerTest {
         assertEquals(3, outcome.alerts.size)
         assertEquals(7, outcome.firingKeys.size)
         assertTrue(outcome.firingKeys.containsAll(demoted), outcome.firingKeys.toString())
+        assertEquals(demoted, outcome.suppressedKeys)
     }
 
     /**

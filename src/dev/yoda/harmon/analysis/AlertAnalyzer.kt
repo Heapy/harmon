@@ -8,17 +8,25 @@ import dev.yoda.harmon.model.SystemUsage
 import dev.yoda.harmon.util.Format
 
 /**
- * What one sample's rules produced: the alerts a report carries, and every key whose condition
- * holds.
+ * What one sample's rules produced: the alerts a report carries, the keys the alert state has to
+ * remember, and the keys the per-category cap kept out of the report.
  *
- * The two differ on purpose. [alerts] is capped per category so a report stays readable;
- * [firingKeys] is the complete set and is what `AlertState` must remember. Dropping a key from the
- * state because a report had no room for it would look like the alert clearing, and its next
- * appearance in the top slice would push again as new.
+ * The three differ on purpose. [alerts] is capped per category so a report stays readable.
+ * [suppressedKeys] is every key over its threshold that the cap dropped, whether or not it was
+ * already alerting, so a report naming them cannot understate what is happening. [firingKeys] is
+ * what `AlertState` must remember: the reported keys plus the already-active ones among the
+ * suppressed. Dropping an active key from the state because a report had no room for it would look
+ * like the alert clearing, and its next appearance in the top slice would push again as new.
+ *
+ * A key crossing its threshold for the first time below the cut is therefore in [suppressedKeys]
+ * but not in [firingKeys]: it was never pushed, and putting it in the state would grade it against
+ * the lowered clear threshold from the next sample on, so an application hovering just under the
+ * threshold that crossed once would stay alerting indefinitely.
  */
 data class AlertOutcome(
     val alerts: List<Alert>,
     val firingKeys: Set<String>,
+    val suppressedKeys: Set<String>,
 )
 
 /**
@@ -36,11 +44,13 @@ class AlertAnalyzer {
         config: HarmonConfig,
         activeKeys: Set<String> = emptySet(),
     ): AlertOutcome {
-        val demoted = mutableSetOf<String>()
-        val alerts = alertsFor(usage, config, activeKeys, demoted)
+        val suppressed = mutableSetOf<String>()
+        val alerts = alertsFor(usage, config, activeKeys, suppressed)
         return AlertOutcome(
             alerts = alerts,
-            firingKeys = alerts.mapTo(mutableSetOf()) { it.key } + demoted,
+            firingKeys = alerts.mapTo(mutableSetOf()) { it.key } +
+                (suppressed intersect activeKeys),
+            suppressedKeys = suppressed,
         )
     }
 
@@ -48,7 +58,7 @@ class AlertAnalyzer {
         usage: SystemUsage,
         config: HarmonConfig,
         activeKeys: Set<String>,
-        demoted: MutableSet<String>,
+        suppressed: MutableSet<String>,
     ): List<Alert> = buildList {
         val thresholds = config.thresholds
         thresholds.applicationCpuPercent?.let { threshold ->
@@ -56,7 +66,7 @@ class AlertAnalyzer {
                 .selectAlerting(
                     maxPerCategory = config.maxAlertsPerCategory,
                     activeKeys = activeKeys,
-                    demoted = demoted,
+                    suppressed = suppressed,
                     key = { "cpu:${it.id}" },
                     value = { it.cpuPercent },
                     threshold = threshold,
@@ -85,7 +95,7 @@ class AlertAnalyzer {
                 .selectAlerting(
                     maxPerCategory = config.maxAlertsPerCategory,
                     activeKeys = activeKeys,
-                    demoted = demoted,
+                    suppressed = suppressed,
                     key = { "memory:${it.id}" },
                     value = { it.physicalFootprintBytes },
                     threshold = thresholdBytes,
@@ -116,7 +126,7 @@ class AlertAnalyzer {
                 .selectAlerting(
                     maxPerCategory = config.maxAlertsPerCategory,
                     activeKeys = activeKeys,
-                    demoted = demoted,
+                    suppressed = suppressed,
                     key = { "disk-write:${it.id}" },
                     value = { it.diskWriteBytesPerSecond },
                     threshold = thresholdBytesPerSecond,
@@ -202,7 +212,7 @@ class AlertAnalyzer {
                     .selectAlerting(
                         maxPerCategory = config.maxAlertsPerCategory,
                         activeKeys = activeKeys,
-                        demoted = demoted,
+                        suppressed = suppressed,
                         key = { "battery-impact:${it.id}" },
                         value = { it.batteryImpactScore },
                         threshold = threshold,
@@ -255,16 +265,17 @@ class AlertAnalyzer {
     /**
      * The [maxPerCategory] applications above the threshold with the highest [value].
      *
-     * An already-active key that did not survive the cut is collected into [demoted] instead of
-     * being appended to the result. It is still firing, so it must stay in the alert state —
-     * dropping it there would look like the alert clearing and its return to the top slice would
-     * push again as new — but it does not belong in the report, where an uncapped tail makes a
-     * category configured for three alerts carry dozens on a busy machine and never shrink.
+     * A key that did not survive the cut is collected into [suppressed] instead of being appended
+     * to the result. It stays out of the alert list, where an uncapped tail makes a category
+     * configured for three alerts carry dozens on a busy machine and never shrink, but it is still
+     * over its threshold and the report has to name it — otherwise the overflow the report admits
+     * to is smaller than the overflow that exists. Which of those keys the alert state keeps is
+     * decided in [analyze]: only the ones that were already active.
      */
     private fun <R : Comparable<R>> List<ApplicationUsage>.selectAlerting(
         maxPerCategory: Int,
         activeKeys: Set<String>,
-        demoted: MutableSet<String>,
+        suppressed: MutableSet<String>,
         key: (ApplicationUsage) -> String,
         value: (ApplicationUsage) -> R,
         threshold: R,
@@ -279,8 +290,7 @@ class AlertAnalyzer {
             .toList()
         ranked.asSequence()
             .drop(maxPerCategory)
-            .map(key)
-            .filterTo(demoted) { it in activeKeys }
+            .mapTo(suppressed, key)
         return ranked.take(maxPerCategory)
     }
 

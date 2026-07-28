@@ -313,9 +313,11 @@ data class Alert(
 
 /**
  * [alerts] is capped at `maxAlertsPerCategory` per rule so a report stays readable, and
- * [suppressedAlertKeys] names the keys that are still firing but did not fit. Without it a
- * consumer diffing the alert list could not tell a demoted alert from a cleared one, and would
- * never see it again: the alert state still holds it as firing, so it is never pushed as new.
+ * [suppressedAlertKeys] names every key that was over its threshold on this sample but did not
+ * fit. Without it the report would understate the sample, and a consumer diffing the alert list
+ * could not tell an alert the cap dropped from one that cleared. A dropped alert that was already
+ * firing is never pushed again either: the alert state still holds it, so naming it here is the
+ * only place a consumer can see it at all.
  */
 data class MonitoringReport(
     val usage: SystemUsage,

@@ -245,10 +245,10 @@ class ReportFormatterTest {
     /**
      * The capped alert list is only honest if the keys it dropped are still named somewhere. A
      * reader of the text report — and of the HTML built from it — has to see that the list is not
-     * everything that is firing.
+     * everything that crossed a threshold.
      */
     @Test
-    fun namesTheStillFiringKeysTheCappedAlertListLeftOut() {
+    fun namesTheOverThresholdKeysTheCappedAlertListLeftOut() {
         val report = alertingReport().copy(
             suppressedAlertKeys = listOf("memory:one", "memory:two"),
         )
@@ -257,7 +257,7 @@ class ReportFormatterTest {
 
         assertContains(
             output,
-            "- 2 more still firing, over maxAlertsPerCategory: memory:one, memory:two",
+            "- 2 more over threshold, past maxAlertsPerCategory: memory:one, memory:two",
         )
     }
 

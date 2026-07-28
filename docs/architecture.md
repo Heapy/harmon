@@ -138,10 +138,13 @@ intended only for a socket under `/tmp` and does not improve process access.
   alert is never dropped; after three consecutive failed deliveries its retries
   widen from two samples up to thirty-two, and any confirmed delivery clears
   that backoff. Alert state is in-memory and resets with the agent.
-- Reports carry at most `maxAlertsPerCategory` alerts per rule, while the alert
-  state keeps every firing key, including the ones no report had room for. Those
-  keys are named in the report's `suppressedAlertKeys`, so a demoted alert is
-  distinguishable from a cleared one.
+- Reports carry at most `maxAlertsPerCategory` alerts per rule and name every
+  key the cap left out in `suppressedAlertKeys`, so a dropped alert is
+  distinguishable from a cleared one and the count is the whole overflow. The
+  alert state keeps the already-firing ones among those keys, so a demoted alert
+  does not push again on its return; a key crossing its threshold below the cut
+  is reported as suppressed but stays out of the state, and so out of
+  hysteresis.
 - With `notifyEverySample`, the push goes out whether or not a key's retry is
   deferred, so nothing is deferred in that mode and `newAlertKeys` names every
   alert no channel has confirmed yet.

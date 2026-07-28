@@ -175,11 +175,14 @@ class HarmonService(
     /**
      * The report to publish, paired with every key firing in the same sample.
      *
-     * The report carries at most `maxAlertsPerCategory` alerts per rule so it stays readable,
-     * while the alert state has to see the full set: a key the report had no room for is still
-     * firing, and forgetting it would make its return look like a fresh alert. The keys that did
-     * not fit are named in the report instead of vanishing, so a consumer diffing the alert list
-     * cannot read a demoted alert as a cleared one.
+     * The report carries at most `maxAlertsPerCategory` alerts per rule so it stays readable, and
+     * names every key the cap left out, so its alert list never understates what is over
+     * threshold and a consumer diffing that list cannot read a dropped alert as a cleared one.
+     *
+     * The alert state is committed with a narrower set. An already-alerting key the cap pushed out
+     * is still firing and forgetting it would make its return look like a fresh alert, while a key
+     * that first crossed its threshold below the cut was never pushed and must not enter the state,
+     * where the lowered clear threshold would keep it alerting long after it settled back.
      */
     private fun createSample(
         previous: RawSystemSnapshot,
@@ -187,13 +190,12 @@ class HarmonService(
     ): SampledAlerts {
         val usage = calculator.calculate(previous, current)
         val outcome = analyzer.analyze(usage, config, alertState.activeKeys)
-        val reported = outcome.alerts.mapTo(mutableSetOf()) { it.key }
         return SampledAlerts(
             report = MonitoringReport(
                 usage = usage,
                 alerts = outcome.alerts,
                 topProcessCount = config.topProcessCount,
-                suppressedAlertKeys = (outcome.firingKeys - reported).sorted(),
+                suppressedAlertKeys = outcome.suppressedKeys.sorted(),
             ),
             firingKeys = outcome.firingKeys,
         )

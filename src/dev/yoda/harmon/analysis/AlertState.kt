@@ -82,9 +82,11 @@ class AlertState {
      * Records the outcome of a sample and returns, for every key whose retry was deferred, how
      * many samples it now waits.
      *
-     * [firingKeys] is the complete set of keys whose condition holds, which is wider than the
-     * alerts a report chose to carry: a key dropped from a report for readability is still firing
-     * and must keep both its hysteresis and its settled state.
+     * [firingKeys] is wider than the alerts a report chose to carry: an already-firing key the
+     * report's per-category cap pushed out is still firing and must keep both its hysteresis and
+     * its settled state. It is not every key over its threshold, though — a key that first crossed
+     * below the cap was never reported as an alert and never pushed, so it does not belong in a
+     * state that decides what has already been delivered and what clears with hysteresis.
      *
      * Must be called on every sample, including the ones with no delivery at all: otherwise a key
      * that stopped firing would stay settled forever and its next appearance would never produce

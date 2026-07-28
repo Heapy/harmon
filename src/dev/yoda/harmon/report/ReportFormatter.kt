@@ -110,8 +110,8 @@ object ReportFormatter {
             }
             if (report.suppressedAlertKeys.isNotEmpty()) {
                 appendLine(
-                    "- ${report.suppressedAlertKeys.size} more still firing, " +
-                        "over maxAlertsPerCategory: " +
+                    "- ${report.suppressedAlertKeys.size} more over threshold, " +
+                        "past maxAlertsPerCategory: " +
                         report.suppressedAlertKeys.joinToString(),
                 )
             }
