@@ -88,7 +88,10 @@ the walk both a longer walk and the binding check in its most meaningful form.
 Neither harness is meant to run as root: `processes.samples-are-well-formed`
 holds because an ordinary user cannot read the rusage of pid 0, and
 `socket.accept-rejects-foreign-uid` has no foreign user to name when the caller
-is uid 0.
+is uid 0. The other way round, `processes.issues-are-well-formed` needs the
+account to own at least 64 rusage-readable processes, because the capacity branch
+it covers only fires once the 64-slot sample array is full — an ordinary session
+is far past that (566 here), a stripped service account might not be.
 
 `scripts/test-native.sh` regenerates the header the C tests include straight
 from the `.def` (`sed '1,/^---$/d'` into `build/native-test/`), compiles every
@@ -104,10 +107,13 @@ executed check passed and 1 otherwise. Arguments are `--self-check`, which adds 
 deliberately failing check so the `fail` branch is executed rather than assumed,
 and one name-prefix filter, which is the first argument that is not a flag — in
 any position, so `--self-check harness.` is how both are combined. Anything else
-beginning with `--`, or a second filter, is a usage error and exits 2: an unknown
-flag taken for a filter would select nothing and exit 0, which is how a mistyped
-`--self-check` would read as a clean run. A filter that selects nothing prints
-`ok harness.no-checks-selected` for the same reason. Both harnesses arm a
+beginning with a dash, one or two, or a second filter, is a usage error and exits
+2: an unknown flag taken for a filter would select nothing and exit 0, which is
+how a mistyped `--self-check` would read as a clean run, and `-selfcheck` is the
+likelier typo of the two. The deliberate failure ignores the filter for the same
+reason — under `--self-check pure.` a filtered-out self-check would report
+success from a harness whose `fail` branch never ran. A filter that selects
+nothing prints `ok harness.no-checks-selected`. Both harnesses arm a
 60-second `alarm` before their first check, so a walk or a socket that hung
 inside the kernel dies on SIGALRM instead of hanging `./kotlin test`; the bridge
 reports that as "died on signal 14".
@@ -172,6 +178,13 @@ to cover everything:
 - the one-line wrappers that exist only for Kotlin — `hm_free`,
   `hm_close_descriptor`, `hm_sleep_millis`;
 - the `RUSAGE_INFO_V6 → V4` fallback — only fires on older macOS;
+- the `pid-N` name fallback in `hm_list_processes` — it needs a process that
+  vanishes between the rusage read and the metadata read, so proc_name and
+  `proc_bsdinfo` both come back empty; deleting the fallback leaves every
+  `processes.*` check green. The empty-name branch of
+  `processes.samples-are-well-formed` is a guard against that, not coverage of
+  it, and `binding.process-sample-readable` asserts the same non-empty name over
+  a listing where proc_name never fails;
 - the `chown` branch of `hm_unix_server_open` — root only;
 - the peer-uid gate inside `hm_unix_connect` (`EACCES` on a socket owned by
   someone else), `hm_unix_accept` with a null `peer_user_id`, and its bypass for

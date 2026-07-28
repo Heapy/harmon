@@ -151,6 +151,7 @@ static void hm_check_send_rejects_bad_payload(void) {
     if (hm_test_socket_pair(pair, 0) != 0) {
         CHECK("framing.send-rejects-null", 0, "socketpair failed: %s", strerror(errno));
         CHECK("framing.send-rejects-empty", 0, "socketpair failed: %s", strerror(errno));
+        CHECK("framing.send-rejects-oversized", 0, "socketpair failed: %s", strerror(errno));
         return;
     }
 

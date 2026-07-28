@@ -357,8 +357,15 @@ fun assertHarnessSucceeded(run: NativeHarnessRun, expectedChecks: Set<String>) {
  * reporting `ok` would keep the suite green forever. The prefix filter keeps the real suites out of
  * the run, and the last step is what proves the bridge turns a native failure into an
  * `AssertionError` that names the check rather than into a nameless "the native suite failed".
+ *
+ * [foreignFilter] is a filter that selects a real suite and never the deliberate failure, which is
+ * the combination that used to swallow it: reported through the ordinary filter, the failure was
+ * dropped and the run exited 0, so the flag answered "self-check passed" from a harness whose
+ * `fail` branch had not run.
  */
-fun assertReportsDeliberateFailure(tool: NativeTool) {
+fun assertReportsDeliberateFailure(tool: NativeTool, foreignFilter: String) {
+    assertSurvivesAForeignFilter(tool, foreignFilter)
+
     val run = runNativeHarness(tool, listOf("--self-check", "harness."))
 
     assertEquals(1, run.exitCode, "a failing check must leave a non-zero exit code")
@@ -382,19 +389,45 @@ fun assertReportsDeliberateFailure(tool: NativeTool) {
 }
 
 /**
- * Runs [tool] with an argument that looks like a flag and is not one, and requires a usage error.
+ * `--self-check` under a filter that selects another suite: the failure must still be reported.
  *
- * Taking an unrecognised `--flag` for the name filter is how a mistyped `--self-check` turns into a
- * run that selects nothing, prints the no-checks sentinel and exits 0.
+ * The flag exists to execute the `fail` branch, so a filter that hides it turns the whole flag into
+ * a lie — an all-green report and exit 0 from a run that proved nothing.
+ */
+private fun assertSurvivesAForeignFilter(tool: NativeTool, foreignFilter: String) {
+    val run = runNativeHarness(tool, listOf("--self-check", foreignFilter))
+
+    assertEquals(
+        1,
+        run.exitCode,
+        "the deliberate failure must survive the filter $foreignFilter\n${run.describe()}",
+    )
+    val deliberate = run.checks.singleOrNull { it.name == "harness.self-check" }
+        ?: fail("$foreignFilter hid the deliberate failure\n${run.describe()}")
+    assertFalse(deliberate.passed, "the deliberate check must be reported as failed")
+    assertTrue(
+        run.checks.any { it.name.startsWith(foreignFilter) },
+        "the filtered suite must still run\n${run.describe()}",
+    )
+}
+
+/**
+ * Runs [tool] with arguments that look like flags and are not, and requires a usage error for each.
+ *
+ * Taking an unrecognised flag for the name filter is how a mistyped `--self-check` turns into a run
+ * that selects nothing, prints the no-checks sentinel and exits 0. The single-dash form is the more
+ * likely typo of the two and was the one that slipped through a `--` prefix test.
  */
 fun assertRejectsAnUnknownFlag(tool: NativeTool) {
-    val run = runNativeHarness(tool, listOf("--no-such-flag"))
+    for (argument in listOf("--no-such-flag", "-selfcheck")) {
+        val run = runNativeHarness(tool, listOf(argument))
 
-    assertEquals(2, run.exitCode, "an unknown flag must be a usage error\n${run.describe()}")
-    assertTrue(
-        run.checks.isEmpty(),
-        "a usage error must run no checks at all\n${run.describe()}",
-    )
+        assertEquals(2, run.exitCode, "$argument must be a usage error\n${run.describe()}")
+        assertTrue(
+            run.checks.isEmpty(),
+            "a usage error must run no checks at all\n${run.describe()}",
+        )
+    }
 }
 
 private const val READ_BUFFER_BYTES = 4096

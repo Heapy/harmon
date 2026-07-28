@@ -35,7 +35,7 @@ class SelftestBridgeTest {
         val tool = selftestHarness()
         assertHarnessIsCurrent(tool, SELFTEST_SOURCES)
 
-        assertReportsDeliberateFailure(tool)
+        assertReportsDeliberateFailure(tool, foreignFilter = "binding.")
     }
 
     /**

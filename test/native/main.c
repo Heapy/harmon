@@ -59,11 +59,14 @@ int main(int argc, char **argv) {
     for (int index = 1; index < argc; index++) {
         if (strcmp(argv[index], "--self-check") == 0) {
             self_check = 1;
-        } else if (strncmp(argv[index], "--", 2) == 0 || hm_test_filter != NULL) {
+        } else if (argv[index][0] == '-' || hm_test_filter != NULL) {
             /*
              * An unknown flag taken as a name filter would match nothing, print
              * nothing and exit 0 — a mistyped `--self-check` would read as a
-             * clean run of a harness that checked nothing at all.
+             * clean run of a harness that checked nothing at all. One dash is
+             * as much a typo as two, and `-selfcheck` is the likelier of the
+             * two mistakes, so anything starting with a dash is refused: no
+             * check name begins with one.
              */
             fprintf(stderr, "usage: %s [--self-check] [name-prefix]\n", argv[0]);
             return 2;
@@ -83,8 +86,15 @@ int main(int argc, char **argv) {
     /*
      * Without this flag the `fail` branch never executes, and a silently broken
      * `CHECK` would report an all-green run forever.
+     *
+     * The filter is dropped first, because the deliberate failure has to be
+     * reported whatever it selected: passed through `hm_test_selected` it is
+     * discarded by any filter other than `harness.`, and `--self-check pure.`
+     * would answer "self-check passed" from a harness whose `fail` branch never
+     * ran. Nothing after this point reads the filter.
      */
     if (self_check) {
+        hm_test_filter = NULL;
         CHECK(
             "harness.self-check",
             0,

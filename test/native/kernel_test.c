@@ -6,13 +6,21 @@
 #include "harness.h"
 
 /*
- * The suite reads live machine state, and two of its checks depend on the user
- * it runs as. `processes.samples-are-well-formed` requires a pid of its own to
- * be positive, which holds only because proc_pid_rusage denies pid 0 —
+ * The suite reads live machine state, and three of its checks depend on the
+ * account it runs as. `processes.samples-are-well-formed` requires a pid of its
+ * own to be positive, which holds only because proc_pid_rusage denies pid 0 —
  * kernel_task, which proc_listallpids does report — to an ordinary user; and
  * `socket.accept-rejects-foreign-uid` in the socket suite cannot impersonate a
  * foreign user under uid 0. Running the harness as root is not supported, and
  * CLAUDE.md says so.
+ *
+ * `processes.issues-are-well-formed` needs the opposite kind of account: the
+ * capacity branch it covers only fires once the sample array is full, so the
+ * caller must own at least the 64 rusage-readable processes that fill it. An
+ * ordinary desktop session is far past that (566 here), a stripped service
+ * account might not be — the check then fails naming the capacity issues it
+ * counted, which is the same signal it gives for a truncated PID list. CLAUDE.md
+ * records this alongside the non-root requirement.
  */
 
 /*
@@ -472,7 +480,15 @@ static void hm_check_process_listing(void) {
             malformed = index;
             reason = "name is not terminated within HM_PROCESS_NAME_SIZE";
         } else if (sample->name[0] == '\0') {
-            /* The bridge substitutes `pid-N` when the kernel reports no name. */
+            /*
+             * A guard, not coverage of the `pid-N` fallback that makes it hold:
+             * on a live machine proc_name answers for every process the caller
+             * can read the rusage of, so this branch never fires and deleting
+             * the fallback leaves the check green. Reaching it needs a process
+             * that vanishes between the rusage read and the metadata read,
+             * which cannot be forced from outside — CLAUDE.md lists the fallback
+             * among the accepted gaps.
+             */
             malformed = index;
             reason = "name is empty";
         } else if (memchr(
@@ -690,22 +706,53 @@ static void hm_check_processor_counters(void) {
     );
 }
 
+/*
+ * How far a swap figure may sit from one read moments later. Measured here at
+ * zero over 2000 back-to-back pairs of reads, so the allowance is for a machine
+ * that swaps while the check runs, not for the reads themselves.
+ */
+#define HM_SWAP_DRIFT_BYTES (64ULL * 1024ULL * 1024ULL)
+
+static int hm_matches_within_drift(uint64_t reported, uint64_t anchor) {
+    const uint64_t difference = reported > anchor
+        ? reported - anchor
+        : anchor - reported;
+    return difference <= HM_SWAP_DRIFT_BYTES;
+}
+
 static void hm_check_swap_and_virtual_memory(void) {
     HMSwapSample swap;
     memset(&swap, 0, sizeof(swap));
     const int swap_status = hm_read_swap(&swap);
+
+    struct xsw_usage anchor;
+    memset(&anchor, 0, sizeof(anchor));
+    size_t anchor_size = sizeof(anchor);
+    const int anchor_status = sysctlbyname("vm.swapusage", &anchor, &anchor_size, NULL, 0);
 
     HMVirtualMemorySample memory;
     memset(&memory, 0, sizeof(memory));
     const int memory_status = hm_read_virtual_memory(&memory);
 
     /*
-     * Every byte figure is a page count multiplied by the page size, so a page
-     * size of zero — or one that is not a power of two — would silently zero or
-     * skew the whole sample. Swap may legitimately be empty, hence `>=` rather
-     * than a positive total; the three swap figures come from separate fields of
-     * one sysctl and add up exactly, which is what a transposed pair breaks.
+     * Every byte figure of the virtual memory sample is a page count multiplied
+     * by the page size, so a page size of zero — or one that is not a power of
+     * two — would silently zero or skew the whole sample.
+     *
+     * The swap figures are asserted against a second, independent read of the
+     * same sysctl, field by field. `used + available == total` is worth nothing
+     * on its own: it survives a transposed `xsu_used`/`xsu_avail` pair intact,
+     * because `available <= total` keeps `total >= used` true as well, and all
+     * three figures would keep adding up while `used` reported free space. The
+     * anchor is the only thing that says which field went where. Swap may
+     * legitimately be empty, and on a machine with no swap file at all the three
+     * figures are zero and a transposition is invisible to any check.
      */
+    const int swap_matches_anchor = anchor_status == 0 &&
+        hm_matches_within_drift(swap.total_bytes, anchor.xsu_total) &&
+        hm_matches_within_drift(swap.used_bytes, anchor.xsu_used) &&
+        hm_matches_within_drift(swap.available_bytes, anchor.xsu_avail);
+
     const uint64_t resident = memory.free_bytes + memory.active_bytes +
         memory.inactive_bytes + memory.wired_bytes;
     CHECK(
@@ -713,17 +760,26 @@ static void hm_check_swap_and_virtual_memory(void) {
         swap_status == 0 &&
             swap.total_bytes >= swap.used_bytes &&
             swap.used_bytes + swap.available_bytes == swap.total_bytes &&
+            swap_matches_anchor &&
             memory_status == 0 &&
             memory.page_size_bytes > 0 &&
             (memory.page_size_bytes & (memory.page_size_bytes - 1)) == 0 &&
             resident > 0,
         "expected 0 and used + available == total, got %d and %llu + %llu != %llu; "
+            "expected each within %llu bytes of vm.swapusage, got %d/matched=%d "
+            "against total=%llu used=%llu available=%llu; "
             "expected 0 with a power-of-two page size and non-zero pages, "
             "got %d with page size %llu over %llu bytes",
         swap_status,
         (unsigned long long)swap.used_bytes,
         (unsigned long long)swap.available_bytes,
         (unsigned long long)swap.total_bytes,
+        HM_SWAP_DRIFT_BYTES,
+        anchor_status,
+        swap_matches_anchor,
+        (unsigned long long)anchor.xsu_total,
+        (unsigned long long)anchor.xsu_used,
+        (unsigned long long)anchor.xsu_avail,
         memory_status,
         (unsigned long long)memory.page_size_bytes,
         (unsigned long long)resident

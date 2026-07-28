@@ -320,9 +320,11 @@ fun main(args: Array<String>) {
             argument == "--self-check" -> selfCheck = true
             /*
              * An unknown flag taken as a name filter would match nothing and exit 0 — a mistyped
-             * `--self-check` would read as a clean run of a harness that checked nothing.
+             * `--self-check` would read as a clean run of a harness that checked nothing. One dash
+             * is as much a typo as two, and `-selfcheck` is the likelier of the two mistakes, so
+             * anything starting with a dash is refused: no check name begins with one.
              */
-            argument.startsWith("--") || filter != null -> {
+            argument.startsWith("-") || filter != null -> {
                 reportUsage("selftest")
                 exitProcess(2)
             }
@@ -336,6 +338,13 @@ fun main(args: Array<String>) {
     runBindingChecks()
 
     if (selfCheck) {
+        /*
+         * The filter is dropped first, because the deliberate failure has to be reported whatever
+         * it selected: passed through [selected] it is discarded by any filter other than
+         * `harness.`, and `--self-check binding.` would answer "self-check passed" from a harness
+         * whose `fail` branch never ran. Nothing after this point reads the filter.
+         */
+        filter = null
         check("harness.self-check", false) {
             "deliberate failure that proves the fail branch runs"
         }

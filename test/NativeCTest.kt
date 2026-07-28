@@ -82,7 +82,8 @@ class NativeCTest {
     }
 
     @Test
-    fun reportsADeliberateFailure() = assertReportsDeliberateFailure(cTestHarness())
+    fun reportsADeliberateFailure() =
+        assertReportsDeliberateFailure(cTestHarness(), foreignFilter = "pure.")
 
     /**
      * The same sentinel `selftest` prints, and for the same reason: the bridge reads an output with
