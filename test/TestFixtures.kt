@@ -1,4 +1,5 @@
 import dev.yoda.harmon.analysis.ApplicationGrouper
+import dev.yoda.harmon.history.HistoryStore
 import dev.yoda.harmon.model.Alert
 import dev.yoda.harmon.model.DeliveryResult
 import dev.yoda.harmon.model.LoadAverages
@@ -19,6 +20,13 @@ import dev.yoda.harmon.model.SystemUsage
 import dev.yoda.harmon.model.VirtualMemoryCounters
 import dev.yoda.harmon.model.VirtualMemoryUsage
 import dev.yoda.harmon.notify.NotificationChannel
+import kotlinx.cinterop.ExperimentalForeignApi
+import kotlinx.cinterop.cstr
+import kotlinx.cinterop.memScoped
+import kotlinx.cinterop.toKString
+import platform.Foundation.NSFileManager
+import platform.posix.mkdtemp
+import kotlin.test.fail
 import kotlin.time.Instant
 
 fun rawProcess(
@@ -331,6 +339,44 @@ fun alert(
     title = title,
     message = message,
 )
+
+/**
+ * Runs [body] against a home directory created for this test alone and removed afterwards.
+ *
+ * `mkdtemp` rather than a name built from the pid: whether the database is fresh decides things that
+ * can never be decided again — the `auto_vacuum` header, the rows a lookup table already holds — so a
+ * leftover file from an earlier run would answer a test with a value this code never chose.
+ */
+@OptIn(ExperimentalForeignApi::class)
+fun withScratchHome(body: (String) -> Unit) {
+    val home = memScoped {
+        /* `cstr` allocates a writable copy in this scope, which is what mkdtemp edits in place. */
+        mkdtemp("/tmp/harmon-history-test.XXXXXX".cstr.getPointer(this))?.toKString()
+    } ?: fail("cannot create a temporary directory")
+
+    try {
+        body(home)
+    } finally {
+        NSFileManager.defaultManager.removeItemAtPath(home, null)
+    }
+}
+
+/**
+ * Runs [body] against a store opened under [home] the way the agent opens it.
+ *
+ * Through [HistoryStore.openOrNull] rather than over `inMemoryDriver`, and that is the whole point of
+ * the scratch home: an in-memory driver leaves foreign keys off and holds a single connection, so
+ * neither a cascade nor a `last_insert_rowid()` read from the wrong pool would fail on it.
+ */
+fun withHistoryStore(home: String, body: (HistoryStore) -> Unit) {
+    val store = HistoryStore.openOrNull(homeDirectory = home)
+        ?: fail("the store must open under $home")
+    try {
+        body(store)
+    } finally {
+        store.close()
+    }
+}
 
 /**
  * A notification channel that keeps everything it was handed.

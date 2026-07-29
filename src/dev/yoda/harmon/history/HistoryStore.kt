@@ -4,6 +4,8 @@ import app.cash.sqldelight.db.SqlDriver
 import app.cash.sqldelight.driver.native.NativeSqliteDriver
 import co.touchlab.sqliter.SynchronousFlag
 import dev.yoda.harmon.db.HarmonDatabase
+import dev.yoda.harmon.model.DeliveryResult
+import dev.yoda.harmon.model.MonitoringReport
 import dev.yoda.harmon.util.failureDescription
 import dev.yoda.harmon.util.printError
 import kotlinx.cinterop.ExperimentalForeignApi
@@ -37,6 +39,59 @@ class HistoryStore(
     val driver: SqlDriver,
 ) {
     val database: HarmonDatabase = HarmonDatabase(driver)
+
+    /**
+     * Writes one whole sample — the system row, every process, the applications that have a bundle,
+     * the alerts and what each channel did with them — or writes nothing at all.
+     *
+     * The single transaction is not only about that all-or-nothing. `last_insert_rowid()` is per
+     * connection and the driver keeps a writer apart from a pool of readers, so the id of the sample
+     * has to be read inside the transaction that wrote it: read outside, the query lands on a reader
+     * where the counter is 0, and every child row then fails the `sample_id` foreign key. The lookups
+     * take their ids from a `SELECT` instead, because their inserts are `ON CONFLICT DO NOTHING` and
+     * a suppressed insert leaves the counter pointing at whatever row preceded it.
+     *
+     * Applications are resolved before the processes: `process_sample.application_id` references the
+     * lookup, so the row it names has to exist first. Groups without a bundle resolve to no id at all
+     * and their processes to `application_id = NULL`; see [upsertApplication].
+     */
+    fun record(report: MonitoringReport, deliveries: List<DeliveryResult> = emptyList()) {
+        val usage = report.usage
+        val samples = database.samplesQueries
+        val processes = database.processesQueries
+        val applications = database.applicationsQueries
+        val alerts = database.alertsQueries
+
+        database.transaction {
+            samples.insertSample(usage)
+            val sampleId = samples.lastInsertedId().executeAsOne()
+
+            val applicationIds = buildMap {
+                for (application in usage.applications) {
+                    val applicationId = applications.upsertApplication(application) ?: continue
+                    put(application.id, applicationId)
+                }
+            }
+            val applicationIdByPid = applicationIdsByPid(usage.applications, applicationIds)
+
+            for (process in usage.processes) {
+                processes.insertProcessUsage(
+                    sampleId = sampleId,
+                    processId = processes.upsertProcess(process),
+                    applicationId = applicationIdByPid[process.identity.pid],
+                    usage = process,
+                )
+            }
+            for (application in usage.applications) {
+                val applicationId = applicationIds[application.id] ?: continue
+                applications.insertApplicationUsage(sampleId, applicationId, application)
+            }
+
+            report.alerts.forEach { alerts.insertReportedAlert(sampleId, it) }
+            report.suppressedAlertKeys.forEach { alerts.insertSuppressedAlert(sampleId, it) }
+            deliveries.forEach { alerts.insertDeliveryResult(sampleId, it) }
+        }
+    }
 
     fun close() {
         driver.close()
