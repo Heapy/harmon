@@ -7,10 +7,10 @@
 /*
  * Sockets created by the framing and socket suites do not inherit the send and
  * receive timeouts the bridge sets on its own descriptors, so a missed wakeup
- * would hang `./kotlin test` forever. The alarm turns that into a signal the
- * Kotlin bridge reports as an abnormal termination.
+ * would hang `./kotlin test` forever. The alarm — `HM_TEST_TIMEOUT_SECONDS` in
+ * `harness.h`, shared with the children the kernel suite forks — turns that into
+ * a signal the Kotlin bridge reports as an abnormal termination.
  */
-#define HM_TEST_TIMEOUT_SECONDS 60
 
 int hm_test_failures = 0;
 int hm_test_reported = 0;

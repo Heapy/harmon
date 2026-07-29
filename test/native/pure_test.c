@@ -328,6 +328,41 @@ static void hm_check_mach_time(void) {
 }
 
 /*
+ * The scale of `hm_monotonic_time_ns`, which is the divisor of every rate and CPU
+ * percentage the collector computes: it turns two readings into an interval, and
+ * an interval a thousand times too short turns 3 % of a core into 3000 %.
+ *
+ * Nothing else checks it. The check above anchors `hm_mach_time_to_ns`, a
+ * different function on a different clock, and `binding.monotonic-clock-advances`
+ * in `selftest` asserts only that two readings come back in order — which they do
+ * whatever the seconds are multiplied by. Scaling `tv_sec` by 1e6 instead of 1e9
+ * passed every check in both harnesses.
+ *
+ * `clock_gettime_nsec_np` reads the same clock through a different entry point
+ * and does the arithmetic inside libsystem, so it is an anchor rather than the
+ * same expression written twice. The two lines are consecutive; the allowance is
+ * the one the check above uses, and for the same reason — it is chosen against
+ * the regression, not against the clocks. A wrong scale is off by the whole
+ * uptime, seconds after boot.
+ */
+static void hm_check_monotonic_time(void) {
+    const uint64_t reported = hm_monotonic_time_ns();
+    const uint64_t anchor = clock_gettime_nsec_np(CLOCK_MONOTONIC);
+    const uint64_t difference = anchor > reported ? anchor - reported : reported - anchor;
+
+    CHECK(
+        "pure.monotonic-time-matches-the-posix-clock",
+        reported > 0 && anchor > 0 && difference < HM_UPTIME_TOLERANCE_NS,
+        "expected the monotonic clock within %llu ns of clock_gettime_nsec_np, got "
+            "%llu against %llu, %llu ns apart",
+        (unsigned long long)HM_UPTIME_TOLERANCE_NS,
+        (unsigned long long)reported,
+        (unsigned long long)anchor,
+        (unsigned long long)difference
+    );
+}
+
+/*
  * The curl write callback of the webhook and Telegram senders. Returning
  * anything other than the full byte count aborts the transfer, so the body has
  * to be counted even though it is thrown away.
@@ -351,5 +386,6 @@ void hm_run_pure_tests(void) {
     hm_check_process_list_capacity();
     hm_check_candidate_order();
     hm_check_mach_time();
+    hm_check_monotonic_time();
     hm_check_discard_http_response();
 }

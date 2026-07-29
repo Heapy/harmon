@@ -23,6 +23,15 @@
 #include <stdio.h>
 #include <string.h>
 
+/*
+ * How long a whole run may take before `main` dies on SIGALRM. It lives here
+ * rather than in `main.c` because every child the suites fork has to bound
+ * itself by the same number: `fork` clears the parent's alarm, so a child that
+ * outlives a parent killed by one would hold the harness's stdout open and hang
+ * the reader in `NativeHarness.kt` instead of hanging the harness.
+ */
+#define HM_TEST_TIMEOUT_SECONDS 60
+
 extern int hm_test_failures;
 extern int hm_test_reported;
 extern const char *hm_test_filter;

@@ -1,5 +1,6 @@
 #include "harmon_native.h"
 
+#include <fcntl.h>
 #include <pthread.h>
 #include <sys/mman.h>
 #include <sys/wait.h>
@@ -23,10 +24,10 @@
  * counted, which is the same signal it gives for a truncated PID list. Two more
  * checks ask for a little more of the same machine:
  * `processes.issue-metadata-matches-a-fresh-read` for 32 issues that are still
- * readable moments later, and `attribution.bytes-match-an-independent-walk` for a
- * compressor holding pages of one of the account's first processes. All of them
- * fail naming what they counted rather than passing vacuously, and CLAUDE.md
- * records the requirements alongside the non-root one.
+ * readable moments later, and `processes.rusage-issue-path-matches-a-fresh-read`
+ * for 16 processes of *other* users, which is what the rusage branch reports. All
+ * of them fail naming what they counted rather than passing vacuously, and
+ * CLAUDE.md records the requirements alongside the non-root one.
  */
 
 /*
@@ -186,8 +187,21 @@ static void hm_spin_microseconds(uint64_t microseconds) {
     }
 }
 
-/* Never returns. Maps enough regions to make a walk of this child take milliseconds. */
+/*
+ * Never returns. Maps enough regions to make a walk of this child take
+ * milliseconds.
+ *
+ * The two lines before that are what keeps a hung run from hanging `./kotlin
+ * test` instead of the harness. The child waits to be killed, and `fork` cleared
+ * the alarm `main` armed, so a parent that dies on SIGALRM before reaching the
+ * `kill` below leaves it running forever — holding the write end of the stdout
+ * pipe, which is the descriptor `NativeHarness.kt` reads until EOF. Closing
+ * stdout here makes that EOF arrive with the parent's death, and the re-armed
+ * alarm keeps the orphan itself bounded by the same timeout.
+ */
 static void hm_run_vanishing_child(int ready_descriptor) {
+    alarm(HM_TEST_TIMEOUT_SECONDS);
+    close(STDOUT_FILENO);
     const size_t page = (size_t)getpagesize();
     for (int index = 0; index < HM_VANISHING_REGIONS; index++) {
         void *mapped = mmap(
@@ -363,16 +377,31 @@ static void hm_check_attribution_vanishing_pid(void) {
  * sandwich instead of reported as a mismatch. Measured here: 120 sandwiches over
  * 6 targets, never a page apart.
  *
- * The target is another process of this user, not the harness: the harness has no
- * swapped-out pages seconds after it started (measured: 0 over 54 regions), and
- * over a zero sum a missing multiplication and a hard zero are both invisible.
- * 37 of the first 40 processes of this user carried compressed pages when
- * measured, so the scan normally stops at its first candidate; a machine whose
- * compressor holds nothing of this user's fails the check naming the scan, which
- * is the same signal it gives for a bridge that lost the field.
+ * The target is preferably another process of this user, because the harness has
+ * no swapped-out pages seconds after it started (measured: 0 over 55 regions),
+ * and over a zero sum a missing multiplication and a hard zero are both
+ * invisible. The scan walks every same-user process, newest first, and stops at
+ * the first one the compressor is holding pages of — 568 of this account's 594
+ * processes qualified when measured, the first at the tenth of them, and the
+ * probe walk gives up on a process at its first swapped page, so the usual cost
+ * is a few walks.
+ *
+ * An earlier revision spent a budget of 24 candidates whether or not their walk
+ * found anything, which made the check fail on any account with two dozen recent
+ * processes — 30 background `sleep`s were enough, and so were two harnesses of
+ * the same user running at once. Nothing about that failure was a property of the
+ * bridge.
+ *
+ * A machine whose compressor holds nothing of this account (a freshly booted CI
+ * runner with no memory pressure, say) has no such target at all. The check then
+ * walks this process instead, where the swapped sum is zero and the resident sum
+ * is not, and requires the bridge to report exactly zero bytes: that still fails
+ * a bridge summing the resident pages, and it fails nothing on a quiet machine.
+ * What it cannot separate there is a hard-coded zero — CLAUDE.md lists that among
+ * the accepted gaps.
  */
 #define HM_ANCHOR_REGION_LIMIT 1024
-#define HM_ANCHOR_CANDIDATES 24
+#define HM_ANCHOR_ATTEMPTS 8
 
 typedef struct {
     uint64_t swapped_pages;
@@ -407,9 +436,38 @@ static HMRegionWalk hm_walk_regions(pid_t pid) {
     return walk;
 }
 
+/* Whether the compressor holds anything of `pid`, answered at the first page. */
+static int hm_carries_swapped_pages(pid_t pid) {
+    uint64_t address = 0;
+    for (int32_t region_index = 0; region_index < HM_ANCHOR_REGION_LIMIT; ++region_index) {
+        struct proc_regioninfo region;
+        memset(&region, 0, sizeof(region));
+        if (proc_pidinfo(
+                pid,
+                PROC_PIDREGIONINFO,
+                address,
+                &region,
+                (int)sizeof(region)
+            ) != (int)sizeof(region)) {
+            return 0;
+        }
+        if (region.pri_pages_swapped_out > 0) {
+            return 1;
+        }
+        const uint64_t next = region.pri_address + region.pri_size;
+        if (next <= address || next < region.pri_address) {
+            return 0;
+        }
+        address = next;
+    }
+    return 0;
+}
+
 typedef struct {
     pid_t target;
-    int scanned;
+    int examined;
+    int carriers;
+    int attempted;
     uint64_t lowest_pages;
     uint64_t highest_pages;
     uint64_t resident_pages;
@@ -418,22 +476,58 @@ typedef struct {
     int status;
 } HMAnchoredWalk;
 
+/* One target walked by the test, then by the bridge, then by the test again. */
+static int hm_sandwich_walk(pid_t pid, HMAnchoredWalk *result) {
+    const HMRegionWalk before = hm_walk_regions(pid);
+    uint64_t bytes = 0;
+    int32_t regions = 0;
+    int consumed = 0;
+    const int status = hm_read_compressed_or_paged_out(
+        pid,
+        HM_ANCHOR_REGION_LIMIT,
+        &bytes,
+        &regions,
+        &consumed
+    );
+    const HMRegionWalk after = hm_walk_regions(pid);
+    if (status < 0 || after.regions == 0) {
+        return 0;
+    }
+
+    result->target = pid;
+    result->lowest_pages = before.swapped_pages < after.swapped_pages
+        ? before.swapped_pages
+        : after.swapped_pages;
+    result->highest_pages = before.swapped_pages > after.swapped_pages
+        ? before.swapped_pages
+        : after.swapped_pages;
+    result->resident_pages = before.resident_pages < after.resident_pages
+        ? before.resident_pages
+        : after.resident_pages;
+    result->bytes = bytes;
+    result->regions = regions;
+    result->status = status;
+    return 1;
+}
+
 /*
- * The first process of this user whose pages the compressor is holding, walked by
- * the test, then by the bridge, then by the test again. A candidate that stops
- * existing in the middle costs an iteration rather than the check: `proc_listallpids`
- * answers newest first, and the newest processes of a desktop session include the
- * Spotlight workers, which exit on their own schedule.
+ * The first process of this user whose pages the compressor is holding, or this
+ * process when the compressor holds none of them. A candidate that stops existing
+ * in the middle costs an attempt rather than the check: `proc_listallpids` answers
+ * newest first, and the newest processes of a desktop session include the
+ * Spotlight workers, which exit on their own schedule. Attempts are capped so
+ * that a bridge refusing every walk fails in bounded time instead of retrying
+ * every carrier on the machine.
  */
 static HMAnchoredWalk hm_anchored_walk(void) {
-    HMAnchoredWalk result = {0, 0, 0, 0, 0, 0, 0, -1};
+    HMAnchoredWalk result = {0, 0, 0, 0, 0, 0, 0, 0, 0, -1};
     const int capacity = hm_count_processes() + HM_PROCESS_LIST_HEADROOM;
     pid_t *pids = (pid_t *)calloc((size_t)capacity, sizeof(pid_t));
     if (pids == NULL) {
         return result;
     }
     const int listed = proc_listallpids(pids, capacity * (int)sizeof(pid_t));
-    for (int index = 0; index < listed && result.scanned < HM_ANCHOR_CANDIDATES; ++index) {
+    for (int index = 0; index < listed && result.attempted < HM_ANCHOR_ATTEMPTS; ++index) {
         const pid_t pid = pids[index];
         if (pid <= 0 || pid == getpid()) {
             continue;
@@ -445,41 +539,27 @@ static HMAnchoredWalk hm_anchored_walk(void) {
             info.pbi_uid != (uint32_t)geteuid()) {
             continue;
         }
-        ++result.scanned;
-
-        const HMRegionWalk before = hm_walk_regions(pid);
-        if (before.swapped_pages == 0) {
-            continue;
-        }
-        uint64_t bytes = 0;
-        int32_t regions = 0;
-        int consumed = 0;
-        const int status = hm_read_compressed_or_paged_out(
-            pid,
-            HM_ANCHOR_REGION_LIMIT,
-            &bytes,
-            &regions,
-            &consumed
-        );
-        const HMRegionWalk after = hm_walk_regions(pid);
-        if (status < 0 || after.regions == 0) {
+        ++result.examined;
+        if (!hm_carries_swapped_pages(pid)) {
             continue;
         }
 
-        result.target = pid;
-        result.lowest_pages = before.swapped_pages < after.swapped_pages
-            ? before.swapped_pages
-            : after.swapped_pages;
-        result.highest_pages = before.swapped_pages > after.swapped_pages
-            ? before.swapped_pages
-            : after.swapped_pages;
-        result.resident_pages = before.resident_pages;
-        result.bytes = bytes;
-        result.regions = regions;
-        result.status = status;
-        break;
+        ++result.carriers;
+        ++result.attempted;
+        if (hm_sandwich_walk(pid, &result)) {
+            break;
+        }
     }
     free(pids);
+
+    /*
+     * Only when the machine offered no subject at all. A carrier the bridge
+     * refused to walk is a failure to report, not a reason to fall back to a
+     * target where the sum is zero.
+     */
+    if (result.target == 0 && result.carriers == 0) {
+        hm_sandwich_walk(getpid(), &result);
+    }
     return result;
 }
 
@@ -490,18 +570,22 @@ static void hm_check_attribution_bytes(void) {
     /*
      * The resident sum is asserted to differ from the swapped one so that the
      * comparison is discriminating: over a target where the two agreed, reading
-     * the wrong field would pass.
+     * the wrong field would pass. That is also what carries the fallback target,
+     * where the swapped sum is zero and the resident one is thousands of pages.
      */
     CHECK(
         "attribution.bytes-match-an-independent-walk",
         walk.target > 0 &&
-            walk.lowest_pages > 0 &&
+            walk.status >= 0 &&
+            walk.regions > 0 &&
+            walk.resident_pages > 0 &&
             walk.resident_pages != walk.lowest_pages &&
             walk.bytes >= walk.lowest_pages * page_size &&
             walk.bytes <= walk.highest_pages * page_size,
         "expected pid %d's %llu..%llu swapped pages at %llu bytes each, got %llu "
             "bytes (%llu pages) over %d regions at status %d, against %llu resident "
-            "pages, after scanning %d processes",
+            "pages, after examining %d processes of this user, %d of which carried "
+            "compressed pages and %d of which were walked",
         (int)walk.target,
         (unsigned long long)walk.lowest_pages,
         (unsigned long long)walk.highest_pages,
@@ -511,7 +595,9 @@ static void hm_check_attribution_bytes(void) {
         (int)walk.regions,
         walk.status,
         (unsigned long long)walk.resident_pages,
-        walk.scanned
+        walk.examined,
+        walk.carriers,
+        walk.attempted
     );
 }
 
@@ -646,17 +732,22 @@ static const char *hm_first_mismatch(
 
 /*
  * The metadata on the issue path, against a second read the test performs
- * itself. Both issue branches of `hm_list_processes` fill these fields, and
- * `processes.issues-are-well-formed` is satisfied by the zeroed struct they start
- * from, so without this the whole call could go and nothing would notice. It also
- * covers what `hm_read_process_metadata` puts where: a hard-coded uid, a parent
- * pid that is always 1, a `proc_pidpath` that is never called.
+ * itself. `processes.issues-are-well-formed` is satisfied by the zeroed struct
+ * the fields start from, so without this the whole `hm_read_process_metadata`
+ * call could go and nothing would notice. It also covers what that function puts
+ * where: a hard-coded uid, a parent pid that is always 1, a `proc_pidpath` that
+ * is never called.
+ *
+ * This covers the *capacity* branch only, and it is the branch the narrow listing
+ * above produces (247 of its 256 issues here). A pid whose `proc_bsdinfo` cannot
+ * be read at all is skipped, and that is exactly the population of the other
+ * branch: `PROC_PIDTBSDINFO` is refused for another user's process, 0 of 275
+ * readable here, so anchoring against it would compare nothing.
+ * `processes.rusage-issue-path-matches-a-fresh-read` covers the rusage branch
+ * instead, over the one field that survives the refusal.
  *
  * The second read mirrors the bridge's fallback order — proc_name first, then
- * `pbi_name` and `pbi_comm` — because that order is the mapping under test. A pid
- * whose `proc_bsdinfo` cannot be read at all is skipped: it either vanished
- * between the two reads or is kernel_task, for which the bridge reports the empty
- * name this check would otherwise have to special-case.
+ * `pbi_name` and `pbi_comm` — because that order is the mapping under test.
  */
 static void hm_check_issue_metadata(const HMProcessIssue *issues, int written_issues) {
     int compared = 0;
@@ -948,59 +1039,11 @@ static void hm_check_process_listing(void) {
  * guarded fallback with an unconditional `pid-%d`, which would hand application
  * grouping a machine of processes named after their pids.
  *
- * The listing is taken at full width so that this process is in it: the 64 slots
- * the check above uses are filled long before a pid this recent. proc_name
- * truncates a long name, so the name is compared as a prefix of the basename
- * `proc_pidpath` reports rather than as its equal; the path itself is compared
- * whole.
+ * proc_name truncates a long name, so the name is compared as a prefix of the
+ * basename `proc_pidpath` reports rather than as its equal; the path itself is
+ * compared whole.
  */
-static void hm_check_own_sample(void) {
-    const int capacity = hm_count_processes() + HM_PROCESS_LIST_HEADROOM;
-    const int issue_capacity = 64;
-    HMProcessSample *samples = (HMProcessSample *)calloc(
-        (size_t)capacity,
-        sizeof(HMProcessSample)
-    );
-    HMProcessIssue *issues = (HMProcessIssue *)calloc(
-        (size_t)issue_capacity,
-        sizeof(HMProcessIssue)
-    );
-    char own_path[HM_PROCESS_PATH_SIZE];
-    memset(own_path, 0, sizeof(own_path));
-    const int path_length = proc_pidpath(getpid(), own_path, (uint32_t)sizeof(own_path));
-    if (samples == NULL || issues == NULL || path_length <= 0) {
-        free(samples);
-        free(issues);
-        CHECK(
-            "processes.own-sample-carries-metadata",
-            0,
-            "no listing to take: allocation %d, own path %d",
-            samples != NULL && issues != NULL,
-            path_length
-        );
-        return;
-    }
-
-    const int written = hm_list_processes(
-        samples,
-        capacity,
-        issues,
-        issue_capacity,
-        0,
-        0,
-        NULL,
-        NULL,
-        NULL
-    );
-
-    const HMProcessSample *own = NULL;
-    for (int index = 0; index < written; ++index) {
-        if (samples[index].pid == getpid()) {
-            own = &samples[index];
-            break;
-        }
-    }
-
+static void hm_check_own_metadata(const HMProcessSample *own, int written, const char *own_path) {
     const char *separator = strrchr(own_path, '/');
     const char *own_name = separator != NULL ? separator + 1 : own_path;
     const size_t reported_length = own == NULL ? 0 : strlen(own->name);
@@ -1026,7 +1069,536 @@ static void hm_check_own_sample(void) {
         own == NULL ? 0U : own->uid,
         own == NULL ? 0 : own->parent_pid
     );
+}
 
+/*
+ * One field of the sample against the range the same field occupied around the
+ * listing, and the first field that fell outside its range.
+ *
+ * A range rather than a tolerance, because the bridge reads its value between
+ * the test's two reads: a counter that only grows is bracketed exactly by them,
+ * whatever the machine did in between, and no allowance has to be guessed. Only
+ * the figures that also fall — the residency ones — carry slack.
+ */
+typedef struct {
+    const char *name;
+    uint64_t reported;
+    uint64_t low;
+    uint64_t high;
+} HMBracketedField;
+
+static const char *hm_first_outside_range(
+    const HMBracketedField *fields,
+    size_t count,
+    uint64_t *reported,
+    uint64_t *low,
+    uint64_t *high
+) {
+    for (size_t index = 0; index < count; ++index) {
+        if (fields[index].reported >= fields[index].low &&
+            fields[index].reported <= fields[index].high) {
+            continue;
+        }
+        *reported = fields[index].reported;
+        *low = fields[index].low;
+        *high = fields[index].high;
+        return fields[index].name;
+    }
+    return NULL;
+}
+
+/* Both readings of one process, the pair the ranges above are built from. */
+typedef struct {
+    struct rusage_info_v6 usage;
+    struct proc_taskinfo task;
+    int usage_status;
+    int task_size;
+} HMOwnAnchor;
+
+static HMOwnAnchor hm_read_own_anchor(void) {
+    HMOwnAnchor anchor;
+    memset(&anchor, 0, sizeof(anchor));
+    anchor.usage_status = proc_pid_rusage(
+        getpid(),
+        RUSAGE_INFO_V6,
+        (rusage_info_t *)&anchor.usage
+    );
+    anchor.task_size = proc_pidinfo(
+        getpid(),
+        PROC_PIDTASKINFO,
+        0,
+        &anchor.task,
+        (int)sizeof(anchor.task)
+    );
+    return anchor;
+}
+
+static uint64_t hm_lowest(uint64_t first, uint64_t second) {
+    return first < second ? first : second;
+}
+
+static uint64_t hm_highest(uint64_t first, uint64_t second) {
+    return first > second ? first : second;
+}
+
+/*
+ * How far the three residency figures may sit outside the pair that brackets
+ * them. They are the only fields of the sample that both rise and fall, and the
+ * listing allocates and touches megabytes between the two readings; measured
+ * here, the pair moved 16 KiB — one page — over the listing. The allowance is
+ * far below the distance between the fields it separates (5.8 MB resident
+ * against 1.5 MB of footprint on this process).
+ */
+#define HM_OWN_RESIDENCY_SLACK (4ULL * 1024ULL * 1024ULL)
+
+static uint64_t hm_below(uint64_t value, uint64_t slack) {
+    return value > slack ? value - slack : 0;
+}
+
+/*
+ * Every number the bridge copies out of `proc_pid_rusage` and `PROC_PIDTASKINFO`,
+ * against the same two calls made by the test around the listing.
+ *
+ * Nothing else in either harness reads this mapping. `own-sample-carries-metadata`
+ * above reads the four metadata fields, and `selftest` bounds the footprint, the
+ * *sum* of the two CPU times and two counters against zero — so every "right
+ * number in the wrong field" mutation survives all of them: user against system
+ * time, disk bytes read against written, `resident_bytes` filled from
+ * `ri_phys_footprint`, faults against copy-on-write faults, `thread_count` from
+ * `pti_numrunning`, a `started_at` of zero, `pageins` from `ri_interrupt_wkups`.
+ * All eight fields reach the report through `DarwinSystemCollector`.
+ *
+ * Two fields would not separate on an untouched harness — it neither reads nor
+ * writes a disk, and it runs one thread — so `hm_check_own_listing` gives it 4 MiB
+ * of flushed writes and a parked thread before taking the readings, which is what
+ * makes `disk_bytes_read` differ from `disk_bytes_written` and `thread_count`
+ * from `running_thread_count`.
+ *
+ * The two time fields are converted with the bridge's own `hm_mach_time_to_ns`
+ * and the four 32-bit counters widened with its own `hm_uint32_counter`, so this
+ * check is about which field went where and not about that arithmetic; the
+ * arithmetic is `pure.mach-time-matches-uptime-clock` and the `pure.uint32-*`
+ * checks.
+ */
+static void hm_check_own_fields(
+    const HMProcessSample *own,
+    const HMOwnAnchor *before,
+    const HMOwnAnchor *after
+) {
+    const struct rusage_info_v6 *first = &before->usage;
+    const struct rusage_info_v6 *last = &after->usage;
+    const struct proc_taskinfo *first_task = &before->task;
+    const struct proc_taskinfo *last_task = &after->task;
+    const int readable = own != NULL &&
+        before->usage_status == 0 &&
+        after->usage_status == 0 &&
+        before->task_size == (int)sizeof(before->task) &&
+        after->task_size == (int)sizeof(after->task);
+    if (!readable) {
+        CHECK(
+            "processes.own-sample-matches-a-fresh-rusage",
+            0,
+            "no pair of readings to compare against: own sample %d, rusage %d/%d, "
+                "task info %d/%d",
+            own != NULL,
+            before->usage_status,
+            after->usage_status,
+            before->task_size,
+            after->task_size
+        );
+        return;
+    }
+
+    const HMBracketedField fields[] = {
+        {"started_at", own->started_at, first->ri_proc_start_abstime, last->ri_proc_start_abstime},
+        {
+            "user_time_ns",
+            own->user_time_ns,
+            hm_mach_time_to_ns(first->ri_user_time),
+            hm_mach_time_to_ns(last->ri_user_time),
+        },
+        {
+            "system_time_ns",
+            own->system_time_ns,
+            hm_mach_time_to_ns(first->ri_system_time),
+            hm_mach_time_to_ns(last->ri_system_time),
+        },
+        {
+            "package_idle_wakeups",
+            own->package_idle_wakeups,
+            first->ri_pkg_idle_wkups,
+            last->ri_pkg_idle_wkups,
+        },
+        {
+            "interrupt_wakeups",
+            own->interrupt_wakeups,
+            first->ri_interrupt_wkups,
+            last->ri_interrupt_wkups,
+        },
+        {"pageins", own->pageins, first->ri_pageins, last->ri_pageins},
+        {
+            "disk_bytes_read",
+            own->disk_bytes_read,
+            first->ri_diskio_bytesread,
+            last->ri_diskio_bytesread,
+        },
+        {
+            "disk_bytes_written",
+            own->disk_bytes_written,
+            first->ri_diskio_byteswritten,
+            last->ri_diskio_byteswritten,
+        },
+        {
+            "logical_writes_bytes",
+            own->logical_writes_bytes,
+            first->ri_logical_writes,
+            last->ri_logical_writes,
+        },
+        {"instructions", own->instructions, first->ri_instructions, last->ri_instructions},
+        {"cycles", own->cycles, first->ri_cycles, last->ri_cycles},
+        {"energy_nanojoules", own->energy_nanojoules, first->ri_energy_nj, last->ri_energy_nj},
+        {"billed_energy", own->billed_energy, first->ri_billed_energy, last->ri_billed_energy},
+        {
+            "lifetime_max_physical_footprint_bytes",
+            own->lifetime_max_physical_footprint_bytes,
+            first->ri_lifetime_max_phys_footprint,
+            last->ri_lifetime_max_phys_footprint,
+        },
+        {
+            "wired_bytes",
+            own->wired_bytes,
+            hm_below(hm_lowest(first->ri_wired_size, last->ri_wired_size), HM_OWN_RESIDENCY_SLACK),
+            hm_highest(first->ri_wired_size, last->ri_wired_size) + HM_OWN_RESIDENCY_SLACK,
+        },
+        {
+            "resident_bytes",
+            own->resident_bytes,
+            hm_below(
+                hm_lowest(first->ri_resident_size, last->ri_resident_size),
+                HM_OWN_RESIDENCY_SLACK
+            ),
+            hm_highest(first->ri_resident_size, last->ri_resident_size) + HM_OWN_RESIDENCY_SLACK,
+        },
+        {
+            "physical_footprint_bytes",
+            own->physical_footprint_bytes,
+            hm_below(
+                hm_lowest(first->ri_phys_footprint, last->ri_phys_footprint),
+                HM_OWN_RESIDENCY_SLACK
+            ),
+            hm_highest(first->ri_phys_footprint, last->ri_phys_footprint) + HM_OWN_RESIDENCY_SLACK,
+        },
+        {
+            "faults",
+            own->faults,
+            hm_uint32_counter(first_task->pti_faults),
+            hm_uint32_counter(last_task->pti_faults),
+        },
+        {
+            "copy_on_write_faults",
+            own->copy_on_write_faults,
+            hm_uint32_counter(first_task->pti_cow_faults),
+            hm_uint32_counter(last_task->pti_cow_faults),
+        },
+        {
+            "mach_system_calls",
+            own->mach_system_calls,
+            hm_uint32_counter(first_task->pti_syscalls_mach),
+            hm_uint32_counter(last_task->pti_syscalls_mach),
+        },
+        {
+            "unix_system_calls",
+            own->unix_system_calls,
+            hm_uint32_counter(first_task->pti_syscalls_unix),
+            hm_uint32_counter(last_task->pti_syscalls_unix),
+        },
+        {
+            "context_switches",
+            own->context_switches,
+            hm_uint32_counter(first_task->pti_csw),
+            hm_uint32_counter(last_task->pti_csw),
+        },
+        {
+            "thread_count",
+            own->thread_count,
+            hm_lowest((uint64_t)first_task->pti_threadnum, (uint64_t)last_task->pti_threadnum),
+            hm_highest((uint64_t)first_task->pti_threadnum, (uint64_t)last_task->pti_threadnum),
+        },
+        {
+            "running_thread_count",
+            own->running_thread_count,
+            hm_lowest((uint64_t)first_task->pti_numrunning, (uint64_t)last_task->pti_numrunning),
+            hm_highest((uint64_t)first_task->pti_numrunning, (uint64_t)last_task->pti_numrunning),
+        },
+    };
+    uint64_t reported = 0;
+    uint64_t low = 0;
+    uint64_t high = 0;
+    const char *mismatch = hm_first_outside_range(
+        fields,
+        sizeof(fields) / sizeof(fields[0]),
+        &reported,
+        &low,
+        &high
+    );
+
+    /*
+     * The four pairs a transposition would hide in are asserted to differ, so
+     * that a green result means the comparison could have separated them: the two
+     * CPU times, the two disk directions, the two thread counts and the two
+     * residency figures.
+     */
+    const int separated = last->ri_user_time != last->ri_system_time &&
+        last->ri_diskio_bytesread != last->ri_diskio_byteswritten &&
+        last_task->pti_threadnum != last_task->pti_numrunning &&
+        last->ri_resident_size != last->ri_phys_footprint;
+
+    CHECK(
+        "processes.own-sample-matches-a-fresh-rusage",
+        mismatch == NULL && separated,
+        "expected every field of pid %d's sample within the pair of readings taken "
+            "around the listing, got %s reporting %llu against %llu..%llu; the "
+            "readings themselves separate user from system time by %llu ticks, read "
+            "from written bytes by %llu, threads from running threads by %d and "
+            "resident bytes from the footprint by %llu, and each has to be non-zero",
+        (int)getpid(),
+        mismatch == NULL ? "no mismatch" : mismatch,
+        (unsigned long long)reported,
+        (unsigned long long)low,
+        (unsigned long long)high,
+        (unsigned long long)(hm_highest(last->ri_user_time, last->ri_system_time) -
+            hm_lowest(last->ri_user_time, last->ri_system_time)),
+        (unsigned long long)(hm_highest(last->ri_diskio_bytesread, last->ri_diskio_byteswritten) -
+            hm_lowest(last->ri_diskio_bytesread, last->ri_diskio_byteswritten)),
+        last_task->pti_threadnum - last_task->pti_numrunning,
+        (unsigned long long)(hm_highest(last->ri_resident_size, last->ri_phys_footprint) -
+            hm_lowest(last->ri_resident_size, last->ri_phys_footprint))
+    );
+}
+
+/*
+ * How many issues of the rusage branch have to be comparable against a fresh
+ * `proc_pidpath`, and how many of them may disagree. The population is the
+ * processes of other users — 275 of them here, of which 274 had a readable path —
+ * and it is the branch `DarwinSystemCollector` actually takes: its sample array is
+ * `MIN_PROCESS_CAPACITY` wide plus headroom, so the capacity branch never fires
+ * and every issue it reports comes from here.
+ *
+ * The minimum is lower than the one `processes.issue-metadata-matches-a-fresh-read`
+ * asks for because the population is smaller: an account that owns most of the
+ * machine leaves few processes it cannot read the rusage of.
+ */
+#define HM_RUSAGE_ISSUE_MINIMUM 16
+#define HM_RUSAGE_ISSUE_MISMATCH_DIVISOR 16
+
+/*
+ * The executable path of an issue the rusage branch produced, against a fresh
+ * `proc_pidpath`.
+ *
+ * The sibling check on the narrow listing cannot see this branch at all: it needs
+ * `PROC_PIDTBSDINFO` to build its anchor, and that call is refused for exactly
+ * the processes the rusage branch reports — 0 of 275 were readable here. So
+ * deleting `hm_read_process_metadata` from the rusage branch of
+ * `hm_list_processes` used to leave both harnesses green while emptying the only
+ * field of an issue that survives the refusal: proc_name is refused as well, and
+ * the uid stays UINT32_MAX by design, but `proc_pidpath` answers for another
+ * user's process and the report shows what it says.
+ */
+static void hm_check_rusage_issue_paths(const HMProcessIssue *issues, int written_issues) {
+    int compared = 0;
+    int mismatched = 0;
+    int first = -1;
+    for (int index = 0; index < written_issues; ++index) {
+        const HMProcessIssue *issue = &issues[index];
+        if (issue->reason != HM_PROCESS_ISSUE_RUSAGE) {
+            continue;
+        }
+        char path[HM_PROCESS_PATH_SIZE];
+        memset(path, 0, sizeof(path));
+        if (proc_pidpath(issue->pid, path, (uint32_t)sizeof(path)) <= 0) {
+            continue;
+        }
+
+        ++compared;
+        if (strcmp(issue->executable_path, path) != 0) {
+            ++mismatched;
+            if (first < 0) {
+                first = index;
+            }
+        }
+    }
+
+    CHECK(
+        "processes.rusage-issue-path-matches-a-fresh-read",
+        compared >= HM_RUSAGE_ISSUE_MINIMUM &&
+            mismatched * HM_RUSAGE_ISSUE_MISMATCH_DIVISOR <= compared,
+        "expected at least %d rusage issues with a readable path and at most a %dth "
+            "of them to disagree with it, compared %d of %d issues and %d disagreed "
+            "(first at %d, pid %d, reporting '%s')",
+        HM_RUSAGE_ISSUE_MINIMUM,
+        HM_RUSAGE_ISSUE_MISMATCH_DIVISOR,
+        compared,
+        written_issues,
+        mismatched,
+        first,
+        first >= 0 ? (int)issues[first].pid : 0,
+        first >= 0 ? issues[first].executable_path : ""
+    );
+}
+
+/*
+ * Writes and flushes enough to separate `disk_bytes_read` from
+ * `disk_bytes_written`, which are both zero in a harness that has touched no
+ * disk. `F_FULLFSYNC` rather than `fsync`, because only that reaches the device;
+ * measured, 4 MiB arrive as 4194304 written bytes against 0 or 8192 read.
+ */
+#define HM_OWN_DISK_BYTES (4 * 1024 * 1024)
+
+static void hm_write_to_disk(void) {
+    char path[] = "/tmp/harmon-native-test-io.XXXXXX";
+    const int descriptor = mkstemp(path);
+    if (descriptor < 0) {
+        return;
+    }
+    unlink(path);
+    char *block = (char *)calloc(1, HM_OWN_DISK_BYTES);
+    if (block != NULL) {
+        memset(block, 'w', HM_OWN_DISK_BYTES);
+        if (write(descriptor, block, HM_OWN_DISK_BYTES) == (ssize_t)HM_OWN_DISK_BYTES) {
+            fcntl(descriptor, F_FULLFSYNC);
+        }
+        free(block);
+    }
+    close(descriptor);
+}
+
+/*
+ * Parks a second thread for as long as the listing takes, so that
+ * `pti_threadnum` (2) and `pti_numrunning` (1) are different numbers while the
+ * bridge reads them. It blocks on a pipe rather than sleeping: a sleeper is
+ * counted the same way, but a spinner would be running and the two counters would
+ * agree again.
+ */
+typedef struct {
+    int wake[2];
+    int parked;
+} HMParkedThread;
+
+static void *hm_park_thread(void *argument) {
+    HMParkedThread *thread = (HMParkedThread *)argument;
+    char byte = 0;
+    while (read(thread->wake[0], &byte, 1) < 0 && errno == EINTR) {
+    }
+    return NULL;
+}
+
+/*
+ * Waits until the kernel stops counting the second thread as running, so that
+ * `pti_threadnum` and `pti_numrunning` are two different numbers in both
+ * readings. A thread just created reads as running for a moment — measured, in
+ * the first of ten rounds and none of the others — and over a range that starts
+ * at 2 a `running_thread_count` filled from `pti_threadnum` would pass.
+ */
+#define HM_PARK_ATTEMPTS 100
+
+static void hm_wait_for_the_park(void) {
+    for (int attempt = 0; attempt < HM_PARK_ATTEMPTS; ++attempt) {
+        struct proc_taskinfo task;
+        memset(&task, 0, sizeof(task));
+        if (proc_pidinfo(getpid(), PROC_PIDTASKINFO, 0, &task, (int)sizeof(task)) !=
+            (int)sizeof(task)) {
+            return;
+        }
+        if (task.pti_numrunning < task.pti_threadnum) {
+            return;
+        }
+        usleep(1000);
+    }
+}
+
+/*
+ * The full-width listing, and the three checks that read it.
+ *
+ * Full width so that this process is in it: the 64 slots the narrow listing uses
+ * are filled long before a pid this recent. The width is also what makes the
+ * issue array the rusage branch's, which is the branch the collector takes.
+ */
+static void hm_check_own_listing(void) {
+    const int capacity = hm_count_processes() + HM_PROCESS_LIST_HEADROOM;
+    const int issue_capacity = 256;
+    HMProcessSample *samples = (HMProcessSample *)calloc(
+        (size_t)capacity,
+        sizeof(HMProcessSample)
+    );
+    HMProcessIssue *issues = (HMProcessIssue *)calloc(
+        (size_t)issue_capacity,
+        sizeof(HMProcessIssue)
+    );
+    char own_path[HM_PROCESS_PATH_SIZE];
+    memset(own_path, 0, sizeof(own_path));
+    const int path_length = proc_pidpath(getpid(), own_path, (uint32_t)sizeof(own_path));
+    if (samples == NULL || issues == NULL || path_length <= 0) {
+        free(samples);
+        free(issues);
+        CHECK(
+            "processes.own-sample-carries-metadata",
+            0,
+            "no listing to take: allocation %d, own path %d",
+            samples != NULL && issues != NULL,
+            path_length
+        );
+        CHECK("processes.own-sample-matches-a-fresh-rusage", 0, "no listing to take");
+        CHECK("processes.rusage-issue-path-matches-a-fresh-read", 0, "no listing to take");
+        return;
+    }
+
+    hm_write_to_disk();
+    HMParkedThread parked = {{-1, -1}, 0};
+    pthread_t thread;
+    if (pipe(parked.wake) == 0) {
+        parked.parked = pthread_create(&thread, NULL, hm_park_thread, &parked) == 0;
+    }
+    if (parked.parked) {
+        hm_wait_for_the_park();
+    }
+
+    int written_issues = 0;
+    const HMOwnAnchor before = hm_read_own_anchor();
+    const int written = hm_list_processes(
+        samples,
+        capacity,
+        issues,
+        issue_capacity,
+        0,
+        0,
+        NULL,
+        NULL,
+        &written_issues
+    );
+    const HMOwnAnchor after = hm_read_own_anchor();
+
+    const HMProcessSample *own = NULL;
+    for (int index = 0; index < written; ++index) {
+        if (samples[index].pid == getpid()) {
+            own = &samples[index];
+            break;
+        }
+    }
+
+    hm_check_own_metadata(own, written, own_path);
+    hm_check_own_fields(own, &before, &after);
+    hm_check_rusage_issue_paths(issues, written_issues);
+
+    if (parked.parked) {
+        const char wake = 'w';
+        while (write(parked.wake[1], &wake, 1) < 0 && errno == EINTR) {
+        }
+        pthread_join(thread, NULL);
+    }
+    if (parked.wake[0] >= 0) {
+        close(parked.wake[0]);
+        close(parked.wake[1]);
+    }
     free(samples);
     free(issues);
 }
@@ -1082,6 +1654,82 @@ static void hm_check_process_listing_invalid_arguments(void) {
         zero_issue_capacity,
         negative_process_limit,
         negative_region_budget
+    );
+}
+
+/*
+ * The two readers with nothing but a plausibility bound on them, against the
+ * sources they read.
+ *
+ * `hm_read_physical_memory` is a single sysctl and the number is constant, so the
+ * anchor is an equality: a wrong sysctl name — `hw.pagesize` reads 16384, and
+ * `hw.memsize_usable` a few hundred megabytes less — is otherwise caught only
+ * incidentally, by `selftest`'s footprint bound.
+ *
+ * The three load averages are bracketed by two `getloadavg` calls around the
+ * bridge's rather than compared with a tolerance. The kernel refreshes them every
+ * five seconds and a refresh may land between the reads, so a fixed allowance
+ * would have to be wide enough to cover a burst of processes starting — and a
+ * transposed one-minute and fifteen-minute pair sits well inside such an
+ * allowance on a machine under a build. Bracketing costs nothing and needs no
+ * number: on an idle machine where all three averages are the same value, no
+ * check can separate them at all.
+ */
+static int hm_within_load_range(double reported, double first, double second) {
+    const double low = first < second ? first : second;
+    const double high = first > second ? first : second;
+    return reported >= low && reported <= high;
+}
+
+static void hm_check_memory_and_load_fields(void) {
+    uint64_t physical = 0;
+    const int memory_status = hm_read_physical_memory(&physical);
+    uint64_t anchor_memory = 0;
+    size_t anchor_size = sizeof(anchor_memory);
+    const int anchor_memory_status =
+        sysctlbyname("hw.memsize", &anchor_memory, &anchor_size, NULL, 0);
+
+    double before[3] = {0.0, 0.0, 0.0};
+    double after[3] = {0.0, 0.0, 0.0};
+    HMLoadAverageSample load;
+    memset(&load, 0, sizeof(load));
+    const int before_status = getloadavg(before, 3);
+    const int load_status = hm_read_load_averages(&load);
+    const int after_status = getloadavg(after, 3);
+
+    const int bracketed = before_status == 3 &&
+        after_status == 3 &&
+        hm_within_load_range(load.one_minute, before[0], after[0]) &&
+        hm_within_load_range(load.five_minutes, before[1], after[1]) &&
+        hm_within_load_range(load.fifteen_minutes, before[2], after[2]);
+
+    CHECK(
+        "snapshot.memory-and-load-match-a-fresh-read",
+        memory_status == 0 &&
+            anchor_memory_status == 0 &&
+            physical == anchor_memory &&
+            load_status == 0 &&
+            bracketed,
+        "expected hw.memsize itself and each load average inside the pair of "
+            "getloadavg calls around the bridge's, got %d/%d and %llu against %llu, "
+            "and %d/%d,%d with %.2f,%.2f,%.2f against %.2f,%.2f,%.2f then "
+            "%.2f,%.2f,%.2f",
+        memory_status,
+        anchor_memory_status,
+        (unsigned long long)physical,
+        (unsigned long long)anchor_memory,
+        load_status,
+        before_status,
+        after_status,
+        load.one_minute,
+        load.five_minutes,
+        load.fifteen_minutes,
+        before[0],
+        before[1],
+        before[2],
+        after[0],
+        after[1],
+        after[2]
     );
 }
 
@@ -1269,11 +1917,18 @@ static void hm_check_swap_and_virtual_memory(void) {
      * anchor is the only thing that says which field went where. Swap may
      * legitimately be empty, and on a machine with no swap file at all the three
      * figures are zero and a transposition is invisible to any check.
+     *
+     * `encrypted` is compared too, normalised on both sides the way the bridge
+     * normalises it, because the report prints "(encrypted)" from it and the JSON
+     * carries it: inverting the flag is otherwise invisible. A machine whose swap
+     * is not encrypted has both sides at zero and cannot separate an inversion
+     * either.
      */
     const int swap_matches_anchor = anchor_status == 0 &&
         hm_matches_within_drift(swap.total_bytes, anchor.xsu_total) &&
         hm_matches_within_drift(swap.used_bytes, anchor.xsu_used) &&
-        hm_matches_within_drift(swap.available_bytes, anchor.xsu_avail);
+        hm_matches_within_drift(swap.available_bytes, anchor.xsu_avail) &&
+        swap.encrypted == (anchor.xsu_encrypted ? 1 : 0);
 
     const uint64_t resident = memory.free_bytes + memory.active_bytes +
         memory.inactive_bytes + memory.wired_bytes;
@@ -1757,9 +2412,10 @@ void hm_run_kernel_tests(void) {
     hm_check_attribution_region_limit();
     hm_check_attribution_invalid_arguments();
     hm_check_process_listing();
-    hm_check_own_sample();
+    hm_check_own_listing();
     hm_check_process_listing_invalid_arguments();
     hm_check_memory_and_load();
+    hm_check_memory_and_load_fields();
     hm_check_processor_counters();
     hm_check_processor_fields();
     hm_check_swap_and_virtual_memory();

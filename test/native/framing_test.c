@@ -326,6 +326,11 @@ static void hm_check_receive_rejects_lengths(void) {
 /*
  * The payload becomes a C string, so a NUL inside it would truncate the JSON
  * silently and hand the parser a prefix of what the peer sent.
+ *
+ * Two payloads, because the scan is over a length and the last byte is where a
+ * length is got wrong: a frame ending in NUL is rejected by `memchr(json, 0,
+ * length)` and accepted by the same call over `length - 1`, which is otherwise a
+ * mutation neither harness notices.
  */
 static void hm_check_receive_rejects_embedded_nul(void) {
     uint8_t payload[16];
@@ -333,19 +338,29 @@ static void hm_check_receive_rejects_embedded_nul(void) {
     payload[sizeof(payload) / 2] = '\0';
 
     uint8_t frame[sizeof(uint32_t) + sizeof(payload)];
-    const size_t size =
-        hm_build_frame(frame, (uint32_t)sizeof(payload), payload, sizeof(payload));
+    size_t size = hm_build_frame(frame, (uint32_t)sizeof(payload), payload, sizeof(payload));
+    HMFrameOutcome inside = hm_receive_bytes(frame, size, HM_MAX_JSON_FRAME_SIZE, 0);
 
-    HMFrameOutcome outcome = hm_receive_bytes(frame, size, HM_MAX_JSON_FRAME_SIZE, 0);
+    memset(payload, 'a', sizeof(payload));
+    payload[sizeof(payload) - 1] = '\0';
+    size = hm_build_frame(frame, (uint32_t)sizeof(payload), payload, sizeof(payload));
+    HMFrameOutcome trailing = hm_receive_bytes(frame, size, HM_MAX_JSON_FRAME_SIZE, 0);
+
     CHECK(
         "framing.receive-rejects-embedded-nul",
-        outcome.json == NULL && outcome.failure == EILSEQ && outcome.size == 0,
-        "expected NULL/EILSEQ and no size, got %s/%s and %u",
-        outcome.json == NULL ? "NULL" : "a frame",
-        strerror(outcome.failure),
-        outcome.size
+        inside.json == NULL && inside.failure == EILSEQ && inside.size == 0 &&
+            trailing.json == NULL && trailing.failure == EILSEQ && trailing.size == 0,
+        "expected NULL/EILSEQ and no size from both, got %s/%s and %u for a NUL in "
+            "the middle, %s/%s and %u for one as the last byte",
+        inside.json == NULL ? "NULL" : "a frame",
+        strerror(inside.failure),
+        inside.size,
+        trailing.json == NULL ? "NULL" : "a frame",
+        strerror(trailing.failure),
+        trailing.size
     );
-    free(outcome.json);
+    free(inside.json);
+    free(trailing.json);
 }
 
 static size_t hm_heap_bytes_in_use(void) {

@@ -89,11 +89,23 @@ Wherever a reader could put the right number in the wrong field, the check reads
 the same kernel source a second time and compares field by field instead of
 asserting that the aggregate looks plausible: `vm.swapusage` for the swap
 figures, `host_statistics` for the tick counters, `host_statistics64` for the
-virtual memory sample, a second walk of the block storage registry, a second IOPS
-read for the battery, a second region walk for the compressed bytes, a second
-`proc_pidinfo` for the process metadata. A plausibility assertion survives a
-transposed pair of fields; an anchor does not. Where an anchor cannot separate
-two fields, the gap is listed below rather than left to the comment.
+virtual memory sample, `hw.memsize` and `getloadavg` for the two the collector
+divides by, a second walk of the block storage registry, a second IOPS read for
+the battery, a second region walk for the compressed bytes, a second
+`proc_pidinfo` for the process metadata, a second `proc_pid_rusage` plus
+`PROC_PIDTASKINFO` for the 24 numbers of a process sample. A plausibility
+assertion survives a transposed pair of fields; an anchor does not. Where an
+anchor cannot separate two fields, the gap is listed below rather than left to
+the comment.
+
+Two shapes of anchor are in use. Against a value that only grows the test reads
+the source before *and* after the bridge does and requires the bridge's answer to
+lie between the two, which needs no tolerance at all and cannot drift on a busy
+machine; that is how the process sample, the load averages and the compressed
+bytes are checked. A tolerance is used only where a source is served from a cache
+the kernel refreshes on its own schedule — the tick counters and the virtual
+memory statistics — and each such number is documented with what it was measured
+at.
 
 Neither harness is meant to run as root: `processes.samples-are-well-formed`
 holds because an ordinary user cannot read the rusage of pid 0, and
@@ -104,10 +116,18 @@ it covers only fires once the 64-slot sample array is full — an ordinary sessi
 is far past that (566 here), a stripped service account might not be.
 `processes.issue-metadata-matches-a-fresh-read` needs 32 of those issues to still
 be readable moments later (174 to 177 here), and
-`attribution.bytes-match-an-independent-walk` needs the memory compressor to be
-holding pages of at least one of the account's first 24 processes — 37 of the
-first 40 measured here, and true of any Mac that has been up for a while. Each of
+`processes.rusage-issue-path-matches-a-fresh-read` needs 16 processes of *other*
+users, which is what the rusage branch of the listing reports (275 here). Each of
 the three fails naming what it counted rather than passing vacuously.
+`processes.own-sample-matches-a-fresh-rusage` makes its conditions instead of
+asking for them: it writes and flushes 4 MiB and parks a second thread before
+taking the listing, because a harness that touched no disk and ran one thread
+reports `disk_bytes_read` equal to `disk_bytes_written` and `thread_count` equal
+to `running_thread_count`, and a transposed pair of equal numbers is invisible.
+No check depends on how many processes the account has started recently: an
+earlier `attribution.bytes-match-an-independent-walk` gave up after 24 of them and
+failed for a whole build running alongside it, or for a second copy of the
+harness.
 
 `scripts/test-native.sh` regenerates the header the C tests include straight
 from the `.def` (`sed '1,/^---$/d'` into `build/native-test/`), compiles every
@@ -132,7 +152,11 @@ success from a harness whose `fail` branch never ran. A filter that selects
 nothing prints `ok harness.no-checks-selected`. Both harnesses arm a
 60-second `alarm` before their first check, so a walk or a socket that hung
 inside the kernel dies on SIGALRM instead of hanging `./kotlin test`; the bridge
-reports that as "died on signal 14".
+reports that as "died on signal 14". A child the C harness forks re-arms that
+alarm and closes stdout: `fork` clears the parent's alarm, and a child that
+outlived a parent killed by one used to hold the harness's stdout open, so the
+reader in `NativeHarness.kt` waited for an EOF that never came — measured at
+ten minutes and counting, against the three seconds the parent took to die.
 
 `test/NativeHarness.kt` drives them through `popen`, turns the first `fail` into
 an assertion naming it and the rest, requires a normal exit with status 0,
@@ -208,8 +232,28 @@ to cover everything:
   hard-coded the field to zero. The other three tick counters are anchored;
 - `root_filesystem_available_bytes` from `f_bfree` instead of `f_bavail` — the two
   are equal on the APFS root here, so the anchor cannot tell them apart. It would
-  on a filesystem that reserves blocks for root;
-- the `chown` branch of `hm_unix_server_open` — root only;
+  on a filesystem that reserves blocks for root. `hm_read_storage` also hard-codes
+  `/`, so no check can tell it from another mount point;
+- the summation across devices in `hm_add_storage_statistic` — it adds the
+  statistics of every `IOBlockStorageDriver` in the registry, and a machine with
+  one internal drive cannot distinguish adding them from overwriting;
+- what the swap sample cannot separate on a given machine: with no swap file all
+  three figures are zero and a transposed `xsu_used`/`xsu_avail` is invisible, and
+  with unencrypted swap the `encrypted` flag cannot be told from a hard-coded 0.
+  Both are anchored against a second `vm.swapusage` where the machine has them;
+- the load averages on an idle machine, where all three read the same value and no
+  anchor can tell a transposed one-minute and fifteen-minute pair from the right
+  one. The bracketing read separates them whenever they differ at all;
+- the compressed-bytes sum on a machine whose compressor holds nothing of this
+  account. `attribution.bytes-match-an-independent-walk` prefers a process the
+  compressor is holding pages of, scanning every process of the account to find
+  one (568 of 594 qualified here); with none it walks this process instead, where
+  both sums are zero. A bridge summing the resident pages fails it either way, a
+  hard-coded zero only in the first case;
+- the `chown` branch of `hm_unix_server_open` — root only — and the `st_uid`
+  half of its occupancy test, which needs a socket at the path owned by a second
+  user; the non-socket half of the same test is covered by
+  `socket.refuses-foreign-occupant`;
 - the peer-uid gate inside `hm_unix_connect` (`EACCES` on a socket owned by
   someone else), `hm_unix_accept` with a null `peer_user_id`, and its bypass for
   uid 0 — all three need a second user or root; the server-side gate that
