@@ -194,6 +194,32 @@ class HarmonServiceHistoryTest {
     }
 
     /**
+     * The failure `openOrNull` cannot stand in for: the database opened, and then refused the very
+     * first read. `DROP TABLE agent_state` stands in for what does it in the field — a page lost to
+     * the panic `synchronousFlag = NORMAL` deliberately accepts, or a table an older build never
+     * created.
+     *
+     * That read happens while the agent is being constructed, so unguarded it is not a run without
+     * history: the process dies before its first sample and launchd restarts it into the same death,
+     * leaving the machine unmonitored because yesterday's record of it went bad. What must survive is
+     * the monitoring, from a clean alert state and with the reason said out loud.
+     */
+    @Test
+    fun anUnreadableDatabaseCostsTheRestoreRatherThanTheAgent() = withScratchHome { home ->
+        withHistoryStore(home, intervalSeconds = INTERVAL_SECONDS) { store ->
+            store.driver.execute(null, "DROP TABLE agent_state", 0)
+            val errors = mutableListOf<String>()
+            val channel = RecordingChannel()
+
+            val service = serviceOver(store, listOf(channel), logError = { errors += it })
+            service.handleSample(snapshotAt(0uL, OVER_THRESHOLD), snapshotAt(1uL, OVER_THRESHOLD))
+
+            assertEquals(1, channel.payloads.size, "the sample was never handled")
+            assertTrue(errors.any { "history restore failed" in it }, errors.toString())
+        }
+    }
+
+    /**
      * Past the TTL the machine has moved on, and resuming would hand the hysteresis in
      * `AlertAnalyzer` a lowered clear threshold for a state nothing in the room still matches.
      */

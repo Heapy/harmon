@@ -577,11 +577,47 @@ Nullable-поля обязаны приезжать обратно как `null`
 
 ### Task 13: Verify acceptance criteria
 
-- [ ] verify all requirements from Overview are implemented
-- [ ] verify edge cases are handled: пустой список процессов, отсутствующая батарея, `storage.available = false`, сэмпл без алертов, все процессы без бандла
-- [ ] run full test suite: `./kotlin test`
-- [ ] run release build: `./kotlin build --variant release`
-- [ ] убедиться, что `once`, `diagnose`, `check-config` и `test-notifications` по-прежнему не создают файл базы
+**Files:**
+- ➕ Modify: `src/dev/yoda/harmon/runtime/HarmonService.kt`
+- ➕ Modify: `test/HarmonServiceHistoryTest.kt`
+- ➕ Create: `test/HistoryEdgeCaseTest.kt`
+
+- [x] verify all requirements from Overview are implemented
+- [x] verify edge cases are handled: пустой список процессов, отсутствующая батарея, `storage.available = false`, сэмпл без алертов, все процессы без бандла
+- [x] run full test suite: `./kotlin test`
+- [x] run release build: `./kotlin build --variant release`
+- [x] убедиться, что `once`, `diagnose`, `check-config` и `test-notifications` по-прежнему не создают файл базы
+- [x] ➕ починить восстановление состояния: нечитаемая база убивала агента в конструкторе
+
+> ⚠️ **Проверка снова нашла то, ради чего стоит: нечитаемая база останавливала мониторинг целиком.**
+> `HarmonService` строил `alertState = AlertState(restored = history?.restorableAlertState())` в
+> инициализаторе свойства, без всякой защиты. `openOrNull` закрывает только отказ на **открытии**;
+> база, которая открылась и отказала на **первом чтении** — страница, потерянная на панике, которую
+> `synchronousFlag = NORMAL` принимает сознательно, или таблица, которой не завёл прежний билд, —
+> роняла исключение из конструктора. Под launchd это не «прогон без истории», а цикл перезапусков, в
+> котором нет ни одного сэмпла: машина остаётся без мониторинга потому, что испортилась вчерашняя
+> запись о том, как её мониторили. Ровно противоположно тому, что заявляет KDoc самого
+> `HistoryStore` — «history is an addition to monitoring, not a precondition for it».
+>
+> Починено `restorableStateOrNull()` по образцу `deliverSafely`/`recordSafely`: причина уходит в
+> `logError`, агент стартует с чистого состояния алертов. Проверено экспериментально — со снятым
+> фиксом падает ровно `anUnreadableDatabaseCostsTheRestoreRatherThanTheAgent`, один тест из 246.
+>
+> Все пять перечисленных краевых случаев оказались корректными, но покрыты они были неравномерно:
+> отсутствующая батарея и `storage.available = false` проверялись только на уровне `insertSample`
+> над `inMemoryDriver`, где FK выключены, а пустой список процессов и сэмпл без алертов не
+> проверялись нигде. `HistoryEdgeCaseTest` (6 тестов) прогоняет все пять через настоящий стор,
+> включая обе ветки ретеншна: `NOT IN` по пустому подзапросу истинен для каждой строки, а не ложен,
+> так что база из одних «пустых» сэмплов — единственное место, где сирота выметается вместе с живой
+> строкой или не выметается никогда.
+>
+> Проверка CLI — реальным запуском, не чтением кода: `HOME=/tmp/harmon-accept`, явный `--config`,
+> dev-коллектор на `/tmp/harmon-dev.sock`. `once`, `diagnose`, `check-config` и `test-notifications`
+> не создали ни файла. Контроль на второй половине — тот же `HOME`, `intervalSeconds=1`, команда
+> `run`: 2 сэмпла, 987 строк `process_sample`, 496 строк справочника `process`, 72 приложения и 144
+> `application_sample` (только с бандлом), 705 `process_sample.application_id IS NULL` (одиночные
+> группы), каталог `drwx------`, `auto_vacuum = 2`, `journal_mode = wal`, `integrity_check ok`, все
+> `captured_at` шириной ровно 20 символов. Без контроля «файла нет» ничего не доказывает.
 
 ### Task 14: [Final] Update documentation
 

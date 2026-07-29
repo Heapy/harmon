@@ -2,6 +2,7 @@ package dev.yoda.harmon.runtime
 
 import dev.yoda.harmon.analysis.AlertAnalyzer
 import dev.yoda.harmon.analysis.AlertState
+import dev.yoda.harmon.analysis.AlertStateSnapshot
 import dev.yoda.harmon.config.HarmonConfig
 import dev.yoda.harmon.config.SAMPLE_SECONDS_RANGE
 import dev.yoda.harmon.history.HistoryStore
@@ -88,7 +89,7 @@ class HarmonService(
      * failing all night a fresh retry budget. Whether what is stored is still recent enough to
      * resume is the store's judgement, since the interval it is judged in is already its own.
      */
-    private val alertState = AlertState(restored = history?.restorableAlertState())
+    private val alertState = AlertState(restored = restorableStateOrNull())
 
     /**
      * Whether the write of the previous sample failed, so that a database that keeps failing is
@@ -233,6 +234,23 @@ class HarmonService(
             logFailure("notification delivery failed", failure)
             DeliveryOutcome.NONE
         }
+
+    /**
+     * The state a previous run stored, or nothing at all if reading it throws.
+     *
+     * The one failure `HistoryStore.openOrNull` cannot stand in for. A file that opened cleanly can
+     * still refuse the first read — a page lost to the panic `synchronousFlag = NORMAL` deliberately
+     * accepts, a table an older build never created — and this read happens while the agent is being
+     * constructed. Unguarded that is not a run without history but a process that dies before its
+     * first sample, restarted by launchd into the same death: the machine goes unmonitored because
+     * the record of how it was monitored yesterday went bad.
+     */
+    private fun restorableStateOrNull(): AlertStateSnapshot? = try {
+        history?.restorableAlertState()
+    } catch (failure: Throwable) {
+        logFailure("history restore failed", failure, "; starting from a clean alert state")
+        null
+    }
 
     /**
      * Files the sample away, and swallows whatever the write throws — this is a daemon, and a
