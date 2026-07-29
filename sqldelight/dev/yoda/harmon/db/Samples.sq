@@ -1,25 +1,136 @@
--- Smoke-test schema for the build check: one row per monitoring sample. Deliberately trimmed to
--- the column shapes the real schema uses -- TEXT key, REAL rate, INTEGER counter, and a nullable
--- INTEGER -- so codegen is exercised over every mapping before the full schema is written.
+-- One row per monitoring sample: the whole of SystemUsage except its three lists, which live in
+-- process_sample / application_sample / alert. Everything is flattened into columns rather than a
+-- JSON document because the only reader is a human with sqlite3, and json_extract over a nested
+-- array of 772 elements works against that.
+--
+-- captured_at is ISO-8601 UTC truncated to WHOLE SECONDS, so every value is exactly 20 characters:
+-- ORDER BY and the retention cutoff compare these strings, and a variable-width fraction would sort
+-- '…:00.500Z' before '…:00Z'. See dev.yoda.harmon.history.toSqlTimestamp.
+--
+-- Booleans are plain INTEGER 0/1. `INTEGER AS Boolean` would make SQLDelight demand a
+-- ColumnAdapter<Boolean, Long> through the database constructor, which is exactly the plumbing
+-- toSqlLong() exists to avoid.
 CREATE TABLE sample (
-  id                INTEGER PRIMARY KEY AUTOINCREMENT,
-  captured_at       TEXT NOT NULL,
-  elapsed_seconds   REAL NOT NULL,
-  total_process_count INTEGER NOT NULL,
-  battery_percentage  INTEGER
+  id                                   INTEGER PRIMARY KEY AUTOINCREMENT,
+  captured_at                          TEXT NOT NULL,
+  elapsed_seconds                      REAL NOT NULL,
+  physical_memory_bytes                INTEGER NOT NULL,
+
+  swap_total_bytes                     INTEGER NOT NULL,
+  swap_available_bytes                 INTEGER NOT NULL,
+  swap_used_bytes                      INTEGER NOT NULL,
+  swap_encrypted                       INTEGER NOT NULL,
+
+  battery_available                    INTEGER NOT NULL,
+  on_battery                           INTEGER NOT NULL,
+  charging                             INTEGER NOT NULL,
+  -- Null on a machine with no battery, and null rather than 0 is the point: 0 percent is a reading.
+  battery_percentage                   INTEGER,
+  battery_minutes_remaining            INTEGER,
+
+  processor_total_percent              REAL NOT NULL,
+  processor_user_percent               REAL NOT NULL,
+  processor_system_percent             REAL NOT NULL,
+  processor_nice_percent               REAL NOT NULL,
+  processor_idle_percent               REAL NOT NULL,
+
+  load_average_1m                      REAL NOT NULL,
+  load_average_5m                      REAL NOT NULL,
+  load_average_15m                     REAL NOT NULL,
+
+  vm_free_bytes                        INTEGER NOT NULL,
+  vm_active_bytes                      INTEGER NOT NULL,
+  vm_inactive_bytes                    INTEGER NOT NULL,
+  vm_wired_bytes                       INTEGER NOT NULL,
+  vm_purgeable_bytes                   INTEGER NOT NULL,
+  vm_compressed_bytes                  INTEGER NOT NULL,
+  vm_uncompressed_bytes_in_compressor  INTEGER NOT NULL,
+  vm_swap_backed_uncompressed_bytes    INTEGER NOT NULL,
+  vm_page_in_bytes_per_second          REAL NOT NULL,
+  vm_page_out_bytes_per_second         REAL NOT NULL,
+  vm_fault_rate                        REAL NOT NULL,
+  vm_copy_on_write_fault_rate          REAL NOT NULL,
+  vm_compression_bytes_per_second      REAL NOT NULL,
+  vm_decompression_bytes_per_second    REAL NOT NULL,
+  vm_swap_in_bytes_per_second          REAL NOT NULL,
+  vm_swap_out_bytes_per_second         REAL NOT NULL,
+
+  storage_available                    INTEGER NOT NULL,
+  storage_device_count                 INTEGER NOT NULL,
+  storage_read_bytes_per_second        REAL NOT NULL,
+  storage_write_bytes_per_second       REAL NOT NULL,
+  storage_read_operations_per_second   REAL NOT NULL,
+  storage_write_operations_per_second  REAL NOT NULL,
+  storage_read_service_time_percent    REAL NOT NULL,
+  storage_write_service_time_percent   REAL NOT NULL,
+  storage_root_total_bytes             INTEGER NOT NULL,
+  storage_root_available_bytes         INTEGER NOT NULL,
+
+  -- SystemUsage.processIssues is deliberately not stored row by row; these four aggregates are the
+  -- historical record of it, and the detailed list stays a `diagnose` concern.
+  total_process_count                  INTEGER NOT NULL,
+  inaccessible_process_count           INTEGER NOT NULL,
+  compressed_attribution_process_count INTEGER NOT NULL,
+  compressed_attribution_failure_count INTEGER NOT NULL
 );
 
+-- Carries both the time-slice read and the retention delete; without it either one is a full scan
+-- over a week of samples.
 CREATE INDEX sample_captured_at ON sample(captured_at);
 
-insert:
-INSERT INTO sample(captured_at, elapsed_seconds, total_process_count, battery_percentage)
-VALUES (?, ?, ?, ?);
+-- Agent state rather than history, so retention never touches it. sample_counter is AlertState's
+-- absolute sample number, which the restore path needs alongside the per-key state: retry_at_sample
+-- is absolute too, and restoring keys against a counter reset to zero would defer them forever.
+-- Written from task 9 onwards; the table exists now so the schema is created in one place.
+CREATE TABLE agent_state (
+  singleton      INTEGER NOT NULL PRIMARY KEY CHECK (singleton = 1),
+  sample_counter INTEGER NOT NULL,
+  last_sample_at TEXT NOT NULL
+);
 
+insert:
+INSERT INTO sample(
+  captured_at, elapsed_seconds, physical_memory_bytes,
+  swap_total_bytes, swap_available_bytes, swap_used_bytes, swap_encrypted,
+  battery_available, on_battery, charging, battery_percentage, battery_minutes_remaining,
+  processor_total_percent, processor_user_percent, processor_system_percent,
+  processor_nice_percent, processor_idle_percent,
+  load_average_1m, load_average_5m, load_average_15m,
+  vm_free_bytes, vm_active_bytes, vm_inactive_bytes, vm_wired_bytes, vm_purgeable_bytes,
+  vm_compressed_bytes, vm_uncompressed_bytes_in_compressor, vm_swap_backed_uncompressed_bytes,
+  vm_page_in_bytes_per_second, vm_page_out_bytes_per_second, vm_fault_rate,
+  vm_copy_on_write_fault_rate, vm_compression_bytes_per_second,
+  vm_decompression_bytes_per_second, vm_swap_in_bytes_per_second, vm_swap_out_bytes_per_second,
+  storage_available, storage_device_count,
+  storage_read_bytes_per_second, storage_write_bytes_per_second,
+  storage_read_operations_per_second, storage_write_operations_per_second,
+  storage_read_service_time_percent, storage_write_service_time_percent,
+  storage_root_total_bytes, storage_root_available_bytes,
+  total_process_count, inaccessible_process_count,
+  compressed_attribution_process_count, compressed_attribution_failure_count
+)
+VALUES (
+  ?, ?, ?,
+  ?, ?, ?, ?,
+  ?, ?, ?, ?, ?,
+  ?, ?, ?, ?, ?,
+  ?, ?, ?,
+  ?, ?, ?, ?, ?, ?, ?, ?,
+  ?, ?, ?, ?, ?, ?, ?, ?,
+  ?, ?,
+  ?, ?, ?, ?, ?, ?,
+  ?, ?,
+  ?, ?, ?, ?
+);
+
+-- Every child row needs the id of the sample just written, and AUTOINCREMENT means it is never
+-- reused. Safe here in a way it is not for the lookup tables, where an ON CONFLICT DO NOTHING
+-- leaves last_insert_rowid() pointing at the previous insert.
 lastInsertedId:
 SELECT last_insert_rowid();
 
 selectBetween:
-SELECT id, captured_at, elapsed_seconds, total_process_count, battery_percentage
+SELECT *
 FROM sample
 WHERE captured_at BETWEEN ? AND ?
 ORDER BY captured_at;

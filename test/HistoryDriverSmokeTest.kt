@@ -1,9 +1,12 @@
 import app.cash.sqldelight.db.QueryResult
 import app.cash.sqldelight.driver.native.inMemoryDriver
 import dev.yoda.harmon.db.HarmonDatabase
+import dev.yoda.harmon.history.insertSample
+import dev.yoda.harmon.model.PowerState
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertNull
+import kotlin.time.Instant
 
 /**
  * Proves the premise the whole history design rests on: SQLDelight's native driver reaches a real
@@ -12,6 +15,9 @@ import kotlin.test.assertNull
  * KT-78062 keeps a module's own cinterop klib out of every test binary, which is why
  * `dev.yoda.harmon.nativebridge` cannot be called from here. `native-driver` carries its cinterop
  * in a third-party klib instead, and those link fine — this test is the standing evidence.
+ *
+ * Column-by-column verification of the write path lives in `HistorySampleRowTest`; what is checked
+ * here is that the driver, the schema and the generated queries work at all.
  */
 class HistoryDriverSmokeTest {
 
@@ -20,23 +26,26 @@ class HistoryDriverSmokeTest {
         val database = HarmonDatabase(inMemoryDriver(HarmonDatabase.Schema))
         val samples = database.samplesQueries
 
-        samples.insert(
-            captured_at = "2026-07-29T00:05:00Z",
-            elapsed_seconds = 300.5,
-            total_process_count = 772,
-            battery_percentage = 87,
+        samples.insertSample(
+            systemUsage(emptyList()).copy(capturedAt = Instant.parse("2026-07-29T00:05:00Z")),
         )
-        samples.insert(
-            captured_at = "2026-07-29T00:10:00Z",
-            elapsed_seconds = 300.0,
-            total_process_count = 780,
-            battery_percentage = null,
+        samples.insertSample(
+            systemUsage(emptyList()).copy(
+                capturedAt = Instant.parse("2026-07-29T00:10:00Z"),
+                power = PowerState(
+                    batteryAvailable = false,
+                    onBattery = false,
+                    charging = false,
+                    percentage = null,
+                    minutesRemaining = null,
+                ),
+            ),
         )
 
         val all = samples.selectBetween("2026-07-29T00:00:00Z", "2026-07-29T01:00:00Z").executeAsList()
         assertEquals(2, all.size, "both samples round-trip")
-        assertEquals(300.5, all.first().elapsed_seconds, "REAL survives the round trip")
-        assertEquals(772L, all.first().total_process_count, "INTEGER survives the round trip")
+        assertEquals(2.0, all.first().elapsed_seconds, "REAL survives the round trip")
+        assertEquals(1_000_000_000_000L, all.first().storage_root_total_bytes, "INTEGER survives the round trip")
         assertNull(all.last().battery_percentage, "a nullable column comes back as null, not 0")
     }
 
@@ -45,8 +54,8 @@ class HistoryDriverSmokeTest {
         val database = HarmonDatabase(inMemoryDriver(HarmonDatabase.Schema))
         val samples = database.samplesQueries
 
-        samples.insert("2026-07-20T00:00:00Z", 300.0, 700, null)
-        samples.insert("2026-07-29T00:00:00Z", 300.0, 772, null)
+        samples.insertSample(systemUsage(emptyList()).copy(capturedAt = Instant.parse("2026-07-20T00:00:00Z")))
+        samples.insertSample(systemUsage(emptyList()).copy(capturedAt = Instant.parse("2026-07-29T00:00:00Z")))
 
         samples.deleteOlderThan("2026-07-22T00:00:00Z")
 
