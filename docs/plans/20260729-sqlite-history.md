@@ -266,11 +266,11 @@ Nullable-поля обязаны приезжать обратно как `null`
 - Create: `src/dev/yoda/harmon/history/SqlConversions.kt`
 - Create: `test/SqlConversionsTest.kt`
 
-- [ ] написать падающий тест: `ULong.MAX_VALUE.toSqlLong()` возвращает `Long.MAX_VALUE`, а не `-1`
-- [ ] написать тест: значения ниже границы конвертируются точно, включая `0uL` и `Long.MAX_VALUE.toULong()`
-- [ ] написать тест: `null?.toSqlLong()` даёт `null`, а не `0`
-- [ ] реализовать `public fun ULong.toSqlLong(): Long` с клампом — одна функция, безопасный вызов покрывает nullable
-- [ ] запустить `./kotlin test` — должны пройти до задачи 2
+- [x] написать падающий тест: `ULong.MAX_VALUE.toSqlLong()` возвращает `Long.MAX_VALUE`, а не `-1`
+- [x] написать тест: значения ниже границы конвертируются точно, включая `0uL` и `Long.MAX_VALUE.toULong()`
+- [x] написать тест: `null?.toSqlLong()` даёт `null`, а не `0`
+- [x] реализовать `public fun ULong.toSqlLong(): Long` с клампом — одна функция, безопасный вызов покрывает nullable
+- [x] запустить `./kotlin test` — должны пройти до задачи 2
 
 ### Task 2: Метка времени, схема и маппинг таблицы sample
 
