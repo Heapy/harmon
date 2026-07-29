@@ -1,0 +1,122 @@
+-- The application lookup, keyed by ApplicationUsage.id — a hash of the bundle path that
+-- ApplicationGrouper keeps stable for as long as the bundle stays where it is. Without it the name
+-- and the path repeat 288 times a day per application.
+--
+-- bundle_path is NOT NULL because a group without one is never written. ApplicationGrouper gives
+-- every process outside an .app bundle its own singleton group; such a group duplicates one
+-- process_sample row one for one, carries no information that row does not, and would grow this
+-- lookup at the speed of process churn.
+--
+-- As in `process`, the insert is ON CONFLICT DO NOTHING and the columns freeze at first sighting.
+-- Here that costs nothing: the key is derived from the bundle path, so an application that moves
+-- gets a new key rather than a stale row.
+CREATE TABLE application (
+  id          INTEGER PRIMARY KEY AUTOINCREMENT,
+  key         TEXT NOT NULL UNIQUE,
+  name        TEXT NOT NULL,
+  bundle_path TEXT NOT NULL
+);
+
+-- One row per bundled application per sample, ~23 000 a day — the aggregate over the process_sample
+-- rows that share its application_id, not a second copy of them.
+--
+-- process_count is stored even though it could be counted from those rows: it is what the agent saw,
+-- and a top-N over a week should not have to touch 1.5 million rows to learn how many helpers an
+-- application had.
+--
+-- compressed_or_paged_out_bytes is NOT NULL here while its process_sample counterpart is nullable:
+-- ApplicationGrouper sums a refused reading as 0 and records how many members it could attribute in
+-- compressed_attribution_process_count, so the uncertainty is already expressed as a count.
+CREATE TABLE application_sample (
+  sample_id                             INTEGER NOT NULL REFERENCES sample(id) ON DELETE CASCADE,
+  application_id                        INTEGER NOT NULL REFERENCES application(id),
+  root_pid                              INTEGER NOT NULL,
+  process_count                         INTEGER NOT NULL,
+
+  cpu_percent                           REAL NOT NULL,
+  user_cpu_percent                      REAL NOT NULL,
+  system_cpu_percent                    REAL NOT NULL,
+
+  physical_footprint_bytes              INTEGER NOT NULL,
+  resident_bytes                        INTEGER NOT NULL,
+  wired_bytes                           INTEGER NOT NULL,
+  lifetime_max_physical_footprint_bytes INTEGER NOT NULL,
+  compressed_or_paged_out_bytes         INTEGER NOT NULL,
+  compressed_attribution_process_count  INTEGER NOT NULL,
+
+  wakeups_per_second                    REAL NOT NULL,
+  page_ins_per_second                   REAL NOT NULL,
+  disk_read_bytes_per_second            REAL NOT NULL,
+  disk_write_bytes_per_second           REAL NOT NULL,
+  logical_write_bytes_per_second        REAL NOT NULL,
+  instructions_per_second               REAL NOT NULL,
+  cycles_per_second                     REAL NOT NULL,
+  energy_watts                          REAL NOT NULL,
+  faults_per_second                     REAL NOT NULL,
+  copy_on_write_faults_per_second       REAL NOT NULL,
+  system_calls_per_second               REAL NOT NULL,
+  context_switches_per_second           REAL NOT NULL,
+  thread_count                          INTEGER NOT NULL,
+  running_thread_count                  INTEGER NOT NULL,
+  billed_energy_per_second              REAL NOT NULL,
+  battery_impact_score                  REAL NOT NULL
+);
+
+-- Same two readers as process_sample_sample_id: the slice at one moment, and the cascade behind
+-- `DELETE FROM sample`, which fires one child lookup per removed sample and without an index scans
+-- the whole retention window each time.
+CREATE INDEX application_sample_sample_id ON application_sample(sample_id);
+
+insertApplication:
+INSERT INTO application(key, name, bundle_path)
+VALUES (?, ?, ?)
+ON CONFLICT DO NOTHING;
+
+-- Read back rather than taken from last_insert_rowid(), for the same reason as selectProcessId: on
+-- the second sighting of an application the insert above writes nothing, and last_insert_rowid()
+-- still names whatever row preceded it in the sample transaction.
+selectApplicationId:
+SELECT id
+FROM application
+WHERE key = ?;
+
+selectApplications:
+SELECT *
+FROM application
+ORDER BY id;
+
+insertApplicationSample:
+INSERT INTO application_sample(
+  sample_id, application_id, root_pid, process_count,
+  cpu_percent, user_cpu_percent, system_cpu_percent,
+  physical_footprint_bytes, resident_bytes, wired_bytes,
+  lifetime_max_physical_footprint_bytes, compressed_or_paged_out_bytes,
+  compressed_attribution_process_count,
+  wakeups_per_second, page_ins_per_second,
+  disk_read_bytes_per_second, disk_write_bytes_per_second, logical_write_bytes_per_second,
+  instructions_per_second, cycles_per_second, energy_watts,
+  faults_per_second, copy_on_write_faults_per_second,
+  system_calls_per_second, context_switches_per_second,
+  thread_count, running_thread_count,
+  billed_energy_per_second, battery_impact_score
+)
+VALUES (
+  ?, ?, ?, ?,
+  ?, ?, ?,
+  ?, ?, ?,
+  ?, ?,
+  ?,
+  ?, ?,
+  ?, ?, ?,
+  ?, ?, ?,
+  ?, ?,
+  ?, ?,
+  ?, ?,
+  ?, ?
+);
+
+selectApplicationSamples:
+SELECT *
+FROM application_sample
+WHERE sample_id = ?
+ORDER BY application_id;

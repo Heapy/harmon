@@ -1,5 +1,6 @@
 package dev.yoda.harmon.history
 
+import dev.yoda.harmon.db.ApplicationsQueries
 import dev.yoda.harmon.db.ProcessesQueries
 import dev.yoda.harmon.db.SamplesQueries
 import dev.yoda.harmon.model.ApplicationUsage
@@ -146,6 +147,74 @@ fun ProcessesQueries.insertProcessUsage(
         lifetime_max_physical_footprint_bytes = usage.lifetimeMaxPhysicalFootprintBytes.toSqlLong(),
         compressed_or_paged_out_bytes = usage.compressedOrPagedOutBytes?.toSqlLong(),
         virtual_memory_region_count = usage.virtualMemoryRegionCount?.toLong(),
+
+        wakeups_per_second = usage.wakeupsPerSecond,
+        page_ins_per_second = usage.pageInsPerSecond,
+        disk_read_bytes_per_second = usage.diskReadBytesPerSecond,
+        disk_write_bytes_per_second = usage.diskWriteBytesPerSecond,
+        logical_write_bytes_per_second = usage.logicalWriteBytesPerSecond,
+        instructions_per_second = usage.instructionsPerSecond,
+        cycles_per_second = usage.cyclesPerSecond,
+        energy_watts = usage.energyWatts,
+        faults_per_second = usage.faultsPerSecond,
+        copy_on_write_faults_per_second = usage.copyOnWriteFaultsPerSecond,
+        system_calls_per_second = usage.systemCallsPerSecond,
+        context_switches_per_second = usage.contextSwitchesPerSecond,
+        thread_count = usage.threadCount.toLong(),
+        running_thread_count = usage.runningThreadCount.toLong(),
+        billed_energy_per_second = usage.billedEnergyPerSecond,
+        battery_impact_score = usage.batteryImpactScore,
+    )
+}
+
+/**
+ * The id of [application] in the `application` lookup, inserting the row first if this key is new, or
+ * null for a group that is deliberately not stored.
+ *
+ * Null means the group has no bundle path. `ApplicationGrouper` wraps every process outside an `.app`
+ * in a singleton group of its own, and such a group repeats one `process_sample` row without adding
+ * anything to it. Returning null rather than an id is what keeps the rest of the write path honest:
+ * [insertApplicationUsage] demands a non-null id, so a skipped lookup row cannot be followed by an
+ * `application_sample` row for the same group.
+ *
+ * The id comes from a `SELECT` for the same reason as in [upsertProcess]: the insert is
+ * `ON CONFLICT DO NOTHING`, and `last_insert_rowid()` would name an unrelated row on every sample
+ * after the first.
+ */
+fun ApplicationsQueries.upsertApplication(application: ApplicationUsage): Long? {
+    val bundlePath = application.bundlePath ?: return null
+
+    insertApplication(
+        key = application.id,
+        name = application.name,
+        bundle_path = bundlePath,
+    )
+
+    return selectApplicationId(application.id).executeAsOne()
+}
+
+/** Writes [usage] as one `application_sample` row against an already-written sample and lookup row. */
+fun ApplicationsQueries.insertApplicationUsage(
+    sampleId: Long,
+    applicationId: Long,
+    usage: ApplicationUsage,
+) {
+    insertApplicationSample(
+        sample_id = sampleId,
+        application_id = applicationId,
+        root_pid = usage.rootPid.toLong(),
+        process_count = usage.processCount.toLong(),
+
+        cpu_percent = usage.cpuPercent,
+        user_cpu_percent = usage.userCpuPercent,
+        system_cpu_percent = usage.systemCpuPercent,
+
+        physical_footprint_bytes = usage.physicalFootprintBytes.toSqlLong(),
+        resident_bytes = usage.residentBytes.toSqlLong(),
+        wired_bytes = usage.wiredBytes.toSqlLong(),
+        lifetime_max_physical_footprint_bytes = usage.lifetimeMaxPhysicalFootprintBytes.toSqlLong(),
+        compressed_or_paged_out_bytes = usage.compressedOrPagedOutBytes.toSqlLong(),
+        compressed_attribution_process_count = usage.compressedAttributionProcessCount.toLong(),
 
         wakeups_per_second = usage.wakeupsPerSecond,
         page_ins_per_second = usage.pageInsPerSecond,

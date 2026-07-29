@@ -21,13 +21,11 @@ CREATE TABLE process (
 --
 -- application_id stays null for every process ApplicationGrouper could not tie to an .app bundle:
 -- such a process becomes its own singleton group, and singleton groups are deliberately not stored.
--- Null therefore means "runs outside a bundle", never "not resolved yet". Its REFERENCES clause
--- arrives with the application table in Applications.sq — SQLDelight resolves a foreign key target
--- while generating, so the clause cannot be written before the table it points at exists.
+-- Null therefore means "runs outside a bundle", never "not resolved yet".
 CREATE TABLE process_sample (
   sample_id                             INTEGER NOT NULL REFERENCES sample(id) ON DELETE CASCADE,
   process_id                            INTEGER NOT NULL REFERENCES process(id),
-  application_id                        INTEGER,
+  application_id                        INTEGER REFERENCES application(id),
 
   cpu_percent                           REAL NOT NULL,
   user_cpu_percent                      REAL NOT NULL,

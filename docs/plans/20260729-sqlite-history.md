@@ -324,13 +324,22 @@ Nullable-поля обязаны приезжать обратно как `null`
 - Modify: `src/dev/yoda/harmon/history/HistoryRows.kt`
 - Create: `test/HistoryApplicationRowTest.kt`
 
-- [ ] написать падающий тест round-trip всех полей `ApplicationUsage` с уникальной меткой на поле
-- [ ] написать тест: группа без `bundlePath` не порождает ни строки справочника, ни `application_sample`
-- [ ] написать тест: справочник дедуплицирует по `key` между сэмплами
-- [ ] создать `Applications.sq`: справочник `application` с `UNIQUE(key)` и `bundle_path NOT NULL`, `application_sample`
-- [ ] ➕ дописать `REFERENCES application(id)` к `process_sample.application_id` в `Processes.sq` — в задаче 3 клауза не компилировалась, таблицы ещё не было
-- [ ] реализовать маппинг с отбором групп по наличию бандла
-- [ ] запустить `./kotlin test` — должны пройти до задачи 5
+- [x] написать падающий тест round-trip всех полей `ApplicationUsage` с уникальной меткой на поле
+- [x] написать тест: группа без `bundlePath` не порождает ни строки справочника, ни `application_sample`
+- [x] написать тест: справочник дедуплицирует по `key` между сэмплами
+- [x] создать `Applications.sq`: справочник `application` с `UNIQUE(key)` и `bundle_path NOT NULL`, `application_sample`
+- [x] ➕ дописать `REFERENCES application(id)` к `process_sample.application_id` в `Processes.sq` — в задаче 3 клауза не компилировалась, таблицы ещё не было
+- [x] реализовать маппинг с отбором групп по наличию бандла
+- [x] запустить `./kotlin test` — должны пройти до задачи 5
+
+> Индекс `application_sample(sample_id)` заведён, хотя в Technical Details перечислены только два
+> обязательных. Основание там же: каскад за `DELETE FROM sample` делает по одному поиску в дочерней
+> таблице на каждый удалённый сэмпл, и без индекса это скан всего окна ретеншна за раз. Цена —
+> ~23 000 записей в сутки против ~222 000 у `process_sample`, где индекс заведён по той же причине.
+>
+> `upsertApplication` возвращает `Long?` — `null` для группы без бандла, и `insertApplicationUsage`
+> требует ненулевой id. Правило «одиночная группа не пишется вообще» держит система типов, а не
+> дисциплина вызывающего.
 
 ### Task 5: Схема журнала алертов и состояния
 
