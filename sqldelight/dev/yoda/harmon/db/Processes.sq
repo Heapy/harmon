@@ -117,3 +117,14 @@ SELECT *
 FROM process_sample
 WHERE sample_id = ?
 ORDER BY process_id;
+
+-- Run after the retention delete: a process whose last sample left the window is dead weight here,
+-- and the lookup would otherwise grow with process churn forever.
+--
+-- NOT IN rather than a correlated NOT EXISTS, which is not a matter of taste at this size. There is
+-- deliberately no index on process_sample(process_id), so NOT EXISTS becomes a correlated scalar
+-- subquery that rescans a week of process_sample — over a million rows — once per lookup row. NOT IN
+-- scans it once and probes the result through a bloom filter.
+deleteOrphanProcesses:
+DELETE FROM process
+WHERE id NOT IN (SELECT process_id FROM process_sample);

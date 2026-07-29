@@ -17,6 +17,7 @@ import platform.posix.errno
 import platform.posix.getenv
 import platform.posix.mkdir
 import platform.posix.strerror
+import kotlin.time.Clock
 
 /** Where the database lives, next to the HTML reports under the home directory. */
 private const val HISTORY_DIRECTORY = "Library/Application Support/Harmon"
@@ -24,6 +25,18 @@ private const val HISTORY_DIRECTORY = "Library/Application Support/Harmon"
 private const val HISTORY_DATABASE_NAME = "history.db"
 
 private const val AUTO_VACUUM_PRAGMA = "PRAGMA auto_vacuum = INCREMENTAL"
+
+/**
+ * Pages one retention pass may hand back to the file system, at 4 KiB each — about 8 MiB.
+ *
+ * Bounded on purpose. This runs on the thread that samples the machine, and an unbounded
+ * `incremental_vacuum` right after a day of history was deleted would move every freed page at once
+ * while the next sample waits. Four times the roughly 2 MiB an hour the window turns over, so the
+ * file still shrinks as fast as it grows.
+ */
+private const val VACUUM_PAGE_LIMIT = 2_048
+
+private const val INCREMENTAL_VACUUM_PRAGMA = "PRAGMA incremental_vacuum($VACUUM_PAGE_LIMIT)"
 
 /**
  * The agent's history: the database file, the connection to it, and the generated queries over it.
@@ -37,8 +50,13 @@ private const val AUTO_VACUUM_PRAGMA = "PRAGMA auto_vacuum = INCREMENTAL"
 class HistoryStore(
     val directory: String,
     val driver: SqlDriver,
+    private val retentionDays: Long,
+    private val intervalSeconds: Long,
 ) {
     val database: HarmonDatabase = HarmonDatabase(driver)
+
+    /** Samples handed to [record] in this run, which is the only clock the retention pass has. */
+    private var recordedSamples = 0L
 
     /**
      * Writes one whole sample — the system row, every process, the applications that have a bundle,
@@ -54,8 +72,14 @@ class HistoryStore(
      * Applications are resolved before the processes: `process_sample.application_id` references the
      * lookup, so the row it names has to exist first. Groups without a bundle resolve to no id at all
      * and their processes to `application_id = NULL`; see [upsertApplication].
+     *
+     * This is also where retention runs from, on roughly every twelfth sample; see `pruneIfDue`.
+     * Hanging it off the write path is deliberate — a retention nothing calls is a database that
+     * grows forever behind a green test suite.
      */
     fun record(report: MonitoringReport, deliveries: List<DeliveryResult> = emptyList()) {
+        pruneIfDue()
+
         val usage = report.usage
         val samples = database.samplesQueries
         val processes = database.processesQueries
@@ -93,26 +117,79 @@ class HistoryStore(
         }
     }
 
+    /**
+     * Drops every sample captured before [cutoff], everything hanging off those samples, and the
+     * lookup rows nothing points at any more.
+     *
+     * The samples go out on their own: `sample_id` cascades, so `process_sample`,
+     * `application_sample`, `alert` and `alert_delivery` follow without being named. `alert_state` and
+     * `agent_state` are the agent's own state rather than history and hang off no sample, which is why
+     * they are absent here — restarting must not cost the backoff a failing channel earned.
+     *
+     * The lookups are cleaned last, because a process is orphaned only once the last sample naming it
+     * is gone. Their `NOT IN` form is load-bearing; see the queries themselves.
+     *
+     * The vacuum sits outside the transaction and returns [VACUUM_PAGE_LIMIT] pages at most. Deleting
+     * rows in WAL mode frees pages inside the file without shrinking it, and `auto_vacuum` is
+     * INCREMENTAL precisely so that this call, and only this call, decides when the space goes back.
+     */
+    fun prune(cutoff: String = retentionCutoff(Clock.System.now(), retentionDays)) {
+        database.transaction {
+            database.samplesQueries.deleteOlderThan(cutoff)
+            database.processesQueries.deleteOrphanProcesses()
+            database.applicationsQueries.deleteOrphanApplications()
+        }
+        driver.execute(identifier = null, sql = INCREMENTAL_VACUUM_PRAGMA, parameters = 0)
+    }
+
     fun close() {
         driver.close()
     }
 
+    /**
+     * Runs the retention pass on the samples [shouldPrune] picks, before the sample that triggered it
+     * is written.
+     *
+     * Before rather than after so that the pass on sample zero is a true start-up pass — an agent that
+     * was down for a week clears the whole stale window before it grows it further. The counter
+     * advances even when the pass throws: a retention that fails on a full disk costs this one sample,
+     * not every sample after it.
+     */
+    private fun pruneIfDue() {
+        if (shouldPrune(recordedSamples++, intervalSeconds)) {
+            prune()
+        }
+    }
+
     companion object {
         /**
-         * The store under [homeDirectory], or null when it cannot be opened.
+         * The store under [homeDirectory], keeping [retentionDays] of samples taken every
+         * [intervalSeconds], or null when the database cannot be opened.
          *
          * Never throws. A directory the user has locked down, a full disk or an unset `HOME` costs
          * the run its history and nothing else, and the reason is logged here because nothing
          * downstream will ever hold this store to ask about it.
+         *
+         * Neither of the two numbers has a default, because both belong to the caller's
+         * configuration and a wrong retention is invisible: too short silently deletes history the
+         * user asked to keep. A configured retention of zero means no history at all, and is the
+         * caller's reason not to open a store rather than a value to pass here.
          */
         fun openOrNull(
+            retentionDays: Long,
+            intervalSeconds: Long,
             homeDirectory: String? = currentHomeDirectory(),
             logError: (String) -> Unit = ::printError,
         ): HistoryStore? = try {
             val home = homeDirectory ?: error("HOME is not set")
             val directory = "$home/$HISTORY_DIRECTORY"
             createPrivateDirectory(directory)
-            HistoryStore(directory, openHistoryDriver(directory))
+            HistoryStore(
+                directory = directory,
+                driver = openHistoryDriver(directory),
+                retentionDays = retentionDays,
+                intervalSeconds = intervalSeconds,
+            )
         } catch (failure: Throwable) {
             logError("history disabled: ${failureDescription(failure)}")
             null

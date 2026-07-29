@@ -1,3 +1,5 @@
+import app.cash.sqldelight.db.QueryResult
+import app.cash.sqldelight.db.SqlDriver
 import dev.yoda.harmon.analysis.ApplicationGrouper
 import dev.yoda.harmon.history.HistoryStore
 import dev.yoda.harmon.model.Alert
@@ -367,16 +369,50 @@ fun withScratchHome(body: (String) -> Unit) {
  * Through [HistoryStore.openOrNull] rather than over `inMemoryDriver`, and that is the whole point of
  * the scratch home: an in-memory driver leaves foreign keys off and holds a single connection, so
  * neither a cascade nor a `last_insert_rowid()` read from the wrong pool would fail on it.
+ *
+ * [retentionDays] and [intervalSeconds] default to the shipped configuration, which schedules the
+ * retention pass on every twelfth sample — far enough apart that a test writing a handful of samples
+ * only meets the pass if it asks for it.
  */
-fun withHistoryStore(home: String, body: (HistoryStore) -> Unit) {
-    val store = HistoryStore.openOrNull(homeDirectory = home)
-        ?: fail("the store must open under $home")
+fun withHistoryStore(
+    home: String,
+    retentionDays: Long = 7,
+    intervalSeconds: Long = 300,
+    body: (HistoryStore) -> Unit,
+) {
+    val store = HistoryStore.openOrNull(
+        retentionDays = retentionDays,
+        intervalSeconds = intervalSeconds,
+        homeDirectory = home,
+    ) ?: fail("the store must open under $home")
     try {
         body(store)
     } finally {
         store.close()
     }
 }
+
+/** Every sample in the database, in the order the retention window reads them. */
+fun HistoryStore.samples() = database.samplesQueries
+    .selectBetween("0000-01-01T00:00:00Z", "9999-12-31T23:59:59Z")
+    .executeAsList()
+
+/**
+ * The row count of [table], asked of the database rather than of a generated query.
+ *
+ * A generated query would not do: one test drops a table to force a rollback, and after that half of
+ * them no longer compile against the file — and a table cleared by a cascade has no query of its own
+ * to count through anyway.
+ */
+fun SqlDriver.countRows(table: String): Long = executeQuery(
+    identifier = null,
+    sql = "SELECT count(*) FROM $table",
+    mapper = { cursor ->
+        cursor.next()
+        QueryResult.Value(cursor.getLong(0))
+    },
+    parameters = 0,
+).value ?: fail("counting $table returned no row")
 
 /**
  * A notification channel that keeps everything it was handed.

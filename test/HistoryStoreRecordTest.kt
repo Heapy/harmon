@@ -1,12 +1,8 @@
-import app.cash.sqldelight.db.QueryResult
-import app.cash.sqldelight.db.SqlDriver
-import dev.yoda.harmon.history.HistoryStore
 import dev.yoda.harmon.model.DeliveryResult
 import dev.yoda.harmon.model.MonitoringReport
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFails
-import kotlin.test.fail
 import kotlin.time.Instant
 
 /**
@@ -138,23 +134,3 @@ private fun deliveries(): List<DeliveryResult> = listOf(
     DeliveryResult(channel = "notification-center", successful = true, detail = "posted"),
     DeliveryResult(channel = "webhook", successful = false, detail = "HTTP 500 from example.com"),
 )
-
-/** Every sample in the database, in the order the retention window reads them. */
-private fun HistoryStore.samples() = database.samplesQueries
-    .selectBetween("0000-01-01T00:00:00Z", "9999-12-31T23:59:59Z")
-    .executeAsList()
-
-/**
- * The row count of [table], asked of the database rather than of a generated query: after
- * `DROP TABLE application_sample` half the generated queries no longer compile against the file, and
- * a rollback has to be provable table by table.
- */
-private fun SqlDriver.countRows(table: String): Long = executeQuery(
-    identifier = null,
-    sql = "SELECT count(*) FROM $table",
-    mapper = { cursor ->
-        cursor.next()
-        QueryResult.Value(cursor.getLong(0))
-    },
-    parameters = 0,
-).value ?: fail("counting $table returned no row")
