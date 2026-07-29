@@ -1,4 +1,3 @@
-import app.cash.sqldelight.driver.native.inMemoryDriver
 import dev.yoda.harmon.db.HarmonDatabase
 import dev.yoda.harmon.history.insertApplicationUsage
 import dev.yoda.harmon.history.insertSample
@@ -22,8 +21,7 @@ import kotlin.test.assertNull
 class HistoryApplicationRowTest {
 
     @Test
-    fun everyApplicationUsageFieldLandsInItsOwnColumn() {
-        val database = openApplicationDatabase()
+    fun everyApplicationUsageFieldLandsInItsOwnColumn() = withInMemoryDatabase { database ->
         val applications = database.applicationsQueries
         val sampleId = database.insertOwningSample()
 
@@ -76,8 +74,7 @@ class HistoryApplicationRowTest {
      * group go through the loop `record` will run, so the test cannot pass by storing nothing at all.
      */
     @Test
-    fun aGroupWithoutABundleIsNotStoredAtAll() {
-        val database = openApplicationDatabase()
+    fun aGroupWithoutABundleIsNotStoredAtAll() = withInMemoryDatabase { database ->
         val applications = database.applicationsQueries
         val sampleId = database.insertOwningSample()
 
@@ -104,8 +101,8 @@ class HistoryApplicationRowTest {
      * and two applications must not collapse into one.
      */
     @Test
-    fun theLookupHoldsOneRowPerApplicationKey() {
-        val applications = openApplicationDatabase().applicationsQueries
+    fun theLookupHoldsOneRowPerApplicationKey() = withInMemoryDatabase { database ->
+        val applications = database.applicationsQueries
         val marked = markedApplication()
 
         val first = applications.upsertApplication(marked)
@@ -123,9 +120,6 @@ class HistoryApplicationRowTest {
         assertEquals(2, applications.selectApplications().executeAsList().size)
     }
 }
-
-private fun openApplicationDatabase(): HarmonDatabase =
-    HarmonDatabase(inMemoryDriver(HarmonDatabase.Schema))
 
 /**
  * A sample row for the application rows to hang off. Nothing about it is asserted — `sample_id` just

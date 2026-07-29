@@ -12,6 +12,7 @@ flowchart LR
     LD[Root LaunchDaemon] -->|collects public kernel and IOKit counters| S[Unix socket]
     S -->|length-prefixed kotlinx.serialization JSON| LA[User LaunchAgent]
     LA --> R[Reports and alert rules]
+    LA --> H[(history.db)]
     R --> N[Notification Center]
     R --> T[Telegram]
     R --> W[Webhook]
@@ -347,12 +348,15 @@ did with them. That is what makes "what was eating the machine at three in the
 morning" a question with an answer.
 
 `historyRetentionDays` is how far back the answer goes. At the default of seven
-days and a 300-second interval the file settles at roughly 350 MB; a `0` keeps
-no history at all and creates no database file. The agent prunes the window
-about once an hour and hands the freed space back to the file system as it
-goes.
+days and a 300-second interval expect a couple of hundred megabytes — a measured
+sample costs about 140 bytes per stored process, and a machine with several
+hundred readable processes writes around 222 000 of those rows a day. That is an
+extrapolation from one measured window rather than an observed steady state, so
+treat it as an order of magnitude. A `0` keeps no history at all and creates no
+database file. The agent prunes the window about once an hour and hands the
+freed space back to the file system as it goes, up to 8 MiB per pass.
 
-Only `harmon run` writes. `once` and `diagnose` measure a two-second window
+Only `harmon run` writes. `once` and `diagnose` measure a window of seconds
 instead of the sampling interval, so their numbers would mean something
 different inside the same series. Harmon itself reads the database only for the
 alert state it resumes after a restart; everything else is a `sqlite3` query
@@ -390,11 +394,19 @@ tail -f ~/Library/Logs/Harmon/agent.log
 sudo tail -f /Library/Logs/Harmon/collector.log
 ```
 
-Remove both services and installed binaries while preserving configuration and
-logs:
+Remove both services and installed binaries while preserving configuration,
+logs, generated reports and the sample history:
 
 ```shell
 ./scripts/uninstall.sh
+```
+
+The history database is the largest of those and is left behind deliberately —
+it is the record the agent was collecting, and up to a few hundred megabytes of
+it. Reclaim the space when you no longer want it:
+
+```shell
+rm -f ~/Library/Application\ Support/Harmon/history.db*
 ```
 
 ## Project structure

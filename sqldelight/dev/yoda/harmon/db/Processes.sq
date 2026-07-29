@@ -22,10 +22,20 @@ CREATE TABLE process (
 -- application_id stays null for every process ApplicationGrouper could not tie to an .app bundle:
 -- such a process becomes its own singleton group, and singleton groups are deliberately not stored.
 -- Null therefore means "runs outside a bundle", never "not resolved yet".
+--
+-- process_id and application_id deliberately carry NO REFERENCES clause, unlike sample_id. The
+-- driver turns foreign_keys on, and SQLite proves a parent has no children by scanning the child
+-- table once per deleted parent row — with no index on the child column that is one full scan of
+-- this table, the largest in the schema, for every row deleteOrphanProcesses or
+-- deleteOrphanApplications removes. Measured at this schema's shape (800 000 child rows, 200 orphan
+-- parents): 5.66 s of CPU with the clauses against 0.13 s without, spent inside the pass's write
+-- transaction while the next sample waits on it. Nothing is bought back: retention collects orphans
+-- by an explicit NOT IN over exactly these columns, so a row a REFERENCES clause would refuse to
+-- orphan is a row NOT IN never selects in the first place.
 CREATE TABLE process_sample (
   sample_id                             INTEGER NOT NULL REFERENCES sample(id) ON DELETE CASCADE,
-  process_id                            INTEGER NOT NULL REFERENCES process(id),
-  application_id                        INTEGER REFERENCES application(id),
+  process_id                            INTEGER NOT NULL,
+  application_id                        INTEGER,
 
   cpu_percent                           REAL NOT NULL,
   user_cpu_percent                      REAL NOT NULL,
@@ -61,7 +71,9 @@ CREATE TABLE process_sample (
 -- Reading one moment back and dropping one window both start from sample_id; without this index
 -- either walks a week of rows. The mirror image, (process_id, sample_id) for "this process over
 -- time", is deliberately absent: another ~222 000 index entries a day to speed up a question that a
--- full scan of the window answers in a couple of seconds.
+-- full scan of the window answers in a couple of seconds. Leaving process_id unindexed is only
+-- affordable because it carries no REFERENCES clause: under an enforced foreign key an unindexed
+-- child column costs a scan per deleted parent row, a price the read path never gets to weigh.
 CREATE INDEX process_sample_sample_id ON process_sample(sample_id);
 
 insertProcess:

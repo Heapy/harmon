@@ -221,6 +221,16 @@ paths. This is sensitive local metadata. The socket must not be exposed beyond
 the configured account. Standard webhook payloads deliberately omit executable
 paths and detailed collection failures.
 
+That metadata is no longer transient. The agent writes every sample to
+`~/Library/Application Support/Harmon/history.db` and keeps it for
+`historyRetentionDays` — seven by default — so process names, uids, parent pids
+and executable paths sit on disk for a week rather than for the length of one
+report. The protection is `0700` on the containing directory, not a mode on the
+file: SQLite recreates `history.db-wal` and `history.db-shm` beside it on every
+open, both carry the same metadata, and any mode set on those would be gone the
+next time they were created. `historyRetentionDays=0` is how a user opts out of
+persistence entirely; the file is then never created.
+
 The root process currently links the same executable image as the user agent,
 including notification and HTTP code, although its command path does not call
 them. A future hardening step can split the build into distinct collector and
@@ -230,9 +240,14 @@ agent binaries without changing the versioned snapshot protocol.
 
 A UI should run as the login user and consume the same agent-side
 `SystemUsage`/`MonitoringReport` model. It should not gain root privileges.
+
+The agent already persists bounded time-series data: `history.db` holds every
+sample for the retention window, and `docs/history.md` is its schema. What is
+missing is a read path shaped for a UI rather than for `sqlite3` — the store
+exposes one query today, the alert state it resumes after a restart.
+
 Possible evolutions are:
 
-- have the agent persist bounded time-series data for the UI;
 - add a separate read-only user socket owned by the agent;
 - keep the existing collector protocol private to the agent;
 - version storage schemas independently from collector IPC.

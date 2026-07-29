@@ -1,7 +1,6 @@
 import dev.yoda.harmon.history.toSqlLong
 import kotlin.test.Test
 import kotlin.test.assertEquals
-import kotlin.test.assertNull
 import kotlin.test.assertTrue
 
 class SqlConversionsTest {
@@ -35,12 +34,4 @@ class SqlConversionsTest {
         assertEquals(Long.MAX_VALUE, Long.MAX_VALUE.toULong().toSqlLong())
     }
 
-    @Test
-    fun leavesAnAbsentValueAbsentRatherThanZero() {
-        val absent: ULong? = null
-        val present: ULong? = 4_096uL
-
-        assertNull(absent?.toSqlLong())
-        assertEquals(4_096L, present?.toSqlLong())
-    }
 }

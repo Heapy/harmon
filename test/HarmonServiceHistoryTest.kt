@@ -33,6 +33,17 @@ private const val FIRING_KEY = "memory:process:42:100"
 private const val INTERVAL_SECONDS = 300L
 
 /**
+ * `alert` as the schema declares it, for putting back after a test has dropped it to break a write.
+ * Only the columns matter here — the index and the comments are the schema's business, and a write
+ * that works again is all this has to buy.
+ */
+private const val RECREATED_ALERT_TABLE =
+    "CREATE TABLE alert (" +
+        "sample_id INTEGER NOT NULL REFERENCES sample(id) ON DELETE CASCADE, " +
+        "key TEXT NOT NULL, reported INTEGER NOT NULL, " +
+        "severity TEXT, title TEXT, message TEXT)"
+
+/**
  * Covers the history write where the agent loop performs it, against the database it writes to.
  *
  * Nothing here reads `handleSample`'s return value or the outcome of a delivery, because there is
@@ -160,17 +171,60 @@ class HarmonServiceHistoryTest {
         }
     }
 
-    /** What `once` and `diagnose` get: the whole sample, and not a row written anywhere. */
+    /**
+     * "Reported once until it recovers" is two claims, and the test above only makes the first.
+     * A write that fails, works, and fails again has to speak twice, which means the success in
+     * between has to clear the flag that silences the repeat. Delete the one line that clears it and
+     * nothing else in this file notices — while every failure after the first transient one goes
+     * silent for the life of the process, which is the opposite of what is documented.
+     */
+    @Test
+    fun aWriteThatRecoversAndThenFailsAgainIsReportedAgain() = withScratchHome { home ->
+        withHistoryStore(home, intervalSeconds = INTERVAL_SECONDS) { store ->
+            val errors = mutableListOf<String>()
+            val service = serviceOver(store, logError = { errors += it })
+
+            store.driver.execute(null, "DROP TABLE alert", 0)
+            service.handleSample(snapshotAt(0uL, OVER_THRESHOLD), snapshotAt(1uL, OVER_THRESHOLD))
+
+            store.driver.execute(null, RECREATED_ALERT_TABLE, 0)
+            service.handleSample(snapshotAt(2uL, OVER_THRESHOLD), snapshotAt(3uL, OVER_THRESHOLD))
+
+            store.driver.execute(null, "DROP TABLE alert", 0)
+            service.handleSample(snapshotAt(4uL, OVER_THRESHOLD), snapshotAt(5uL, OVER_THRESHOLD))
+
+            assertEquals(1, store.samples().size, "only the middle sample had a table to write to")
+            assertEquals(
+                2,
+                errors.count { "history write failed" in it },
+                "the write recovered in between, so the second failure is news again: $errors",
+            )
+        }
+    }
+
+    /**
+     * What `once` and `diagnose` get: the whole sample, and not a row written anywhere.
+     *
+     * The same sample is put through a service that has the store first, so that "nothing was
+     * written" is a difference rather than a description of a database nobody asked to write to.
+     * Both services run against one open store under one home; only the second is denied it.
+     */
     @Test
     fun withoutAStoreTheSampleIsHandledAndNothingIsWritten() = withScratchHome { home ->
-        val channel = RecordingChannel()
-        val service = serviceOver(store = null, channels = listOf(channel))
-
-        service.handleSample(snapshotAt(0uL, OVER_THRESHOLD), snapshotAt(1uL, OVER_THRESHOLD))
-
-        assertEquals(1, channel.payloads.size)
         withHistoryStore(home, intervalSeconds = INTERVAL_SECONDS) { store ->
-            assertEquals(0, store.samples().size, "a service without a store wrote a sample")
+            serviceOver(store).handleSample(
+                snapshotAt(0uL, OVER_THRESHOLD),
+                snapshotAt(1uL, OVER_THRESHOLD),
+            )
+            assertEquals(1, store.samples().size, "the same sample writes a row when there is one")
+
+            val channel = RecordingChannel()
+            val service = serviceOver(store = null, channels = listOf(channel))
+
+            service.handleSample(snapshotAt(0uL, OVER_THRESHOLD), snapshotAt(1uL, OVER_THRESHOLD))
+
+            assertEquals(1, channel.payloads.size, "the sample was never handled")
+            assertEquals(1, store.samples().size, "a service without a store wrote a sample")
         }
     }
 

@@ -230,6 +230,24 @@ class ConfigLoaderTest {
         }
     }
 
+    /**
+     * The upper bound exists because the failure at the other end is silent. `7000` is the typo for
+     * `7` that costs nothing to make, and it parses into a cutoff no stored sample is ever older
+     * than — so the pass deletes nothing, the file grows for as long as the agent runs, and nothing
+     * anywhere says a word about it.
+     */
+    @Test
+    fun rejectsAHistoryRetentionLongerThanAnyUseForTheData() {
+        assertEquals(3_650L, parseConfig("historyRetentionDays=3650").historyRetentionDays)
+
+        val failure = assertFailsWith<ConfigException> { parseConfig("historyRetentionDays=7000") }
+
+        assertContains(
+            assertNotNull(failure.message),
+            "historyRetentionDays must be between 0 and 3650",
+        )
+    }
+
     /** `check-config` is where a user finds out history is off, so the key has to appear disabled. */
     @Test
     fun reportsTheHistoryRetentionEvenWhenItIsDisabled() {

@@ -18,10 +18,11 @@ import kotlin.time.Instant
  * string is always exactly `YYYY-MM-DDTHH:MM:SSZ`.
  *
  * Fixed width is the requirement, not the precision. [Instant.toString] prints 0, 3, 6 or 9
- * fractional digits depending on the value, and `'2026-07-29T00:05:00.500Z' < '2026-07-29T00:05:00Z'`
- * — the later moment sorts first. `ORDER BY captured_at` and the retention cutoff both compare these
- * strings, so a variable-width fraction would silently reorder history and strand rows past the
- * cutoff. The sampling interval is hundreds of seconds; sub-second precision carries no information.
+ * fractional digits depending on the value, and
+ * `'2026-07-29T00:05:00.500Z' < '2026-07-29T00:05:00Z'` — the later moment sorts first.
+ * `ORDER BY captured_at` and the retention cutoff both compare these strings, so a variable-width
+ * fraction would silently reorder history and strand rows past the cutoff. The sampling interval
+ * is hundreds of seconds; sub-second precision carries no information.
  */
 fun Instant.toSqlTimestamp(): String = Instant.fromEpochSeconds(epochSeconds).toString()
 
@@ -29,9 +30,9 @@ fun Instant.toSqlTimestamp(): String = Instant.fromEpochSeconds(epochSeconds).to
  * Writes [usage] as one `sample` row. The caller takes the new id from `lastInsertedId`.
  *
  * The whole point of routing this through the generated named parameters is that `sample` has fifty
- * columns, of which twenty-three are `REAL` and nineteen `INTEGER`: a transposed pair of arguments
- * would type-check, round-trip, and be wrong forever. Naming every one of them makes the mistake
- * visible in the diff instead of in a year-old chart.
+ * insertable columns, of which twenty-six are `INTEGER`, twenty-three `REAL` and one `TEXT`: a
+ * transposed pair of arguments would type-check, round-trip, and be wrong forever. Naming every one
+ * of them makes the mistake visible in the diff instead of in a year-old chart.
  */
 fun SamplesQueries.insertSample(usage: SystemUsage) {
     val swap = usage.swap
@@ -106,9 +107,7 @@ fun SamplesQueries.insertSample(usage: SystemUsage) {
  * The id of [process] in the `process` lookup, inserting the row first if this identity is new.
  *
  * The id comes back from a `SELECT` rather than from `last_insert_rowid()`, which would be wrong
- * here in a way it is not for `sample`: the insert is `ON CONFLICT DO NOTHING`, so on the second
- * sighting of a process nothing is written and `last_insert_rowid()` still names the row before it —
- * inside a sample transaction, some other process entirely.
+ * here in a way it is not for `sample`; `selectProcessId` in `Processes.sq` carries the reasoning.
  */
 fun ProcessesQueries.upsertProcess(process: ProcessUsage): Long {
     val pid = process.identity.pid.toLong()
@@ -129,7 +128,8 @@ fun ProcessesQueries.upsertProcess(process: ProcessUsage): Long {
 /**
  * Writes [usage] as one `process_sample` row against an already-written sample and lookup row.
  *
- * [applicationId] is null for a process that runs outside an `.app` bundle; see [applicationIdsByPid].
+ * [applicationId] is null for a process that runs outside an `.app` bundle: `ApplicationGrouper`
+ * wraps such a process in a singleton group of its own, and those groups are not stored at all.
  */
 fun ProcessesQueries.insertProcessUsage(
     sampleId: Long,
@@ -173,18 +173,16 @@ fun ProcessesQueries.insertProcessUsage(
 }
 
 /**
- * The id of [application] in the `application` lookup, inserting the row first if this key is new, or
- * null for a group that is deliberately not stored.
+ * The id of [application] in the `application` lookup, inserting the row first if this key is new,
+ * or null for a group that is deliberately not stored.
  *
- * Null means the group has no bundle path. `ApplicationGrouper` wraps every process outside an `.app`
- * in a singleton group of its own, and such a group repeats one `process_sample` row without adding
- * anything to it. Returning null rather than an id is what keeps the rest of the write path honest:
- * [insertApplicationUsage] demands a non-null id, so a skipped lookup row cannot be followed by an
- * `application_sample` row for the same group.
+ * Null means the group has no bundle path. `ApplicationGrouper` wraps every process outside an
+ * `.app` in a singleton group of its own, and such a group repeats one `process_sample` row
+ * without adding anything to it. Returning null rather than an id is what keeps the rest of the
+ * write path honest: [insertApplicationUsage] demands a non-null id, so a skipped lookup row cannot
+ * be followed by an `application_sample` row for the same group.
  *
- * The id comes from a `SELECT` for the same reason as in [upsertProcess]: the insert is
- * `ON CONFLICT DO NOTHING`, and `last_insert_rowid()` would name an unrelated row on every sample
- * after the first.
+ * The id comes from a `SELECT` for the same reason as in [upsertProcess].
  */
 fun ApplicationsQueries.upsertApplication(application: ApplicationUsage): Long? {
     val bundlePath = application.bundlePath ?: return null
@@ -198,7 +196,7 @@ fun ApplicationsQueries.upsertApplication(application: ApplicationUsage): Long? 
     return selectApplicationId(application.id).executeAsOne()
 }
 
-/** Writes [usage] as one `application_sample` row against an already-written sample and lookup row. */
+/** Writes [usage] as one `application_sample` row against a written sample and lookup row. */
 fun ApplicationsQueries.insertApplicationUsage(
     sampleId: Long,
     applicationId: Long,
@@ -241,31 +239,6 @@ fun ApplicationsQueries.insertApplicationUsage(
 }
 
 /**
- * `pid` to `application.id` for the processes that belong to a stored application, given the lookup
- * ids of the applications of this sample keyed by [ApplicationUsage.id].
- *
- * [ApplicationUsage.processIds] is the only link between a process and its group, so inverting it
- * once per sample puts the membership in `process_sample` — "which Chrome helpers were busy at 3am"
- * is then one join, and the list itself never has to be stored.
- *
- * A group with no bundle path is skipped, and a process in one is meant to end up with
- * `application_id = NULL`: `ApplicationGrouper` gives every process outside an `.app` its own
- * singleton group, and those groups are not written at all.
- */
-fun applicationIdsByPid(
-    applications: List<ApplicationUsage>,
-    applicationIds: Map<String, Long>,
-): Map<Int, Long> = buildMap {
-    for (application in applications) {
-        if (application.bundlePath == null) continue
-        val applicationId = applicationIds[application.id] ?: continue
-        for (pid in application.processIds) {
-            put(pid, applicationId)
-        }
-    }
-}
-
-/**
  * Writes [alert] as one `alert` row: an alert the report actually carried, text and all.
  *
  * The severity goes in by name. `Severity.ordinal` would be one byte instead of eight, and would
@@ -284,8 +257,8 @@ fun AlertsQueries.insertReportedAlert(sampleId: Long, alert: Alert) {
 }
 
 /**
- * Writes one key from `MonitoringReport.suppressedAlertKeys` — over its threshold, but pushed out of
- * the report by the per-category cap — as an `alert` row with `reported = 0` and no text.
+ * Writes one key from `MonitoringReport.suppressedAlertKeys` — over its threshold, but pushed out
+ * of the report by the per-category cap — as an `alert` row with `reported = 0` and no text.
  *
  * The key is all there is to write: the report carries nothing else about a suppressed alert. It is
  * still worth a row, and the reason `reported` exists at all — a suppressed alert that was already
@@ -316,11 +289,12 @@ fun AlertsQueries.insertDeliveryResult(sampleId: Long, result: DeliveryResult) {
  * Puts [snapshot] in `alert_state` in place of whatever was there.
  *
  * Wholesale rather than as a diff, because a key that stopped firing has to leave the table and a
- * snapshot has no way to say so — it is the firing keys, not a change to them. At the handful of rows
- * an alerting machine holds, working that out would cost more than rewriting them.
+ * snapshot has no way to say so — it is the firing keys, not a change to them. At the handful of
+ * rows an alerting machine holds, working that out would cost more than rewriting them.
  *
- * The counter the [AlertKeyState.retryAtSample] of these rows is measured against does not live here;
- * `agent_state` carries it, and both are written inside one sample transaction so they cannot drift.
+ * The counter the [AlertKeyState.retryAtSample] of these rows is measured against does not live
+ * here; `agent_state` carries it, and both are written inside one sample transaction so they cannot
+ * drift.
  */
 fun AlertsQueries.replaceAlertState(snapshot: AlertStateSnapshot) {
     deleteAlertState()

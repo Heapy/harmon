@@ -23,6 +23,19 @@ package app.cash.sqldelight.core
 // PSI and drives SqlDelightCompiler. We vendor it so our jvm/amper-plugin can invoke SQLDelight's
 // code generation without Gradle. Only change vs upstream: the optimistic-lock annotator (which
 // lives in the gradle-plugin artifact, not `core`) is dropped -> annotate(emptyList()).
+//
+// Kept byte-for-byte otherwise, deliberately, so that re-syncing against a newer SQLDelight is a
+// diff rather than a merge. Two consequences that look like defects and are not:
+//
+//   * the package is upstream's `app.cash.sqldelight.core`, which this module also depends on
+//     through $libs.sqldelight.core. Today that artifact does not contain this class -- SQLDelight
+//     ships it only in the Gradle plugin -- so there is no collision. Should a future release move
+//     it into `core`, this file has to be deleted rather than renamed: the duplicate would
+//     otherwise be resolved arbitrarily on the build classpath. Check on every version bump.
+//   * `forMigrationFiles` has no caller and the migration branches below are unreachable, because
+//     Generate.kt hard-wires deriveSchemaFromMigrations = false and verifyMigrations = false. They
+//     stay because trimming them is what turns the next re-sync into a merge. `.sqm` files
+//     therefore do nothing in this repository; see CLAUDE.md.
 // ---------------------------------------------------------------------------------------------
 
 import app.cash.sqldelight.core.compiler.SqlDelightCompiler

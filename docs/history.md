@@ -11,8 +11,10 @@ sqlite3 "$HOME/Library/Application Support/Harmon/history.db"
 
 The agent holds the file open for the length of its run in WAL mode, so a
 reader can query it while the agent samples. `once` and `diagnose` measure a
-two-second window rather than the sampling interval and write nothing;
-`historyRetentionDays=0` writes nothing at all and creates no file.
+window of seconds — `onceSampleSeconds`, or `--sample-seconds`, anywhere in
+1…300 — rather than the sampling interval, so their rates mean something
+different from the ones around them and they write nothing at any of those
+values. `historyRetentionDays=0` writes nothing at all and creates no file.
 
 ## Timestamps
 
@@ -131,9 +133,15 @@ SELECT datetime(s.captured_at, 'localtime') AS local_time,
        al.key, al.reported, al.severity, al.message, a.name AS application
 FROM alert al
 JOIN sample s           ON s.id = al.sample_id
-LEFT JOIN application a ON al.key IN ('cpu:' || a.key, 'memory:' || a.key)
+LEFT JOIN application a ON a.key = substr(al.key, instr(al.key, ':') + 1)
 ORDER BY s.captured_at, al.key;
 ```
+
+Splitting the key at its first `:` rather than concatenating each rule prefix in
+turn is what keeps this correct as rules are added: there are four
+per-application rules today (`cpu:`, `memory:`, `disk-write:`, `battery-impact:`)
+and a list of them written into the join answers `NULL` for any rule it forgot —
+which reads exactly like "this alert is not about an application".
 
 What a notification channel actually did — the one record of a webhook that has
 been answering 500 all night:
@@ -170,8 +178,8 @@ constructor, which is the plumbing the explicit conversions exist to avoid.
 (`SqlConversions.kt`), so a byte count past 9.2 exabytes reads as that boundary
 rather than as a negative number.
 
-All three lookup keys are `AUTOINCREMENT`, so an id retention frees is never
-handed to a different row.
+All three surrogate keys — `sample.id`, `process.id`, `application.id` — are
+`AUTOINCREMENT`, so an id retention frees is never handed to a different row.
 
 ### sample
 
@@ -273,8 +281,8 @@ CREATE TABLE process (
 
 CREATE TABLE process_sample (
   sample_id                             INTEGER NOT NULL REFERENCES sample(id) ON DELETE CASCADE,
-  process_id                            INTEGER NOT NULL REFERENCES process(id),
-  application_id                        INTEGER REFERENCES application(id),
+  process_id                            INTEGER NOT NULL,
+  application_id                        INTEGER,
 
   cpu_percent                           REAL NOT NULL,
   user_cpu_percent                      REAL NOT NULL,
@@ -310,7 +318,10 @@ CREATE INDEX process_sample_sample_id ON process_sample(sample_id);
 
 `process` is the lookup: `pid` and `started_at` are `ProcessUsage.identity`, the
 rest is the naming half of `ProcessUsage`, written once instead of 288 times a
-day. `uid` is null when the collector could not read it.
+day. `uid` is null when the collector could not read it, and `executable_path` is
+null when it read an empty one. All four naming columns freeze at first sighting:
+the insert is `ON CONFLICT DO NOTHING`, so a process that renames itself keeps
+the name it was first seen under.
 
 `process_sample` is one row per readable process per sample — around 222 000 a
 day on a machine running several hundred processes — and every column after the
@@ -324,6 +335,19 @@ process runs outside an `.app` bundle rather than that the grouping failed. Ther
 is deliberately no `(process_id, sample_id)` index: it would add another 222 000
 entries a day to speed up a question a full scan of the window answers in a
 couple of seconds.
+
+Only `sample_id` is a declared foreign key. `process_id` and `application_id`
+hold ids from the two lookups but carry no `REFERENCES` clause, and the omission
+is what makes the missing index affordable: foreign keys are enforced, and SQLite
+proves a parent row has no children by scanning the child table once per deleted
+parent — with no index on the child column that is a full scan of the largest
+table in the schema for every lookup row retention collects. Measured at this
+shape (800 000 child rows, 200 orphan parents) it is 5.66 s of CPU against
+0.13 s, spent inside the pass's write transaction while the next sample waits.
+Nothing is bought back: retention collects orphans with an explicit `NOT IN` over
+exactly these columns, so a row the constraint would refuse to orphan is one
+`NOT IN` never selects. A join from `process_sample` to `process` is therefore
+guaranteed by the writer rather than by the database.
 
 ### application, application_sample
 
@@ -426,13 +450,18 @@ again, so the row is the only trace it leaves anywhere.
 ordinal, so that inserting a constant into `Severity` cannot re-point rows
 written before it.
 
-`alert.key` is the rule's key: `swap`, `swap-out`, `battery-low`, or
-`cpu:<application key>` and `memory:<application key>` for the per-application
-rules. A key appears at most once per sample.
+`alert.key` is the rule's key: `swap`, `swap-out` and `battery-low` for the
+global rules; `cpu:`, `memory:`, `disk-write:` and `battery-impact:` prefixed to
+the application key for the per-application ones. A key appears at most once per
+sample.
 
 `alert_delivery` is what each notification channel did with this sample's push —
-`system`, `webhook` or `telegram`, once per sample each, failures included.
-`detail` is the channel's own account of the outcome.
+`system`, `webhook` or `telegram`, at most once per sample each, failures
+included. `detail` is the channel's own account of the outcome. Rows appear only
+for the samples that actually pushed: a sample that raised nothing, or that
+raised only keys already firing, never reaches the dispatcher and writes none.
+With `notifyEverySample` on, every sample carrying an alert writes one row per
+enabled channel.
 
 ### alert_state, agent_state
 
@@ -466,6 +495,13 @@ themselves for the life of the run.
 written with, and it is what decides whether the state is still worth restoring.
 The agent drops it past two sampling intervals and starts from an empty alert
 state.
+
+Both tables assume one writer. `agent_state` is a single row pinned to a
+singleton key and `alert_state` is emptied and rewritten on every sample, so two
+agents against the same home — a `harmon run` by hand while the LaunchAgent is
+up — overwrite each other's counter and keys rather than merging them, and a
+restart then restores state belonging to the other process. Run a second agent
+against a `HOME` of its own.
 
 ## Three things the schema does not carry
 

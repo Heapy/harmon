@@ -39,13 +39,13 @@ private const val MAX_RETRY_EXPONENT = 16
 private const val SNAPSHOT_FRESH_INTERVALS = 2
 
 /**
- * Whether a snapshot saved at [savedAt] still describes the machine [now], at a sampling interval of
- * [intervalSeconds].
+ * Whether a snapshot saved at [savedAt] still describes the machine [now], at a sampling interval
+ * of [intervalSeconds].
  *
- * Two intervals is a launchd restart with slack, not a return after a day. Restoring is not free: the
- * keys it brings back feed the hysteresis in `AlertAnalyzer`, which applies a lowered clear threshold
- * to whatever was firing — and applying it to a state from yesterday morning would hold an alert open
- * against a machine that has since been rebooted twice.
+ * Two intervals is a launchd restart with slack, not a return after a day. Restoring is not free:
+ * the keys it brings back feed the hysteresis in `AlertAnalyzer`, which applies a lowered clear
+ * threshold to whatever was firing — and applying it to a state from yesterday morning would hold
+ * an alert open against a machine that has since been rebooted twice.
  *
  * A [now] before [savedAt] is not fresh either. The clock moving backwards — a time-zone database
  * update, an NTP step after a flat battery — makes the age of the snapshot unknowable, and the safe
@@ -60,8 +60,9 @@ fun isSnapshotFresh(savedAt: Instant, now: Instant, intervalSeconds: Long): Bool
  * What one alert key carries across a restart: whether its delivery was ever confirmed, and how far
  * the backoff of a failing one has run.
  *
- * There is no `firing` flag because there could be no other value. Only firing keys reach a snapshot:
- * `AlertState.commit` prunes every map and set it keeps down to the keys of the current sample.
+ * There is no `firing` flag because there could be no other value. Only firing keys reach a
+ * snapshot: `AlertState.commit` prunes every map and set it keeps down to the keys of the current
+ * sample.
  */
 data class AlertKeyState(
     val settled: Boolean,
@@ -72,10 +73,11 @@ data class AlertKeyState(
 /**
  * The whole of an [AlertState] as it stood after a commit, in a form that survives the process.
  *
- * [sampleCounter] is not bookkeeping. [AlertKeyState.retryAtSample] is an absolute sample number, so
- * restoring the keys against a counter that starts at zero would leave every deferred key waiting for
- * a sample thousands of intervals away — an alert with an earned backoff would stop being pushed
- * altogether, which is a worse failure than the repeated push restoring exists to prevent.
+ * [sampleCounter] is not bookkeeping. [AlertKeyState.retryAtSample] is an absolute sample number,
+ * so restoring the keys against a counter that starts at zero would leave every deferred key
+ * waiting for a sample thousands of intervals away — an alert with an earned backoff would stop
+ * being pushed altogether, which is a worse failure than the repeated push restoring exists to
+ * prevent.
  */
 data class AlertStateSnapshot(
     val sampleCounter: Long,
@@ -97,7 +99,8 @@ data class AlertStateSnapshot(
  *
  * [restored] resumes the state a previous run of the agent left behind, so that a restart neither
  * pushes an alert that never stopped firing a second time nor hands a broken channel a fresh retry
- * budget. It seeds the sample counter along with the keys, for the reason [AlertStateSnapshot] gives.
+ * budget. It seeds the sample counter along with the keys, for the reason [AlertStateSnapshot]
+ * gives.
  */
 class AlertState(restored: AlertStateSnapshot? = null) {
     private var firing: Set<String> = restored?.keys?.keys.orEmpty()

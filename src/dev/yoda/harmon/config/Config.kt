@@ -355,6 +355,18 @@ object ConfigLoader {
         if (config.maxAlertsPerCategory !in 1..20) {
             throw ConfigException("maxAlertsPerCategory must be between 1 and 20")
         }
+        /*
+         * A retention nobody bounded is a database nobody bounded. `historyRetentionDays=7000`, the
+         * typo for 7 that costs nothing to make, parses cleanly and yields a cutoff no stored
+         * sample is ever older than, so the pass deletes nothing and the file grows for as long as
+         * the agent runs, with nothing anywhere reporting it. Ten years is past any use for the
+         * data and well short of that.
+         */
+        config.historyRetentionDays?.let { days ->
+            if (days !in 1..3_650) {
+                throw ConfigException("historyRetentionDays must be between 0 and 3650")
+            }
+        }
 
         val thresholds = config.thresholds
         if ((thresholds.applicationMemoryMiB ?: 0) > MAX_THRESHOLD_MIB) {

@@ -116,16 +116,27 @@ class HistoryEdgeCaseTest {
      * `NOT IN (SELECT …)`, and over an empty subquery that predicate holds for every row instead of
      * for none — so a database that only ever held such samples is exactly where a lookup would be
      * swept while a sample still names it, or kept forever while none does.
+     *
+     * The application row is planted by hand rather than recorded, and that is the only way this
+     * half of the pass means anything: neither sample writes one, so `countRows("application") == 0`
+     * after the pass would hold just as well before it. Planted, it is a lookup row that `NOT IN`
+     * over an empty `application_sample` has to collect, and the guard below proves it was there.
      */
     @Test
     fun theRetentionPassSurvivesSamplesThatFilledNothing() = withScratchHome { home ->
         withHistoryStore(home) { store ->
             store.record(emptyMachineReport())
             store.record(unbundledReport())
+            store.driver.execute(null, ORPHANED_APPLICATION, 0)
+
+            val emptied = listOf("sample", "process_sample", "process", "application")
+            for (table in emptied) {
+                assertTrue(store.driver.countRows(table) > 0, "$table has nothing to lose")
+            }
 
             store.prune(AFTER_EVERY_SAMPLE)
 
-            for (table in listOf("sample", "process_sample", "process", "application")) {
+            for (table in emptied) {
                 assertEquals(0L, store.driver.countRows(table), "$table outlived the window")
             }
         }
@@ -150,11 +161,10 @@ class HistoryEdgeCaseTest {
     }
 }
 
-/** A cutoff every stored sample falls before, so the pass takes the lot. */
-private const val AFTER_EVERY_SAMPLE = "9999-12-31T23:59:59Z"
-
-/** A cutoff every stored sample falls after, so the pass may take nothing. */
-private const val BEFORE_EVERY_SAMPLE = "1970-01-01T00:00:00Z"
+/** An `application` row no sample of this database ever referenced, for the pass to collect. */
+private const val ORPHANED_APPLICATION =
+    "INSERT INTO application(key, name, bundle_path) " +
+        "VALUES ('bundle:orphan', 'Orphan', '/Applications/Orphan.app')"
 
 /** A sample in which the collector could read no process at all. */
 private fun emptyMachineReport(): MonitoringReport = MonitoringReport(

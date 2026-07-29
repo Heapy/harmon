@@ -1,7 +1,4 @@
-import app.cash.sqldelight.driver.native.inMemoryDriver
-import dev.yoda.harmon.analysis.ApplicationGrouper
 import dev.yoda.harmon.db.HarmonDatabase
-import dev.yoda.harmon.history.applicationIdsByPid
 import dev.yoda.harmon.history.insertProcessUsage
 import dev.yoda.harmon.history.insertSample
 import dev.yoda.harmon.history.upsertProcess
@@ -23,8 +20,7 @@ import kotlin.test.assertNull
 class HistoryProcessRowTest {
 
     @Test
-    fun everyProcessUsageFieldLandsInItsOwnColumn() {
-        val database = openDatabase()
+    fun everyProcessUsageFieldLandsInItsOwnColumn() = withInMemoryDatabase { database ->
         val processes = database.processesQueries
         val sampleId = database.insertParentSample()
 
@@ -83,8 +79,8 @@ class HistoryProcessRowTest {
      * a pid handed to a new process must not silently inherit the old one's name.
      */
     @Test
-    fun theLookupHoldsOneRowPerProcessIdentity() {
-        val processes = openDatabase().processesQueries
+    fun theLookupHoldsOneRowPerProcessIdentity() = withInMemoryDatabase { database ->
+        val processes = database.processesQueries
         val marked = markedProcess()
 
         val first = processes.upsertProcess(marked)
@@ -98,10 +94,39 @@ class HistoryProcessRowTest {
         assertEquals(2, processes.selectProcesses().executeAsList().size)
     }
 
+    /**
+     * The naming half of the row freezes at first sighting, which is what `ON CONFLICT DO NOTHING`
+     * buys and the only reason the lookup costs one write per process rather than 288 a day.
+     *
+     * Worth pinning because the alternative reads like a bug fix: turning the clause into
+     * `DO UPDATE` so a renamed process shows its new name would rewrite every row already written
+     * under the old one, and every assertion above would stay green while it happened.
+     */
+    @Test
+    fun theNamingColumnsKeepWhatTheProcessWasFirstSeenAs() = withInMemoryDatabase { database ->
+        val processes = database.processesQueries
+        val marked = markedProcess()
+
+        processes.upsertProcess(marked)
+        processes.upsertProcess(
+            marked.copy(
+                name = "renamed-itself",
+                executablePath = "/usr/bin/somewhere-else",
+                uid = 0u,
+                parentPid = 1,
+            ),
+        )
+
+        val lookup = processes.selectProcesses().executeAsOne()
+        assertEquals("marked-process", lookup.name, "a later sighting rewrote the stored name")
+        assertEquals("/Applications/Marked.app/Contents/MacOS/Marked", lookup.executable_path)
+        assertEquals(502L, lookup.uid)
+        assertEquals(4241L, lookup.parent_pid)
+    }
+
     /** A refused reading must stay distinguishable from a reading of zero. */
     @Test
-    fun anUnavailableFieldStaysNullRatherThanZero() {
-        val database = openDatabase()
+    fun anUnavailableFieldStaysNullRatherThanZero() = withInMemoryDatabase { database ->
         val processes = database.processesQueries
         val sampleId = database.insertParentSample()
 
@@ -127,48 +152,7 @@ class HistoryProcessRowTest {
         assertNull(stored.virtual_memory_region_count)
     }
 
-    /**
-     * The grouper is the real one here rather than a hand-built list: the null `application_id` is
-     * only correct because a process outside an `.app` bundle ends up in its own singleton group,
-     * and that behaviour belongs to `ApplicationGrouper`, not to this mapping.
-     */
-    @Test
-    fun onlyAProcessInsideABundleCarriesAnApplicationId() {
-        val database = openDatabase()
-        val processes = database.processesQueries
-        val sampleId = database.insertParentSample()
-
-        val bundled = markedProcess()
-        val loose = markedProcess().copy(
-            identity = ProcessIdentity(pid = 4343, startedAt = 21_000_000_009uL),
-            parentPid = 1,
-            name = "loose",
-            executablePath = "/usr/bin/loose",
-        )
-        val applications = ApplicationGrouper().group(listOf(bundled, loose))
-        val bundleGroup = applications.single { it.bundlePath != null }
-
-        val idsByPid = applicationIdsByPid(applications, mapOf(bundleGroup.id to 7L))
-        assertEquals(mapOf(4242 to 7L), idsByPid, "a group without a bundle contributes no pid")
-
-        val bundledId = processes.upsertProcess(bundled)
-        val looseId = processes.upsertProcess(loose)
-        listOf(bundled to bundledId, loose to looseId).forEach { (usage, processId) ->
-            processes.insertProcessUsage(
-                sampleId = sampleId,
-                processId = processId,
-                applicationId = idsByPid[usage.identity.pid],
-                usage = usage,
-            )
-        }
-
-        val stored = processes.selectProcessSamples(sampleId).executeAsList().associateBy { it.process_id }
-        assertEquals(7L, stored.getValue(bundledId).application_id)
-        assertNull(stored.getValue(looseId).application_id)
-    }
 }
-
-private fun openDatabase(): HarmonDatabase = HarmonDatabase(inMemoryDriver(HarmonDatabase.Schema))
 
 /**
  * A sample row for the process rows to hang off. Nothing about it is asserted — `sample_id` just

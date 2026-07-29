@@ -5,8 +5,10 @@ onceSampleSeconds=2
 topProcessCount=8
 maxAlertsPerCategory=3
 
-# Days of samples kept in ~/Library/Application Support/Harmon/history.db,
-# roughly 350 MB at seven days. A zero keeps no history and creates no database.
+# Days of samples kept in ~/Library/Application Support/Harmon/history.db;
+# expect a couple of hundred megabytes at seven days, extrapolated from a
+# measured ~140 bytes per stored process per sample. A zero keeps no history and
+# creates no database. Accepted range: 0 to 3650.
 historyRetentionDays=7
 
 # Bundle names, without `.app`, whose descendants outside the bundle are not

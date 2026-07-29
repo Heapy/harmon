@@ -72,9 +72,8 @@ INSERT INTO application(key, name, bundle_path)
 VALUES (?, ?, ?)
 ON CONFLICT DO NOTHING;
 
--- Read back rather than taken from last_insert_rowid(), for the same reason as selectProcessId: on
--- the second sighting of an application the insert above writes nothing, and last_insert_rowid()
--- still names whatever row preceded it in the sample transaction.
+-- Read back rather than taken from last_insert_rowid(), for the reason spelled out in full at
+-- selectProcessId in Processes.sq.
 selectApplicationId:
 SELECT id
 FROM application
@@ -124,10 +123,10 @@ ORDER BY application_id;
 -- The counterpart of deleteOrphanProcesses, with the same NOT IN for the same reason.
 --
 -- application_sample alone decides what is still in use, even though process_sample.application_id
--- also points here: the writer resolves a lookup id and an application_sample row together, so a
--- surviving process_sample can only name an application its own sample aggregated. Reading that
--- column instead would be actively wrong — it is nullable, and a single NULL inside a NOT IN
--- subquery makes the predicate unknown for every row, quietly deleting nothing at all.
+-- holds ids from this table too: the writer resolves a lookup id and an application_sample row
+-- together, so a surviving process_sample can only name an application its own sample aggregated.
+-- Reading that column instead would be actively wrong — it is nullable, and a single NULL inside a
+-- NOT IN subquery makes the predicate unknown for every row, quietly deleting nothing at all.
 deleteOrphanApplications:
 DELETE FROM application
 WHERE id NOT IN (SELECT application_id FROM application_sample);

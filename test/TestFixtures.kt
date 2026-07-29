@@ -1,6 +1,9 @@
 import app.cash.sqldelight.db.QueryResult
+import app.cash.sqldelight.db.SqlCursor
 import app.cash.sqldelight.db.SqlDriver
+import app.cash.sqldelight.driver.native.inMemoryDriver
 import dev.yoda.harmon.analysis.ApplicationGrouper
+import dev.yoda.harmon.db.HarmonDatabase
 import dev.yoda.harmon.history.HistoryStore
 import dev.yoda.harmon.model.Alert
 import dev.yoda.harmon.model.DeliveryResult
@@ -22,6 +25,7 @@ import dev.yoda.harmon.model.SystemUsage
 import dev.yoda.harmon.model.VirtualMemoryCounters
 import dev.yoda.harmon.model.VirtualMemoryUsage
 import dev.yoda.harmon.notify.NotificationChannel
+import dev.yoda.harmon.util.printError
 import kotlinx.cinterop.ExperimentalForeignApi
 import kotlinx.cinterop.cstr
 import kotlinx.cinterop.memScoped
@@ -373,17 +377,23 @@ fun withScratchHome(body: (String) -> Unit) {
  * [retentionDays] and [intervalSeconds] default to the shipped configuration, which schedules the
  * retention pass on every twelfth sample — far enough apart that a test writing a handful of samples
  * only meets the pass if it asks for it.
+ *
+ * [logError] is where the store reports the failures that are its own rather than the caller's — a
+ * retention pass that threw — and defaults to the production sink so that a test not looking for
+ * one still shows it.
  */
 fun withHistoryStore(
     home: String,
     retentionDays: Long = 7,
     intervalSeconds: Long = 300,
+    logError: (String) -> Unit = ::printError,
     body: (HistoryStore) -> Unit,
 ) {
     val store = HistoryStore.openOrNull(
         retentionDays = retentionDays,
         intervalSeconds = intervalSeconds,
         homeDirectory = home,
+        logError = logError,
     ) ?: fail("the store must open under $home")
     try {
         body(store)
@@ -392,10 +402,56 @@ fun withHistoryStore(
     }
 }
 
+/**
+ * Runs [body] against an in-memory driver of its own, closed afterwards.
+ *
+ * Closing matters more here than it looks: an in-memory database lives inside its connection, so a
+ * driver left open is a whole database resident for the rest of the test binary's run.
+ *
+ * What it is not is a substitute for [withHistoryStore]. This driver holds one connection and leaves
+ * foreign keys off, so a cascade or a `last_insert_rowid()` read from the wrong pool passes on it
+ * unnoticed; it is for the round-trip tests, which ask what a column holds and nothing else.
+ */
+fun <T> withInMemoryDriver(body: (SqlDriver) -> T): T {
+    val driver = inMemoryDriver(HarmonDatabase.Schema)
+    return try {
+        body(driver)
+    } finally {
+        driver.close()
+    }
+}
+
+/** [withInMemoryDriver] for the tests that want the generated queries rather than the driver. */
+fun <T> withInMemoryDatabase(body: (HarmonDatabase) -> T): T =
+    withInMemoryDriver { driver -> body(HarmonDatabase(driver)) }
+
 /** Every sample in the database, in the order the retention window reads them. */
 fun HistoryStore.samples() = database.samplesQueries
     .selectBetween("0000-01-01T00:00:00Z", "9999-12-31T23:59:59Z")
     .executeAsList()
+
+/** A cutoff every stored sample falls before, so a retention pass over it takes the lot. */
+const val AFTER_EVERY_SAMPLE = "9999-12-31T23:59:59Z"
+
+/** A cutoff every stored sample falls after, so a retention pass over it may take nothing. */
+const val BEFORE_EVERY_SAMPLE = "1970-01-01T00:00:00Z"
+
+/**
+ * The single value [sql] answers with, read through [read].
+ *
+ * Counts and pragmas both come back this way, and a pragma is the reason it is a query at all:
+ * sqliter's `execute()` throws on the first row a statement returns, so anything that answers has
+ * to go through `executeQuery` even when it takes no parameters and reads one column.
+ */
+fun <T : Any> SqlDriver.scalar(sql: String, read: (SqlCursor) -> T?): T? = executeQuery(
+    identifier = null,
+    sql = sql,
+    mapper = { cursor ->
+        cursor.next()
+        QueryResult.Value(read(cursor))
+    },
+    parameters = 0,
+).value
 
 /**
  * The row count of [table], asked of the database rather than of a generated query.
@@ -404,15 +460,17 @@ fun HistoryStore.samples() = database.samplesQueries
  * them no longer compile against the file — and a table cleared by a cascade has no query of its own
  * to count through anyway.
  */
-fun SqlDriver.countRows(table: String): Long = executeQuery(
-    identifier = null,
-    sql = "SELECT count(*) FROM $table",
-    mapper = { cursor ->
-        cursor.next()
-        QueryResult.Value(cursor.getLong(0))
-    },
-    parameters = 0,
-).value ?: fail("counting $table returned no row")
+fun SqlDriver.countRows(table: String): Long =
+    scalar("SELECT count(*) FROM $table") { it.getLong(0) }
+        ?: fail("counting $table returned no row")
+
+/** `PRAGMA page_count` — the size of the file in pages, which is what a vacuum changes. */
+fun SqlDriver.pageCount(): Long =
+    scalar("PRAGMA page_count") { it.getLong(0) } ?: fail("PRAGMA page_count returned no row")
+
+/** The value of `PRAGMA [name]`, read through [read]. */
+fun <T : Any> SqlDriver.pragma(name: String, read: (SqlCursor) -> T?): T? =
+    scalar("PRAGMA $name", read)
 
 /**
  * A notification channel that keeps everything it was handed.

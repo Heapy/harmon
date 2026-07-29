@@ -239,11 +239,11 @@ class HarmonService(
      * The state a previous run stored, or nothing at all if reading it throws.
      *
      * The one failure `HistoryStore.openOrNull` cannot stand in for. A file that opened cleanly can
-     * still refuse the first read — a page lost to the panic `synchronousFlag = NORMAL` deliberately
-     * accepts, a table an older build never created — and this read happens while the agent is being
-     * constructed. Unguarded that is not a run without history but a process that dies before its
-     * first sample, restarted by launchd into the same death: the machine goes unmonitored because
-     * the record of how it was monitored yesterday went bad.
+     * still refuse the first read — a page lost to the panic `synchronousFlag = NORMAL`
+     * deliberately accepts, a table an older build never created — and this read happens while the
+     * agent is being constructed. Unguarded that is not a run without history but a process that
+     * dies before its first sample, restarted by launchd into the same death: the machine goes
+     * unmonitored because the record of how it was monitored yesterday went bad.
      */
     private fun restorableStateOrNull(): AlertStateSnapshot? = try {
         history?.restorableAlertState()
@@ -311,7 +311,7 @@ class HarmonService(
             plan.recordsFailures -> DeliveryOutcome(delivered = emptySet(), failed = pushed)
             else -> DeliveryOutcome.NONE
         }
-        /* Every branch journals what each channel reported, including the one that defers nothing. */
+        /* Every branch journals what each channel reported, the one that defers nothing too. */
         return outcome.copy(results = summary.results)
     }
 

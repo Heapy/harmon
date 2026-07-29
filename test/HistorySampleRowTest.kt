@@ -1,5 +1,3 @@
-import app.cash.sqldelight.driver.native.inMemoryDriver
-import dev.yoda.harmon.db.HarmonDatabase
 import dev.yoda.harmon.db.Sample
 import dev.yoda.harmon.history.insertSample
 import dev.yoda.harmon.model.LoadAverages
@@ -144,11 +142,10 @@ class HistorySampleRowTest {
         assertEquals(Long.MAX_VALUE, roundTrip(huge).physical_memory_bytes)
     }
 
-    private fun roundTrip(usage: SystemUsage): Sample {
-        val database = HarmonDatabase(inMemoryDriver(HarmonDatabase.Schema))
+    private fun roundTrip(usage: SystemUsage): Sample = withInMemoryDatabase { database ->
         database.samplesQueries.insertSample(usage)
 
-        return database.samplesQueries
+        database.samplesQueries
             .selectBetween("1970-01-01T00:00:00Z", "2100-01-01T00:00:00Z")
             .executeAsOne()
     }

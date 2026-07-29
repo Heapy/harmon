@@ -1,4 +1,3 @@
-import app.cash.sqldelight.driver.native.inMemoryDriver
 import dev.yoda.harmon.db.HarmonDatabase
 import dev.yoda.harmon.history.insertDeliveryResult
 import dev.yoda.harmon.history.insertReportedAlert
@@ -25,8 +24,7 @@ class HistoryAlertRowTest {
      * through `valueOf` — and for every constant, not just the one the fixture defaults to.
      */
     @Test
-    fun aReportedAlertRoundTripsWithItsSeverity() {
-        val database = openAlertDatabase()
+    fun aReportedAlertRoundTripsWithItsSeverity() = withInMemoryDatabase { database ->
         val alerts = database.alertsQueries
         val sampleId = database.insertHostSample()
 
@@ -54,8 +52,7 @@ class HistoryAlertRowTest {
      * from an alert that really was reported.
      */
     @Test
-    fun aSuppressedKeyIsStoredWithoutTextAndApartFromAReportedAlert() {
-        val database = openAlertDatabase()
+    fun aSuppressedKeyIsStoredWithoutTextAndApartFromAReportedAlert() = withInMemoryDatabase { database ->
         val alerts = database.alertsQueries
         val sampleId = database.insertHostSample()
 
@@ -80,8 +77,7 @@ class HistoryAlertRowTest {
      * received it, and the retry backoff keeps a count but no reason. `detail` is that reason.
      */
     @Test
-    fun everyChannelsDeliveryIsStoredIncludingTheFailedOne() {
-        val database = openAlertDatabase()
+    fun everyChannelsDeliveryIsStoredIncludingTheFailedOne() = withInMemoryDatabase { database ->
         val alerts = database.alertsQueries
         val sampleId = database.insertHostSample()
 
@@ -103,8 +99,6 @@ class HistoryAlertRowTest {
         assertEquals("HTTP 500 from example.com", failed.detail, "the channel's own account survives")
     }
 }
-
-private fun openAlertDatabase(): HarmonDatabase = HarmonDatabase(inMemoryDriver(HarmonDatabase.Schema))
 
 /**
  * A sample row for the alert rows to hang off. Nothing about it is asserted — `sample_id` just needs

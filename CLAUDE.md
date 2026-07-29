@@ -42,12 +42,21 @@ compilations, so an `internal` symbol fails to resolve from `test/` with
 testability must be **public**, even when `internal` would express the intent
 better.
 
-**The test compilation cannot reach the cinterop bindings at all.** The cause is
-[KTC-5573](https://youtrack.jetbrains.com/issue/KTC-5573): the cinterop klib is
-registered only for the non-test fragment, the test compilation asks for the
+**The test compilation cannot reach a module's own cinterop bindings.** The cause
+is [KTC-5573](https://youtrack.jetbrains.com/issue/KTC-5573): the cinterop klib
+is registered only for the non-test fragment, the test compilation asks for the
 artifact with `isTest=true`, does not find it, and the `AnyOrNone` quantifier
 lets the miss pass silently. Platform libraries (`platform.posix`,
 `platform.Foundation`) link fine.
+
+**Only a module's own.** A third-party klib that carries cinterop of its own
+links into the test binary normally, and this branch depends on it:
+`$libs.sqldelight.native.driver` reaches a real SQLite through sqliter's
+cinterop, which is why the whole storage layer is unit-tested against actual
+files instead of through `selftest`. See the comment on the dependency in
+`module.yaml`. So "cinterop is unreachable from tests" is true of
+`nativebridge` and false in general — do not conclude from it that a test cannot
+open a database.
 
 The symptom depends on where the bridge lives, and it moved earlier once
 `nativebridge` became its own module. Previously the bridge compiled into the
@@ -150,7 +159,7 @@ compiler, its dialect and the runtime `native-driver` share one `version.ref` in
 compile error against a stranger's API rather than as a resolution failure.
 `docs/history.md` is the schema reference.
 
-Five facts that each cost a day to find. All were established in this
+Six facts that each cost a day to find. All were established in this
 repository; none are visible from the code that depends on them.
 
 **A `.sqm` file never runs.** The plugin generates with
@@ -184,6 +193,17 @@ has already committed, and a bare `driver.executeQuery` hits the read-only pool
 and fails `SQLITE_READONLY`. It works as an `executeQuery` inside its own
 transaction. Invisible in a small database: a delete that frees no page returns
 no row.
+
+**sqliter's `-lsqlite3` is not propagated to the final link.** Toolchain 0.11.x
+drops the transitive `linkerOpts`, so both binaries fail with
+`ld: symbol(s) not found` for `_sqlite3_*` unless `module.yaml` carries
+`freeCompilerArgs: [-linker-option, -lsqlite3]` itself. Portable — `-lsqlite3`
+is a system library in every macOS SDK, no `-L` needed.
+
+To see what a `.sq` file actually generated, read
+`build/tasks/_harmon_generate@sqldelight-gen/dev/yoda/harmon/db/harmon/HarmonDatabaseImpl.kt`.
+That is where a named parameter, a nullable column or a missing query shows up
+as Kotlin.
 
 ## Layout
 
@@ -236,6 +256,7 @@ and `docs/native-testing.md` describe observed behaviour, not intent. When
 collection limits, alert semantics, or metric definitions change, the doc change
 belongs in the same commit. `docs/history.md` carries the same obligation for
 the schema: it is the only interface the stored samples have, so a column added
-or renamed is a doc change in the same commit. The same rule binds `docs/native-testing.md` harder
-than the rest: its accepted-gaps list is only worth having while it is exhaustive,
-so a check that closes a gap removes its entry in the same commit.
+or renamed is a doc change in the same commit. The same rule binds
+`docs/native-testing.md` harder than the rest: its accepted-gaps list is only
+worth having while it is exhaustive, so a check that closes a gap removes its
+entry in the same commit.
