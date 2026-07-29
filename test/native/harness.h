@@ -7,8 +7,10 @@
  *
  *   - `main.c` owns `main`, the harness state, the prefix filter, the alarm and
  *     the `--self-check` flag; it calls every suite declared below in order;
- *   - every `*_test.c` defines exactly one `hm_run_*_tests(void)` suite and has
- *     no `main` of its own;
+ *   - every `*_test.c` defines exactly one `hm_run_*_tests(void)` suite, reports
+ *     under exactly one name prefix, and has no `main` of its own;
+ *   - `anchors.h` carries what more than one suite needs to compare a sample
+ *     against a second reading of the same source;
  *   - `scripts/test-native.sh` regenerates `harmon_native.h` from the `.def` and
  *     compiles every C source under `test/native` into one binary on every run.
  *
@@ -70,6 +72,11 @@ static inline size_t hm_test_heap_bytes_in_use(void) {
  * hang the reader in `NativeHarness.kt` instead of hanging the harness. Such a
  * child closes stdout *and* stderr, which are the same pipe under the `2>&1` the
  * bridge runs the harness with.
+ *
+ * `selftest` arms the same alarm under `TIMEOUT_SECONDS` in `selftest/src/main.kt`.
+ * CLAUDE.md states it as one property of both harnesses; the two are separate
+ * binaries in separate languages with no shared place to put a constant, so each
+ * names the other instead.
  */
 #define HM_TEST_TIMEOUT_SECONDS 60
 
@@ -78,7 +85,9 @@ extern int hm_test_reported;
 extern const char *hm_test_filter;
 
 void hm_run_pure_tests(void);
-void hm_run_kernel_tests(void);
+void hm_run_attribution_tests(void);
+void hm_run_processes_tests(void);
+void hm_run_snapshot_tests(void);
 void hm_run_framing_tests(void);
 void hm_run_socket_tests(void);
 

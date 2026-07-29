@@ -8,8 +8,8 @@
  * Sockets created by the framing and socket suites do not inherit the send and
  * receive timeouts the bridge sets on its own descriptors, so a missed wakeup
  * would hang `./kotlin test` forever. The alarm — `HM_TEST_TIMEOUT_SECONDS` in
- * `harness.h`, shared with the children the kernel suite forks — turns that into
- * a signal the Kotlin bridge reports as an abnormal termination.
+ * `harness.h`, shared with every child the suites fork — turns that into a signal
+ * the Kotlin bridge reports as an abnormal termination.
  */
 
 int hm_test_failures = 0;
@@ -17,42 +17,26 @@ int hm_test_reported = 0;
 const char *hm_test_filter = NULL;
 
 /*
- * The name prefixes each suite reports under, so that a filtered run skips the
+ * The name prefix each suite reports under, so that a filtered run skips the
  * suites it cannot select instead of running them and swallowing their output.
- * A prefix missing from this table costs a filtered run the suite entirely; the
- * unfiltered run that `./kotlin test` performs is unaffected, and it is the one
- * that compares the reported names against the expected list.
+ * A suite missing from this table is not run at all; a prefix that disagrees with
+ * what the suite reports costs a filtered run the suite entirely, and the
+ * unfiltered run that `./kotlin test` performs is the one that compares the
+ * reported names against the expected list.
  */
 typedef struct {
     void (*run)(void);
-    const char *const *prefixes;
+    const char *prefix;
 } HMTestSuite;
 
-static const char *const hm_pure_prefixes[] = {"pure.", NULL};
-static const char *const hm_kernel_prefixes[] = {
-    "attribution.",
-    "processes.",
-    "snapshot.",
-    NULL
-};
-static const char *const hm_framing_prefixes[] = {"framing.", NULL};
-static const char *const hm_socket_prefixes[] = {"socket.", NULL};
-
 static const HMTestSuite hm_test_suites[] = {
-    {hm_run_pure_tests, hm_pure_prefixes},
-    {hm_run_kernel_tests, hm_kernel_prefixes},
-    {hm_run_framing_tests, hm_framing_prefixes},
-    {hm_run_socket_tests, hm_socket_prefixes},
+    {hm_run_pure_tests, "pure."},
+    {hm_run_attribution_tests, "attribution."},
+    {hm_run_processes_tests, "processes."},
+    {hm_run_snapshot_tests, "snapshot."},
+    {hm_run_framing_tests, "framing."},
+    {hm_run_socket_tests, "socket."},
 };
-
-static int hm_suite_selected(const HMTestSuite *suite) {
-    for (const char *const *prefix = suite->prefixes; *prefix != NULL; prefix++) {
-        if (hm_test_suite_selected(*prefix)) {
-            return 1;
-        }
-    }
-    return 0;
-}
 
 int main(int argc, char **argv) {
     int self_check = 0;
@@ -60,14 +44,7 @@ int main(int argc, char **argv) {
         if (strcmp(argv[index], "--self-check") == 0) {
             self_check = 1;
         } else if (argv[index][0] == '-' || hm_test_filter != NULL) {
-            /*
-             * An unknown flag taken as a name filter would match nothing, print
-             * nothing and exit 0 — a mistyped `--self-check` would read as a
-             * clean run of a harness that checked nothing at all. One dash is
-             * as much a typo as two, and `-selfcheck` is the likelier of the
-             * two mistakes, so anything starting with a dash is refused: no
-             * check name begins with one.
-             */
+            /* Why a dash is a usage error: CLAUDE.md, the protocol paragraph. */
             fprintf(stderr, "usage: %s [--self-check] [name-prefix]\n", argv[0]);
             return 2;
         } else {
@@ -78,20 +55,14 @@ int main(int argc, char **argv) {
     alarm(HM_TEST_TIMEOUT_SECONDS);
 
     for (size_t index = 0; index < sizeof(hm_test_suites) / sizeof(*hm_test_suites); index++) {
-        if (hm_suite_selected(&hm_test_suites[index])) {
+        if (hm_test_suite_selected(hm_test_suites[index].prefix)) {
             hm_test_suites[index].run();
         }
     }
 
     /*
-     * Without this flag the `fail` branch never executes, and a silently broken
-     * `CHECK` would report an all-green run forever.
-     *
-     * The filter is dropped first, because the deliberate failure has to be
-     * reported whatever it selected: passed through `hm_test_selected` it is
-     * discarded by any filter other than `harness.`, and `--self-check pure.`
-     * would answer "self-check passed" from a harness whose `fail` branch never
-     * ran. Nothing after this point reads the filter.
+     * Why the filter is dropped before the deliberate failure: CLAUDE.md, the
+     * protocol paragraph. Nothing after this point reads the filter.
      */
     if (self_check) {
         hm_test_filter = NULL;
@@ -102,11 +73,7 @@ int main(int argc, char **argv) {
         );
     }
 
-    /*
-     * The bridge reads an empty output as a harness that died before reporting
-     * anything, so a filter that selected nothing has to say so out loud. The
-     * same line, for the same reason, is what `selftest` prints.
-     */
+    /* Why an empty selection still prints a line: CLAUDE.md, the protocol paragraph. */
     if (hm_test_reported == 0) {
         printf("ok   harness.no-checks-selected\n");
     }

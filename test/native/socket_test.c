@@ -68,6 +68,20 @@ static int hm_socket_test_path(char *buffer, size_t size, const char *name) {
     return 0;
 }
 
+/*
+ * Every check below opens with the same three lines, and a missing temporary
+ * directory has to be reported as the failure of the check that wanted it rather
+ * than swallowed — the harness has no way of saying "skipped". Written out eight
+ * times it was eight chances to report it under the wrong name.
+ */
+#define HM_SOCKET_PATH_OR_FAIL(buffer, name, check)                              \
+    do {                                                                         \
+        if (hm_socket_test_path((buffer), sizeof(buffer), (name)) != 0) {        \
+            CHECK((check), 0, "no temporary directory: %s", strerror(errno));    \
+            return;                                                              \
+        }                                                                        \
+    } while (0)
+
 static int hm_server_open_rejects(const char *path, int expected_failure) {
     errno = 0;
     const int descriptor = hm_unix_server_open(path, (uint32_t)getegid());
@@ -86,24 +100,31 @@ static int hm_server_open_rejects(const char *path, int expected_failure) {
  * A path the address cannot hold must be refused before the socket exists:
  * `snprintf` into `sun_path` would otherwise truncate it silently and bind a
  * different path than the caller asked for — one the agent would never find.
+ *
+ * Both ends of the socket answer for this, and each gets a check of its own
+ * because each has its own copy of the guard; what they share is only the three
+ * paths to try and the shape of the report, which is this function.
  */
-static void hm_check_rejects_bad_path(void) {
+static void hm_check_bad_paths(
+    const char *check,
+    int (*rejects)(const char *path, int expected_failure)
+) {
     const size_t limit = sizeof(((struct sockaddr_un *)0)->sun_path);
     char *long_path = (char *)malloc(limit + 1U);
     if (long_path == NULL) {
-        CHECK("socket.rejects-bad-path", 0, "out of memory");
+        CHECK(check, 0, "out of memory");
         return;
     }
     memset(long_path, 'a', limit);
     long_path[0] = '/';
     long_path[limit] = '\0';
 
-    const int null_path = hm_server_open_rejects(NULL, EINVAL);
-    const int empty_path = hm_server_open_rejects("", EINVAL);
-    const int too_long = hm_server_open_rejects(long_path, ENAMETOOLONG);
+    const int null_path = rejects(NULL, EINVAL);
+    const int empty_path = rejects("", EINVAL);
+    const int too_long = rejects(long_path, ENAMETOOLONG);
 
     CHECK(
-        "socket.rejects-bad-path",
+        check,
         null_path && empty_path && too_long,
         "expected -1/EINVAL, -1/EINVAL and -1/ENAMETOOLONG for a %zu-byte path; "
             "rejected null=%d empty=%d too-long=%d",
@@ -124,15 +145,7 @@ static void hm_check_rejects_bad_path(void) {
  */
 static void hm_check_refuses_foreign_occupant(void) {
     char path[PATH_MAX];
-    if (hm_socket_test_path(path, sizeof(path), "occupied.sock") != 0) {
-        CHECK(
-            "socket.refuses-foreign-occupant",
-            0,
-            "no temporary directory: %s",
-            strerror(errno)
-        );
-        return;
-    }
+    HM_SOCKET_PATH_OR_FAIL(path, "occupied.sock", "socket.refuses-foreign-occupant");
 
     const int file = open(path, O_CREAT | O_EXCL | O_WRONLY, 0600);
     if (file < 0) {
@@ -171,15 +184,7 @@ static void hm_check_refuses_foreign_occupant(void) {
  */
 static void hm_check_replaces_stale_socket(void) {
     char path[PATH_MAX];
-    if (hm_socket_test_path(path, sizeof(path), "stale.sock") != 0) {
-        CHECK(
-            "socket.replaces-stale-socket",
-            0,
-            "no temporary directory: %s",
-            strerror(errno)
-        );
-        return;
-    }
+    HM_SOCKET_PATH_OR_FAIL(path, "stale.sock", "socket.replaces-stale-socket");
 
     const int first = hm_unix_server_open(path, (uint32_t)getegid());
     if (first >= 0) {
@@ -218,10 +223,7 @@ static void hm_check_replaces_stale_socket(void) {
  */
 static void hm_check_socket_mode(void) {
     char path[PATH_MAX];
-    if (hm_socket_test_path(path, sizeof(path), "mode.sock") != 0) {
-        CHECK("socket.mode-is-0660", 0, "no temporary directory: %s", strerror(errno));
-        return;
-    }
+    HM_SOCKET_PATH_OR_FAIL(path, "mode.sock", "socket.mode-is-0660");
 
     errno = 0;
     const int descriptor = hm_unix_server_open(path, (uint32_t)getegid());
@@ -302,46 +304,9 @@ static int hm_connect_rejects(const char *path, int expected_failure) {
     return descriptor == -1 && failure == expected_failure;
 }
 
-static void hm_check_connect_rejects_bad_path(void) {
-    const size_t limit = sizeof(((struct sockaddr_un *)0)->sun_path);
-    char *long_path = (char *)malloc(limit + 1U);
-    if (long_path == NULL) {
-        CHECK("socket.connect-rejects-bad-path", 0, "out of memory");
-        return;
-    }
-    memset(long_path, 'a', limit);
-    long_path[0] = '/';
-    long_path[limit] = '\0';
-
-    const int null_path = hm_connect_rejects(NULL, EINVAL);
-    const int empty_path = hm_connect_rejects("", EINVAL);
-    const int too_long = hm_connect_rejects(long_path, ENAMETOOLONG);
-
-    CHECK(
-        "socket.connect-rejects-bad-path",
-        null_path && empty_path && too_long,
-        "expected -1/EINVAL, -1/EINVAL and -1/ENAMETOOLONG for a %zu-byte path; "
-            "rejected null=%d empty=%d too-long=%d",
-        limit,
-        null_path,
-        empty_path,
-        too_long
-    );
-
-    free(long_path);
-}
-
 static void hm_check_connect(void) {
     char path[PATH_MAX];
-    if (hm_socket_test_path(path, sizeof(path), "connect.sock") != 0) {
-        CHECK(
-            "socket.connect-to-live-and-missing",
-            0,
-            "no temporary directory: %s",
-            strerror(errno)
-        );
-        return;
-    }
+    HM_SOCKET_PATH_OR_FAIL(path, "connect.sock", "socket.connect-to-live-and-missing");
 
     HMSocketPairing pairing;
     errno = 0;
@@ -379,15 +344,7 @@ static void hm_check_connect(void) {
 
 static void hm_check_accept_peer_credentials(void) {
     char path[PATH_MAX];
-    if (hm_socket_test_path(path, sizeof(path), "accept.sock") != 0) {
-        CHECK(
-            "socket.accept-returns-peer-credentials",
-            0,
-            "no temporary directory: %s",
-            strerror(errno)
-        );
-        return;
-    }
+    HM_SOCKET_PATH_OR_FAIL(path, "accept.sock", "socket.accept-returns-peer-credentials");
 
     HMSocketPairing pairing;
     errno = 0;
@@ -436,6 +393,12 @@ static void hm_check_accept_peer_credentials(void) {
  * inherited by everything the collector ever spawns.
  */
 #define HM_SOCKET_OPTION_TIMEOUT_SECONDS 30
+
+/*
+ * Room for the longest line `hm_carries_options` writes, which is the timeout
+ * mismatch with a `strerror` in it.
+ */
+#define HM_SOCKET_DETAIL_BYTES 128
 
 static int hm_carries_options(int descriptor, char *detail, size_t size) {
     int no_sigpipe = 0;
@@ -494,15 +457,7 @@ static int hm_carries_options(int descriptor, char *detail, size_t size) {
 
 static void hm_check_descriptor_options(void) {
     char path[PATH_MAX];
-    if (hm_socket_test_path(path, sizeof(path), "options.sock") != 0) {
-        CHECK(
-            "socket.descriptors-carry-options",
-            0,
-            "no temporary directory: %s",
-            strerror(errno)
-        );
-        return;
-    }
+    HM_SOCKET_PATH_OR_FAIL(path, "options.sock", "socket.descriptors-carry-options");
 
     HMSocketPairing pairing;
     errno = 0;
@@ -522,9 +477,9 @@ static void hm_check_descriptor_options(void) {
     const int accepted =
         hm_unix_accept(pairing.server, (uint32_t)geteuid(), &peer_user_id);
 
-    char server_detail[128] = "";
-    char client_detail[128] = "";
-    char accepted_detail[128] = "not accepted";
+    char server_detail[HM_SOCKET_DETAIL_BYTES] = "";
+    char client_detail[HM_SOCKET_DETAIL_BYTES] = "";
+    char accepted_detail[HM_SOCKET_DETAIL_BYTES] = "not accepted";
     const int server_carries = hm_carries_options(
         pairing.server,
         server_detail,
@@ -566,15 +521,7 @@ static void hm_check_descriptor_options(void) {
  */
 static void hm_check_accept_rejects_foreign_uid(void) {
     char path[PATH_MAX];
-    if (hm_socket_test_path(path, sizeof(path), "foreign.sock") != 0) {
-        CHECK(
-            "socket.accept-rejects-foreign-uid",
-            0,
-            "no temporary directory: %s",
-            strerror(errno)
-        );
-        return;
-    }
+    HM_SOCKET_PATH_OR_FAIL(path, "foreign.sock", "socket.accept-rejects-foreign-uid");
 
     const uint32_t own_user_id = (uint32_t)geteuid();
     if (own_user_id == 0) {
@@ -639,15 +586,7 @@ static int hm_remove_socket_rejects(const char *path, int expected_failure) {
  */
 static void hm_check_remove_bad_input(void) {
     char missing[PATH_MAX];
-    if (hm_socket_test_path(missing, sizeof(missing), "never-created.sock") != 0) {
-        CHECK(
-            "socket.remove-handles-bad-input",
-            0,
-            "no temporary directory: %s",
-            strerror(errno)
-        );
-        return;
-    }
+    HM_SOCKET_PATH_OR_FAIL(missing, "never-created.sock", "socket.remove-handles-bad-input");
 
     const int null_path = hm_remove_socket_rejects(NULL, EINVAL);
     const int empty_path = hm_remove_socket_rejects("", EINVAL);
@@ -666,11 +605,11 @@ static void hm_check_remove_bad_input(void) {
 }
 
 void hm_run_socket_tests(void) {
-    hm_check_rejects_bad_path();
+    hm_check_bad_paths("socket.rejects-bad-path", hm_server_open_rejects);
     hm_check_refuses_foreign_occupant();
     hm_check_replaces_stale_socket();
     hm_check_socket_mode();
-    hm_check_connect_rejects_bad_path();
+    hm_check_bad_paths("socket.connect-rejects-bad-path", hm_connect_rejects);
     hm_check_connect();
     hm_check_accept_peer_credentials();
     hm_check_descriptor_options();

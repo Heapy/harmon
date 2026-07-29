@@ -104,8 +104,8 @@ class NativeCTest {
      * It is not the checks this pass is about — they pass either way — but everything they cannot
      * see: an overflow past an allocation, a use after free, a signed overflow. A `malloc` one byte
      * short of the terminator in `hm_receive_json_frame` leaves every check of the ordinary pass
-     * green and stops this one with `heap-buffer-overflow harmon_native.h:494`, reported here as a
-     * death on signal 6. Leaks are not part of it: LeakSanitizer does not run on macOS, so the two
+     * green and stops this one with a `heap-buffer-overflow` in `hm_receive_json_frame`, reported
+     * here as a death on signal 6. Leaks are not part of it: LeakSanitizer does not run on macOS, so the two
      * that matter are measured by checks of their own.
      */
     @Test
@@ -120,11 +120,7 @@ class NativeCTest {
     fun reportsADeliberateFailure() =
         assertReportsDeliberateFailure(cTestHarness(), foreignFilter = "pure.")
 
-    /**
-     * The same sentinel `selftest` prints, and for the same reason: the bridge reads an output with
-     * no check line in it as a harness that died before reporting anything, so a filter that
-     * selected nothing has to say so rather than exit quietly.
-     */
+    /** The same sentinel `selftest` prints, for the reason CLAUDE.md gives in the protocol paragraph. */
     @Test
     fun reportsThatAFilterSelectedNothing() {
         val run = runNativeHarness(cTestHarness(), listOf("no-such-suite."))
@@ -133,10 +129,7 @@ class NativeCTest {
         assertHarnessSucceeded(run, setOf("harness.no-checks-selected"))
     }
 
-    /**
-     * A mistyped flag must not be taken for a name filter: it would match nothing, print the
-     * sentinel and exit 0 — a green run of a harness that checked nothing at all.
-     */
+    /** A mistyped flag must not be taken for a name filter: CLAUDE.md, the protocol paragraph. */
     @Test
     fun rejectsAnUnknownFlag() = assertRejectsAnUnknownFlag(cTestHarness())
 }

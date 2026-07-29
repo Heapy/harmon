@@ -140,23 +140,6 @@ fun selftestHarness(): NativeTool = NativeTool(
     relativePath = "build/tasks/_selftest_linkMacosArm64Debug/selftest.kexe",
 )
 
-/**
- * Everything the selftest binary is built from: its own sources, the bridge it links, and the
- * three files that decide what "built" means.
- *
- * The module files earn their place: dropping the `nativebridge` dependency, moving to another
- * Kotlin version or turning off `allWarningsAsErrors` all change what gets linked without touching
- * a line of Kotlin, and a guard that watched sources alone would stay green over a binary produced
- * by the previous configuration.
- */
-val SELFTEST_SOURCES: List<String> = listOf(
-    "selftest/src",
-    "selftest/module.yaml",
-    "nativebridge/cinterop/harmon_native.def",
-    "nativebridge/module.yaml",
-    "harmon.module-template.yaml",
-)
-
 /** A file a harness is built from, and when it last changed. */
 data class HarnessSource(val path: String, val modifiedAt: Double)
 
@@ -312,9 +295,9 @@ fun runNativeHarness(
  * `attribution.dead-pid-not-measured` rather than "the native suite"; the others are named after it
  * because an `AssertionError` ends the test either way. The remaining conditions cover the ways a
  * harness can look green without having run: a crash, a non-zero exit with nothing printed, an
- * output with no check line in it at all — with or without a filter, which is why a filter that
- * selects nothing makes both harnesses print `harness.no-checks-selected` — or a check that quietly
- * stopped being executed.
+ * output with no check line in it at all — with or without a filter, which is the reason for the
+ * `harness.no-checks-selected` sentinel CLAUDE.md describes — or a check that quietly stopped being
+ * executed.
  */
 fun assertHarnessSucceeded(run: NativeHarnessRun, expectedChecks: Set<String>) {
     val failures = run.checks.filterNot { it.passed }
@@ -359,9 +342,7 @@ fun assertHarnessSucceeded(run: NativeHarnessRun, expectedChecks: Set<String>) {
  * `AssertionError` that names the check rather than into a nameless "the native suite failed".
  *
  * [foreignFilter] is a filter that selects a real suite and never the deliberate failure, which is
- * the combination that used to swallow it: reported through the ordinary filter, the failure was
- * dropped and the run exited 0, so the flag answered "self-check passed" from a harness whose
- * `fail` branch had not run.
+ * the combination CLAUDE.md describes the harnesses dropping the filter for.
  */
 fun assertReportsDeliberateFailure(tool: NativeTool, foreignFilter: String) {
     assertSurvivesAForeignFilter(tool, foreignFilter)
@@ -414,8 +395,7 @@ private fun assertSurvivesAForeignFilter(tool: NativeTool, foreignFilter: String
 /**
  * Runs [tool] with arguments that look like flags and are not, and requires a usage error for each.
  *
- * Taking an unrecognised flag for the name filter is how a mistyped `--self-check` turns into a run
- * that selects nothing, prints the no-checks sentinel and exits 0. The single-dash form is the more
+ * Why a dash is a usage error: CLAUDE.md, the protocol paragraph. The single-dash form is the more
  * likely typo of the two and was the one that slipped through a `--` prefix test.
  */
 fun assertRejectsAnUnknownFlag(tool: NativeTool) {

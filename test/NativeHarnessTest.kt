@@ -26,17 +26,23 @@ private const val MISSING_HARNESS = "scripts/no-such-harness.sh"
  */
 private const val TIMESTAMP_GAP_MICROSECONDS = 20_000u
 
+/**
+ * The C harness under a relative path that does not exist, which is what every test here wants: a
+ * tool nothing has to build, whose resolved path and override key are the subject.
+ */
+private fun missingHarness(override: String? = null): NativeTool = NativeTool(
+    label = "a harness",
+    environmentKey = "HARMON_NATIVE_TEST_SCRIPT",
+    relativePath = MISSING_HARNESS,
+    override = override,
+)
+
 private fun harnessRun(
     lines: List<String>,
     exitCode: Int? = 0,
     signal: Int? = null,
 ): NativeHarnessRun = NativeHarnessRun(
-    tool = NativeTool(
-        label = "a harness",
-        environmentKey = "HARMON_NATIVE_TEST_SCRIPT",
-        relativePath = MISSING_HARNESS,
-        override = null,
-    ),
+    tool = missingHarness(),
     command = "'harness'",
     lines = lines,
     exitCode = exitCode,
@@ -313,32 +319,17 @@ class NativeHarnessTest {
      */
     @Test
     fun resolvesToolPathsAbsolutely() {
-        val tool = NativeTool(
-            label = "a harness",
-            environmentKey = "HARMON_NATIVE_TEST_SCRIPT",
-            relativePath = MISSING_HARNESS,
-            override = null,
-        )
+        val tool = missingHarness()
 
         assertEquals("${currentDirectory()}/$MISSING_HARNESS", tool.path)
         assertEquals(
             "/opt/harmon/harness.sh",
-            NativeTool(
-                label = "a harness",
-                environmentKey = "HARMON_NATIVE_TEST_SCRIPT",
-                relativePath = MISSING_HARNESS,
-                override = "/opt/harmon/harness.sh",
-            ).path,
+            missingHarness(override = "/opt/harmon/harness.sh").path,
             "an override must win over the relative default",
         )
         assertEquals(
             tool.path,
-            NativeTool(
-                label = "a harness",
-                environmentKey = "HARMON_NATIVE_TEST_SCRIPT",
-                relativePath = MISSING_HARNESS,
-                override = "  ",
-            ).path,
+            missingHarness(override = "  ").path,
             "a blank override must be treated as absent",
         )
     }
@@ -349,12 +340,7 @@ class NativeHarnessTest {
      */
     @Test
     fun failsWithTheAbsolutePathWhenTheToolIsMissing() {
-        val tool = NativeTool(
-            label = "a harness",
-            environmentKey = "HARMON_NATIVE_TEST_SCRIPT",
-            relativePath = MISSING_HARNESS,
-            override = null,
-        )
+        val tool = missingHarness()
 
         val failure = assertFailsWith<AssertionError> { runNativeHarness(tool) }
 

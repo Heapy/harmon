@@ -22,14 +22,12 @@
  * `send` ignores it and blocks anyway.
  */
 
-#define HM_TEST_SOCKET_TIMEOUT_SECONDS 5
-#define HM_TEST_LARGE_SOCKET_BUFFER (1 << 20)
-#define HM_TEST_SMALL_SOCKET_BUFFER 4096
-#define HM_TEST_LEAK_ITERATIONS 64
-#define HM_TEST_LEAK_PAYLOAD_BYTES (64 * 1024)
-#define HM_TEST_LEAK_TOLERANCE_BYTES (64 * 1024)
-#define HM_TEST_PARTIAL_WRITE_BYTES (64 * 1024)
-#define HM_TEST_PROBE_BYTES (16 * 1024)
+/*
+ * How long either end of a pair may block before the call fails. Every check here
+ * completes in milliseconds, so this is the backstop that turns a missed wakeup
+ * into a failed check rather than into the 60-second alarm in `main.c`.
+ */
+#define HM_SOCKET_TIMEOUT_SECONDS 5
 
 /*
  * A pair with explicit timeouts, and optionally with a buffer size of its own:
@@ -41,7 +39,7 @@ static int hm_test_socket_pair(int pair[2], int buffer_bytes) {
         return -1;
     }
     struct timeval timeout = {
-        .tv_sec = HM_TEST_SOCKET_TIMEOUT_SECONDS,
+        .tv_sec = HM_SOCKET_TIMEOUT_SECONDS,
         .tv_usec = 0,
     };
     for (int end = 0; end < 2; end++) {
@@ -363,7 +361,25 @@ static void hm_check_receive_rejects_embedded_nul(void) {
 }
 
 /*
- * Rejects the same frame `HM_TEST_LEAK_ITERATIONS` times, so that the heap
+ * The leak measurement: how many rejections it takes to make a missing `free`
+ * visible, how large each rejected frame is, and how much growth is still noise.
+ *
+ * Measured on this machine: 64 allocations of 64 KiB that are freed move
+ * `size_in_use` by 0 bytes, and 64 that are not move it by 5 MiB. The tolerance
+ * is a sixty-fourth of the leak it is meant to catch.
+ *
+ * The buffer is a megabyte so that a whole frame sits in the socket with no
+ * reader attached: `hm_receive_bytes` writes everything and closes the writing
+ * end before the reader looks at it, which is what turns every rejection into one
+ * call instead of a rendezvous.
+ */
+#define HM_LARGE_SOCKET_BUFFER (1 << 20)
+#define HM_LEAK_ITERATIONS 64
+#define HM_LEAK_PAYLOAD_BYTES (64 * 1024)
+#define HM_LEAK_TOLERANCE_BYTES (64 * 1024)
+
+/*
+ * Rejects the same frame `HM_LEAK_ITERATIONS` times, so that the heap
  * measurement around it sees the same allocation made and dropped that many
  * times. `size` is what reaches the reader, which is how a payload is truncated:
  * the header still declares the full length, so the allocation happens either
@@ -375,12 +391,12 @@ static int hm_reject_repeatedly(
     int expected_failure,
     int *observed_failure
 ) {
-    for (int iteration = 0; iteration < HM_TEST_LEAK_ITERATIONS; iteration++) {
+    for (int iteration = 0; iteration < HM_LEAK_ITERATIONS; iteration++) {
         HMFrameOutcome outcome = hm_receive_bytes(
             frame,
             size,
             HM_MAX_JSON_FRAME_SIZE,
-            HM_TEST_LARGE_SOCKET_BUFFER
+            HM_LARGE_SOCKET_BUFFER
         );
         if (outcome.json != NULL || outcome.failure != expected_failure) {
             *observed_failure = outcome.json != NULL ? 0 : outcome.failure;
@@ -403,13 +419,11 @@ static int hm_reject_repeatedly(
  * calls in the bridge, and the truncated frame is the cheaper of the two for a
  * hostile peer to send — four bytes of header and a disconnect.
  *
- * `malloc_zone_statistics` accounts for this exactly rather than approximately:
- * measured on this machine, 64 allocations of 64 KiB that are freed move
- * `size_in_use` by 0 bytes, and 64 that are not move it by 5 MiB. The tolerance
- * is a sixty-fourth of the leak it is meant to catch.
+ * `malloc_zone_statistics` accounts for this exactly rather than approximately,
+ * which is what the constants above were measured against.
  */
 static void hm_check_receive_frees_rejected_frame(void) {
-    const size_t payload_bytes = HM_TEST_LEAK_PAYLOAD_BYTES;
+    const size_t payload_bytes = HM_LEAK_PAYLOAD_BYTES;
     uint8_t *frame = (uint8_t *)malloc(sizeof(uint32_t) + payload_bytes);
     uint8_t *payload = (uint8_t *)malloc(payload_bytes);
     if (frame == NULL || payload == NULL) {
@@ -429,14 +443,14 @@ static void hm_check_receive_frees_rejected_frame(void) {
         frame,
         size,
         HM_MAX_JSON_FRAME_SIZE,
-        HM_TEST_LARGE_SOCKET_BUFFER
+        HM_LARGE_SOCKET_BUFFER
     );
     free(warm_up.json);
     HMFrameOutcome truncated_warm_up = hm_receive_bytes(
         frame,
         truncated_size,
         HM_MAX_JSON_FRAME_SIZE,
-        HM_TEST_LARGE_SOCKET_BUFFER
+        HM_LARGE_SOCKET_BUFFER
     );
     free(truncated_warm_up.json);
 
@@ -457,13 +471,13 @@ static void hm_check_receive_frees_rejected_frame(void) {
         "framing.receive-frees-rejected-frame",
         embedded_nul_rejected &&
             truncated_rejected &&
-            embedded_nul_growth < HM_TEST_LEAK_TOLERANCE_BYTES &&
-            truncated_growth < HM_TEST_LEAK_TOLERANCE_BYTES,
+            embedded_nul_growth < HM_LEAK_TOLERANCE_BYTES &&
+            truncated_growth < HM_LEAK_TOLERANCE_BYTES,
         "expected the heap to grow by less than %d bytes over %d rejected frames "
             "of %zu bytes each way, grew by %lld over the embedded NUL (rejected: "
             "%d, %s) and by %lld over the truncated payload (rejected: %d, %s)",
-        HM_TEST_LEAK_TOLERANCE_BYTES,
-        HM_TEST_LEAK_ITERATIONS,
+        HM_LEAK_TOLERANCE_BYTES,
+        HM_LEAK_ITERATIONS,
         payload_bytes,
         embedded_nul_growth,
         embedded_nul_rejected,
@@ -495,14 +509,14 @@ static void hm_check_receive_frees_rejected_frame(void) {
  * quarantine of AddressSanitizer and the next allocation is a fresh one behind a
  * redzone. It does not need to — the missing terminator is a one-byte write past
  * the end of that allocation, which is the sanitizer's own subject, and it
- * reports `heap-buffer-overflow harmon_native.h:494 in hm_receive_json_frame`
- * before this check gets a chance to look at anything. So the reuse is required
+ * reports `heap-buffer-overflow ... in hm_receive_json_frame` before this check
+ * gets a chance to look at anything. So the reuse is required
  * of the plain build only, and the two builds together cover the line from both
  * sides: the dirt says the byte was written, the redzone says it was written
  * inside the allocation.
  */
 static void hm_check_receive_terminates_payload(void) {
-    const size_t payload_bytes = HM_TEST_LEAK_PAYLOAD_BYTES;
+    const size_t payload_bytes = HM_LEAK_PAYLOAD_BYTES;
     uint8_t *frame = (uint8_t *)malloc(sizeof(uint32_t) + payload_bytes);
     uint8_t *payload = (uint8_t *)malloc(payload_bytes);
     if (frame == NULL || payload == NULL) {
@@ -516,7 +530,7 @@ static void hm_check_receive_terminates_payload(void) {
         hm_build_frame(frame, (uint32_t)payload_bytes, payload, payload_bytes);
 
     int pair[2];
-    if (hm_test_socket_pair(pair, HM_TEST_LARGE_SOCKET_BUFFER) != 0) {
+    if (hm_test_socket_pair(pair, HM_LARGE_SOCKET_BUFFER) != 0) {
         free(frame);
         free(payload);
         CHECK(
@@ -798,6 +812,21 @@ static int hm_send_counting(
 }
 
 /*
+ * The shrunken socket buffer, the control send that measures whether the
+ * conditions took, and the frame that has to survive them.
+ *
+ * The buffer is shrunk so that the sender waits on the reader inside the kernel
+ * instead of handing a whole frame over at once, and the payload is sixteen times
+ * the buffer so that the wait happens repeatedly rather than once. The probe is
+ * four buffers' worth, which is long enough for an interrupter signalling every
+ * millisecond to land several times: measured, 6 short writes and 5 EINTR returns
+ * over these 16 KiB, and 0 of each with the interrupter silenced.
+ */
+#define HM_SMALL_SOCKET_BUFFER 4096
+#define HM_PROBE_BYTES (16 * 1024)
+#define HM_PARTIAL_WRITE_BYTES (64 * 1024)
+
+/*
  * The one case in which `send` hands back fewer bytes than it was given, and so
  * the only way to reach the arithmetic that resumes the transfer. Measured on
  * this machine: a blocking unix-domain `send` moves the whole buffer in a single
@@ -811,9 +840,78 @@ static int hm_send_counting(
  * message, hence a payload of repeating letters rather than one repeated byte: a
  * misplaced chunk shows up as a mismatch instead of comparing equal by accident.
  */
-static void hm_check_send_completes_partial_write(void) {
+
+/*
+ * Everything the check acquires, so that the order in which it is given back is
+ * written down once.
+ *
+ * That order is not obvious and it matters: the interrupter has to stop before
+ * the thread it signals is joined; the reader is joined only after the sending
+ * end is closed, because a reader short of its capacity sits in `recv` and
+ * nothing but the end of the stream releases it; and `wire` cannot be freed until
+ * that join has returned, because the reader writes into it. The check acquires
+ * these in four steps and can fail after any of them, which used to be four
+ * hand-written orderings — four chances to get one of those three wrong.
+ */
+typedef struct {
     int pair[2];
-    if (hm_test_socket_pair(pair, HM_TEST_SMALL_SOCKET_BUFFER) != 0) {
+    char *payload;
+    uint8_t *wire;
+    int signal_installed;
+    struct sigaction previous;
+    HMThrottledReader reader;
+    pthread_t reader_thread;
+    int reader_started;
+    HMSenderInterrupter interrupter;
+    pthread_t interrupter_thread;
+    int interrupter_started;
+} HMPartialWrite;
+
+/*
+ * Stops everything that runs on its own, leaving `wire` and the readings on it
+ * intact so that the check can report them. Idempotent, because the successful
+ * path needs the threads stopped before it reads and released after.
+ */
+static void hm_quiesce_partial_write(HMPartialWrite *state) {
+    if (state->interrupter_started) {
+        state->interrupter.stop = 1;
+        pthread_join(state->interrupter_thread, NULL);
+        state->interrupter_started = 0;
+    }
+    if (state->pair[0] >= 0) {
+        close(state->pair[0]);
+        state->pair[0] = -1;
+    }
+    if (state->reader_started) {
+        pthread_join(state->reader_thread, NULL);
+        state->reader_started = 0;
+    }
+    if (state->signal_installed) {
+        sigaction(SIGUSR1, &state->previous, NULL);
+        state->signal_installed = 0;
+    }
+}
+
+static void hm_release_partial_write(HMPartialWrite *state) {
+    hm_quiesce_partial_write(state);
+    if (state->pair[1] >= 0) {
+        close(state->pair[1]);
+        state->pair[1] = -1;
+    }
+    free(state->payload);
+    free(state->wire);
+    state->payload = NULL;
+    state->wire = NULL;
+}
+
+static void hm_check_send_completes_partial_write(void) {
+    HMPartialWrite state;
+    memset(&state, 0, sizeof(state));
+    state.pair[0] = -1;
+    state.pair[1] = -1;
+
+    int pair[2];
+    if (hm_test_socket_pair(pair, HM_SMALL_SOCKET_BUFFER) != 0) {
         CHECK(
             "framing.send-completes-partial-write",
             0,
@@ -822,102 +920,92 @@ static void hm_check_send_completes_partial_write(void) {
         );
         return;
     }
+    state.pair[0] = pair[0];
+    state.pair[1] = pair[1];
 
-    char *payload = (char *)malloc(HM_TEST_PARTIAL_WRITE_BYTES + 1U);
-    uint8_t *wire = (uint8_t *)malloc(
-        HM_TEST_PROBE_BYTES + sizeof(uint32_t) + HM_TEST_PARTIAL_WRITE_BYTES
+    state.payload = (char *)malloc(HM_PARTIAL_WRITE_BYTES + 1U);
+    state.wire = (uint8_t *)malloc(
+        HM_PROBE_BYTES + sizeof(uint32_t) + HM_PARTIAL_WRITE_BYTES
     );
-    if (payload == NULL || wire == NULL) {
-        free(payload);
-        free(wire);
+    if (state.payload == NULL || state.wire == NULL) {
         CHECK("framing.send-completes-partial-write", 0, "out of memory");
-        close(pair[0]);
-        close(pair[1]);
+        hm_release_partial_write(&state);
         return;
     }
-    for (size_t index = 0; index < HM_TEST_PARTIAL_WRITE_BYTES; index++) {
+    char *const payload = state.payload;
+    uint8_t *const wire = state.wire;
+    for (size_t index = 0; index < HM_PARTIAL_WRITE_BYTES; index++) {
         payload[index] = (char)('a' + (index % 26));
     }
-    payload[HM_TEST_PARTIAL_WRITE_BYTES] = '\0';
+    payload[HM_PARTIAL_WRITE_BYTES] = '\0';
 
     /* Without SA_RESTART the kernel returns to the sender instead of resuming. */
     struct sigaction interrupting;
-    struct sigaction previous;
     memset(&interrupting, 0, sizeof(interrupting));
     interrupting.sa_handler = hm_ignore_signal;
     sigemptyset(&interrupting.sa_mask);
     interrupting.sa_flags = 0;
-    sigaction(SIGUSR1, &interrupting, &previous);
+    sigaction(SIGUSR1, &interrupting, &state.previous);
+    state.signal_installed = 1;
 
-    HMThrottledReader reader = {
-        pair[1],
+    const HMThrottledReader reader = {
+        state.pair[1],
         wire,
-        HM_TEST_PROBE_BYTES + sizeof(uint32_t) + HM_TEST_PARTIAL_WRITE_BYTES,
+        HM_PROBE_BYTES + sizeof(uint32_t) + HM_PARTIAL_WRITE_BYTES,
         0,
         1,
         0,
         0,
     };
-    HMSenderInterrupter interrupter = {pthread_self(), 0, 0};
-    pthread_t reader_thread;
-    pthread_t interrupter_thread;
-    if (pthread_create(&reader_thread, NULL, hm_read_throttled, &reader) != 0) {
+    state.reader = reader;
+    const HMSenderInterrupter interrupter = {pthread_self(), 0, 0};
+    state.interrupter = interrupter;
+    if (pthread_create(&state.reader_thread, NULL, hm_read_throttled, &state.reader) != 0) {
         CHECK(
             "framing.send-completes-partial-write",
             0,
             "pthread_create failed for the reader: %s",
             strerror(errno)
         );
-        sigaction(SIGUSR1, &previous, NULL);
-        free(payload);
-        free(wire);
-        close(pair[0]);
-        close(pair[1]);
+        hm_release_partial_write(&state);
         return;
     }
-    /*
-     * A second `pthread_create` in the same condition would leave the reader
-     * running against `wire` and `reader` after both had been freed and the
-     * frame returned. It has to be joined first, and the only thing that ends
-     * its loop is the socket going away.
-     */
-    if (pthread_create(&interrupter_thread, NULL, hm_interrupt_sender, &interrupter) != 0) {
+    state.reader_started = 1;
+    if (pthread_create(
+            &state.interrupter_thread,
+            NULL,
+            hm_interrupt_sender,
+            &state.interrupter
+        ) != 0) {
         CHECK(
             "framing.send-completes-partial-write",
             0,
             "pthread_create failed for the interrupter: %s",
             strerror(errno)
         );
-        close(pair[0]);
-        pthread_join(reader_thread, NULL);
-        sigaction(SIGUSR1, &previous, NULL);
-        free(payload);
-        free(wire);
-        close(pair[1]);
+        hm_release_partial_write(&state);
         return;
     }
+    state.interrupter_started = 1;
 
     int short_writes = 0;
     int interruptions = 0;
     const int probed = hm_send_counting(
-        pair[0],
+        state.pair[0],
         payload,
-        HM_TEST_PROBE_BYTES,
+        HM_PROBE_BYTES,
         &short_writes,
         &interruptions
     );
 
     errno = 0;
-    const int sent = hm_send_json_frame(pair[0], payload);
+    const int sent = hm_send_json_frame(state.pair[0], payload);
     const int send_failure = errno;
-    interrupter.stop = 1;
-    pthread_join(interrupter_thread, NULL);
-    pthread_join(reader_thread, NULL);
-    sigaction(SIGUSR1, &previous, NULL);
+    hm_quiesce_partial_write(&state);
 
     uint32_t declared = 0;
-    if (reader.received >= HM_TEST_PROBE_BYTES + sizeof(declared)) {
-        memcpy(&declared, wire + HM_TEST_PROBE_BYTES, sizeof(declared));
+    if (state.reader.received >= HM_PROBE_BYTES + sizeof(declared)) {
+        memcpy(&declared, wire + HM_PROBE_BYTES, sizeof(declared));
         declared = ntohl(declared);
     }
 
@@ -944,35 +1032,32 @@ static void hm_check_send_completes_partial_write(void) {
         probed == 0 &&
             short_writes + interruptions > 0 &&
             sent == 0 &&
-            reader.received ==
-                HM_TEST_PROBE_BYTES + sizeof(uint32_t) + HM_TEST_PARTIAL_WRITE_BYTES &&
-            declared == HM_TEST_PARTIAL_WRITE_BYTES &&
+            state.reader.received ==
+                HM_PROBE_BYTES + sizeof(uint32_t) + HM_PARTIAL_WRITE_BYTES &&
+            declared == HM_PARTIAL_WRITE_BYTES &&
             memcmp(
-                wire + HM_TEST_PROBE_BYTES + sizeof(uint32_t),
+                wire + HM_PROBE_BYTES + sizeof(uint32_t),
                 payload,
-                HM_TEST_PARTIAL_WRITE_BYTES
+                HM_PARTIAL_WRITE_BYTES
             ) == 0,
         "expected %d bytes through a %d-byte socket buffer after a probe that was "
             "interrupted at least once, got probe %d with %d short writes and %d "
             "EINTR returns, send %d/%s and %zu bytes declaring %u in %d reads "
             "under %d interrupts",
-        HM_TEST_PARTIAL_WRITE_BYTES,
-        HM_TEST_SMALL_SOCKET_BUFFER,
+        HM_PARTIAL_WRITE_BYTES,
+        HM_SMALL_SOCKET_BUFFER,
         probed,
         short_writes,
         interruptions,
         sent,
         sent == 0 ? "ok" : strerror(send_failure),
-        reader.received,
+        state.reader.received,
         declared,
-        reader.chunks,
-        interrupter.delivered
+        state.reader.chunks,
+        state.interrupter.delivered
     );
 
-    free(payload);
-    free(wire);
-    close(pair[0]);
-    close(pair[1]);
+    hm_release_partial_write(&state);
 }
 
 void hm_run_framing_tests(void) {

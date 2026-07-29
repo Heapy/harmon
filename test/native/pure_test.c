@@ -1,5 +1,6 @@
 #include "harmon_native.h"
 
+#include "anchors.h"
 #include "harness.h"
 
 /*
@@ -177,7 +178,7 @@ static void hm_check_process_list_capacity(void) {
     );
 }
 
-static int compare_candidates(
+static int hm_compare_candidates(
     int32_t left_index,
     uint64_t left_footprint,
     int32_t right_index,
@@ -199,21 +200,21 @@ static int compare_candidates(
 static void hm_check_candidate_order(void) {
     CHECK(
         "pure.candidates-order-by-footprint",
-        compare_candidates(0, 2048, 1, 1024) < 0 &&
-            compare_candidates(1, 1024, 0, 2048) > 0,
+        hm_compare_candidates(0, 2048, 1, 1024) < 0 &&
+            hm_compare_candidates(1, 1024, 0, 2048) > 0,
         "expected the larger footprint first, got %d and %d",
-        compare_candidates(0, 2048, 1, 1024),
-        compare_candidates(1, 1024, 0, 2048)
+        hm_compare_candidates(0, 2048, 1, 1024),
+        hm_compare_candidates(1, 1024, 0, 2048)
     );
     CHECK(
         "pure.candidates-tie-breaks-by-index",
-        compare_candidates(1, 4096, 5, 4096) < 0 &&
-            compare_candidates(5, 4096, 1, 4096) > 0 &&
-            compare_candidates(3, 4096, 3, 4096) == 0,
+        hm_compare_candidates(1, 4096, 5, 4096) < 0 &&
+            hm_compare_candidates(5, 4096, 1, 4096) > 0 &&
+            hm_compare_candidates(3, 4096, 3, 4096) == 0,
         "expected the lower index first, got %d, %d and %d",
-        compare_candidates(1, 4096, 5, 4096),
-        compare_candidates(5, 4096, 1, 4096),
-        compare_candidates(3, 4096, 3, 4096)
+        hm_compare_candidates(1, 4096, 5, 4096),
+        hm_compare_candidates(5, 4096, 1, 4096),
+        hm_compare_candidates(3, 4096, 3, 4096)
     );
 
     HMProcessAttributionCandidate sorted[] = {
@@ -348,7 +349,7 @@ static void hm_check_mach_time(void) {
 static void hm_check_monotonic_time(void) {
     const uint64_t reported = hm_monotonic_time_ns();
     const uint64_t anchor = clock_gettime_nsec_np(CLOCK_MONOTONIC);
-    const uint64_t difference = anchor > reported ? anchor - reported : reported - anchor;
+    const uint64_t difference = hm_absolute_difference(reported, anchor);
 
     CHECK(
         "pure.monotonic-time-matches-the-posix-clock",
@@ -399,6 +400,12 @@ static void hm_check_discard_http_response(void) {
  * `hm_process_list_capacity` applies. A deliberate change to any of them changes
  * this line too, which is the point: it is the one place where the change is
  * visible rather than implied.
+ *
+ * `HM_MAX_PROCESS_LIST` is here for exactly that reason and was missing for a
+ * while: `pure.list-capacity-clamps-at-maximum` builds all four of its
+ * expectations out of the same `#define` it is testing, so a ceiling lowered to
+ * the point of truncating the PID list on a busy machine moved both sides at once
+ * and stayed green.
  */
 static void hm_check_constants(void) {
     CHECK(
@@ -409,9 +416,11 @@ static void hm_check_constants(void) {
             HM_ATTRIBUTION_REGION_LIMIT == 8192 &&
             HM_PROCESS_LIST_HEADROOM == 256 &&
             HM_MIN_PROCESS_LIST == 512 &&
+            HM_MAX_PROCESS_LIST == 1048576 &&
             HM_PROCESS_ISSUE_RUSAGE == 1 &&
             HM_PROCESS_ISSUE_CAPACITY == 2,
-        "expected 128/%d/33554432/8192/256/512/1/2, got %d/%d/%u/%d/%d/%d/%d/%d",
+        "expected 128/%d/33554432/8192/256/512/1048576/1/2, "
+            "got %d/%d/%u/%d/%d/%d/%d/%d/%d",
         PROC_PIDPATHINFO_SIZE,
         HM_PROCESS_NAME_SIZE,
         HM_PROCESS_PATH_SIZE,
@@ -419,6 +428,7 @@ static void hm_check_constants(void) {
         HM_ATTRIBUTION_REGION_LIMIT,
         HM_PROCESS_LIST_HEADROOM,
         HM_MIN_PROCESS_LIST,
+        HM_MAX_PROCESS_LIST,
         HM_PROCESS_ISSUE_RUSAGE,
         HM_PROCESS_ISSUE_CAPACITY
     );

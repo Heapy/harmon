@@ -26,6 +26,7 @@ import platform.posix.fflush
 import platform.posix.fputs
 import platform.posix.getpid
 import platform.posix.stderr
+import platform.posix.stdout
 import kotlin.system.exitProcess
 
 /*
@@ -45,6 +46,47 @@ private var failures = 0
 private var reported = 0
 private var filter: String? = null
 
+/**
+ * When this run started, read by the CPU-time bound in [implausibleOwnSample].
+ *
+ * The wall clock the check needs is this process's lifetime, and nothing in the bridge reports it,
+ * so `main` records the reading it takes before anything else.
+ */
+private var startedAtNanoseconds = 0uL
+
+/**
+ * Slack over the process count, so that the listing is wide enough to contain this process.
+ *
+ * Nothing here has to agree with what the collector reserves: the check needs one particular
+ * process in the sample, and the bridge widens its own intermediate PID list regardless.
+ */
+private const val LISTING_SLACK = 256
+
+/**
+ * How far the process's own CPU time may sit from its wall-clock lifetime, in either direction.
+ *
+ * Bounds rather than measurements, and two-sided because a mach timebase applied the wrong way
+ * round is an *under*count: on Apple Silicon it is 125/3, so a transposed one reports a
+ * fortieth of the time rather than forty times it. Between the start of `main` and this check
+ * `selftest` does nothing but list processes, which is CPU-bound — the measured ratio is 0.75 to
+ * 0.93 over five runs — so both bounds keep an order of magnitude of room: [THREAD_TIME_ALLOWANCE]
+ * for the runtime's own threads above, [SCHEDULING_ALLOWANCE] for a machine that deschedules this
+ * one below.
+ */
+private const val THREAD_TIME_ALLOWANCE = 8uL
+private const val SCHEDULING_ALLOWANCE = 16uL
+
+/**
+ * How long a whole run may take before the alarm ends it, which is `HM_TEST_TIMEOUT_SECONDS` in
+ * `test/native/harness.h` — the two harnesses answer the same promise in CLAUDE.md and there is no
+ * shared place to put one constant, so each names the other.
+ *
+ * `runNativeHarness` blocks in `fgets` for as long as the child lives, so a walk or a listing that
+ * hung inside the kernel would hang `./kotlin test` with it, with no output to explain why. The
+ * signal turns that into a run the bridge reports as an abnormal termination.
+ */
+private const val TIMEOUT_SECONDS = 60u
+
 /** A check runs only when it matches the prefix filter, if one was given. */
 private fun selected(name: String): Boolean = filter?.let(name::startsWith) ?: true
 
@@ -54,6 +96,7 @@ private fun selected(name: String): Boolean = filter?.let(name::startsWith) ?: t
  * [detail] is a lambda because it is printed only for a failure and regularly reads values that
  * are meaningless — or expensive to format — when the condition holds.
  */
+@OptIn(ExperimentalForeignApi::class)
 private fun check(name: String, condition: Boolean, detail: () -> String) {
     if (!selected(name)) {
         return
@@ -65,8 +108,15 @@ private fun check(name: String, condition: Boolean, detail: () -> String) {
         failures++
         println("fail $name: ${detail()}")
     }
+    /*
+     * Flushed per line, as `hm_test_report` in the C harness is. Standard output is a pipe under
+     * the bridge, so a run killed by the alarm would otherwise report nothing at all about how far
+     * it got — which is the one case the alarm exists for.
+     */
+    fflush(stdout)
 }
 
+/** Kotlin/Native leaves `argv[0]` out of `args`, so the name is written out rather than read. */
 @OptIn(ExperimentalForeignApi::class)
 private fun reportUsage(program: String) {
     fputs("usage: $program [--self-check] [name-prefix]\n", stderr)
@@ -78,6 +128,10 @@ private fun reportUsage(program: String) {
  *
  * Anything provable from plain C belongs in `test/native` instead: those tests need no build of
  * this module and no staleness guard.
+ *
+ * Unlike `main.c`, the filter gates reporting only and not execution. There are five checks and the
+ * two that cost anything — a full listing and a region walk — are the reason this binary exists, so
+ * there is no equivalent of a suite that forks children or opens sockets for output nobody selected.
  */
 @OptIn(ExperimentalForeignApi::class)
 private fun runBindingChecks() {
@@ -278,39 +332,6 @@ private fun checkAttributionSelfWalk() {
     }
 }
 
-/**
- * Slack over the process count, so that the listing is wide enough to contain this process.
- *
- * Nothing here has to agree with what the collector reserves: the check needs one particular
- * process in the sample, and the bridge widens its own intermediate PID list regardless.
- */
-private const val LISTING_SLACK = 256
-
-/**
- * How far the process's own CPU time may sit from its wall-clock lifetime, in either direction.
- *
- * Bounds rather than measurements, and two-sided because a mach timebase applied the wrong way
- * round is an *under*count: on Apple Silicon it is 125/3, so a transposed one reports a
- * fortieth of the time rather than forty times it. Between the start of `main` and this check
- * `selftest` does nothing but list processes, which is CPU-bound — the measured ratio is 0.75 to
- * 0.93 over five runs — so both bounds keep an order of magnitude of room: [THREAD_TIME_ALLOWANCE]
- * for the runtime's own threads above, [SCHEDULING_ALLOWANCE] for a machine that deschedules this
- * one below.
- */
-private const val THREAD_TIME_ALLOWANCE = 8uL
-private const val SCHEDULING_ALLOWANCE = 16uL
-
-/**
- * The C harness arms an alarm for the same reason: nothing else bounds a run.
- *
- * `runNativeHarness` blocks in `fgets` for as long as the child lives, so a walk or a listing that
- * hung inside the kernel would hang `./kotlin test` with it, with no output to explain why. The
- * signal turns that into a run the bridge reports as an abnormal termination.
- */
-private const val TIMEOUT_SECONDS = 60u
-
-private var startedAtNanoseconds = 0uL
-
 @OptIn(ExperimentalForeignApi::class)
 fun main(args: Array<String>) {
     startedAtNanoseconds = hm_monotonic_time_ns()
@@ -318,12 +339,7 @@ fun main(args: Array<String>) {
     for (argument in args) {
         when {
             argument == "--self-check" -> selfCheck = true
-            /*
-             * An unknown flag taken as a name filter would match nothing and exit 0 — a mistyped
-             * `--self-check` would read as a clean run of a harness that checked nothing. One dash
-             * is as much a typo as two, and `-selfcheck` is the likelier of the two mistakes, so
-             * anything starting with a dash is refused: no check name begins with one.
-             */
+            /* Why a dash is a usage error: CLAUDE.md, the protocol paragraph. */
             argument.startsWith("-") || filter != null -> {
                 reportUsage("selftest")
                 exitProcess(2)
@@ -339,21 +355,15 @@ fun main(args: Array<String>) {
 
     if (selfCheck) {
         /*
-         * The filter is dropped first, because the deliberate failure has to be reported whatever
-         * it selected: passed through [selected] it is discarded by any filter other than
-         * `harness.`, and `--self-check binding.` would answer "self-check passed" from a harness
-         * whose `fail` branch never ran. Nothing after this point reads the filter.
+         * Why the filter is dropped before the deliberate failure: CLAUDE.md, the protocol
+         * paragraph. Nothing after this point reads the filter.
          */
         filter = null
         check("harness.self-check", false) {
             "deliberate failure that proves the fail branch runs"
         }
     }
-    /*
-     * The bridge reads an output with no check line in it as a harness that died before reporting
-     * anything, so a filter that selected nothing has to say so out loud. The C harness prints the
-     * same line for the same reason.
-     */
+    /* Why an empty selection still prints a line: CLAUDE.md, the protocol paragraph. */
     if (reported == 0) {
         println("ok   harness.no-checks-selected")
     }

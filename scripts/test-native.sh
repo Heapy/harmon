@@ -3,17 +3,18 @@
 # Compiles and runs the C test harness over the native bridge.
 #
 # The bridge lives entirely inside `nativebridge/cinterop/harmon_native.def`;
-# cinterop cannot be pointed at a separate header (see task 3 of
-# docs/plans/20260728-native-bridge-tests.md), so the header the tests include is
-# generated from the `.def` on every run. Its lifetime is one run and it lives
-# under `build/`, which is already ignored by git, so the copies cannot drift.
+# cinterop cannot be pointed at a separate header (CLAUDE.md, "How the native
+# layer is tested"), so the header the tests include is generated from the `.def`
+# on every run. Its lifetime is one run and it lives under `build/`, which is
+# already ignored by git, so the copies cannot drift.
 #
 # `--sanitize` builds the same sources under AddressSanitizer and
 # UndefinedBehaviorSanitizer instead. That pass is not about any one check: it
 # watches every allocation the bridge makes for an overflow, a use after free or
 # a double free, which no assertion over return values can see. A one-byte
 # `malloc` short of the terminator in `hm_receive_json_frame` leaves every check
-# of the ordinary pass green and stops this pass with `heap-buffer-overflow harmon_native.h:494`.
+# of the ordinary pass green and stops this pass with a `heap-buffer-overflow`
+# reported inside that function.
 # `-fno-sanitize-recover=all` is what makes an undefined-behaviour report fail the
 # run rather than print and continue. Leaks are *not* covered — LeakSanitizer
 # refuses to start on macOS ("detect_leaks is not supported on this platform"),

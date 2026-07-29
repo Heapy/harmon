@@ -98,52 +98,51 @@ assertion survives a transposed pair of fields; an anchor does not. Where an
 anchor cannot separate two fields, the gap is listed below rather than left to
 the comment.
 
-Two shapes of anchor are in use, and neither is exact everywhere. Against a value
-that only grows the test reads the source before *and* after the bridge does and
-requires the bridge's answer to lie between the two: for a counter that needs no
-tolerance at all and cannot drift on a busy machine, and it is how most of the
-process sample, the load averages and the compressed bytes are checked. Three
-fields of that sample both rise and fall — wired, resident and footprint bytes —
-so their bracket carries 4 MiB of slack (`HM_OWN_RESIDENCY_SLACK`), and the slack
-rather than the bracket is what decided `wired_bytes`: an ordinary process reports
-0 there, which was inside it. The harness therefore locks 16 MiB before the
-readings and asserts that the lock took, the same way it writes 4 MiB and reads
-1 MiB back past the cache so that the two disk directions are two different
-non-zero numbers. Where the source is read twice in a row instead of around the
-call there is a tolerance from the start: the tick counters, the virtual memory
-statistics, storage, swap and the battery estimate all carry one, and each is
-documented at its constant with what it was measured at. A tolerance wider than
-the value it is applied to checks nothing — the virtual memory one was 64 MiB
-against 56 MB of purgeable memory, and is 8 MiB now, measured against a worst
-observed drift of 2 MB under four processes churning memory.
+Two shapes of anchor are in use — a *bracket* around the bridge's read and a
+*tolerance* on two reads in a row — and `test/native/anchors.h` describes both.
+Which fields take which: the bracket covers most of the process sample, the load
+averages and the compressed bytes; a tolerance covers the tick counters, the
+virtual memory statistics, storage, swap and the battery estimate, and each is
+documented at its constant with what it was measured at. Neither is exact
+everywhere. Three fields of the process sample both rise and fall — wired,
+resident and footprint bytes — so their bracket carries 4 MiB of slack
+(`HM_OWN_RESIDENCY_SLACK`), and the slack rather than the bracket is what decided
+`wired_bytes`: an ordinary process reports 0 there, which was inside it. A
+tolerance wider than the value it is applied to checks nothing — the byte one was
+64 MiB against 56 MB of purgeable memory, and is 8 MiB now, measured against a
+worst observed drift of 2 MB under four processes churning memory. Swap shares
+that constant rather than keeping its own: at 64 MiB `xsu_used` and `xsu_avail`
+were unpinned on every machine holding less swap than that.
 
-Neither harness is meant to run as root: `processes.samples-are-well-formed`
-holds because an ordinary user cannot read the rusage of pid 0, and
-`socket.accept-rejects-foreign-uid` has no foreign user to name when the caller
-is uid 0. The other way round, `processes.issues-are-well-formed` needs the
-account to own at least 64 rusage-readable processes, because the capacity branch
-it covers only fires once the 64-slot sample array is full — an ordinary session
-is far past that (566 here), a stripped service account might not be.
-`processes.issue-metadata-matches-a-fresh-read` needs 32 of those issues to still
-be readable moments later (174 to 177 here), and
-`processes.rusage-issue-path-matches-a-fresh-read` and
-`processes.rusage-issue-uid-is-unknown` need 16 processes of *other* users, which
-is what the rusage branch of the listing reports (256 to 276 here). Each of them
-fails naming what it counted rather than passing vacuously.
-`processes.own-sample-matches-a-fresh-rusage` makes its conditions instead of
-asking for them: before taking the listing it writes and flushes 4 MiB, reads
-1 MiB of it back with the cache turned off, parks a second thread and locks
-16 MiB of memory — because a harness that touched no disk, ran one thread and
-wired nothing reports `disk_bytes_read` equal to `disk_bytes_written`,
-`thread_count` equal to `running_thread_count` and `wired_bytes` at 0, and
-neither a transposed pair of equal numbers nor a hard-coded zero is visible then.
-It asserts that each of those took effect, which is the only way a machine that
-refuses `mlock` or serves the read from cache says so instead of leaving the
-fields unchecked.
-No check depends on how many processes the account has started recently: an
-earlier `attribution.bytes-match-an-independent-walk` gave up after 24 of them and
-failed for a whole build running alongside it, or for a second copy of the
-harness.
+**What the harnesses need from the machine.** Neither is meant to run as root:
+`processes.samples-are-well-formed` holds because an ordinary user cannot read
+the rusage of pid 0, and `socket.accept-rejects-foreign-uid` has no foreign user
+to name when the caller is uid 0. Everything else the checks need they make
+rather than ask for, which is what keeps them off the shape of the account they
+run under:
+
+- `processes.own-sample-matches-a-fresh-rusage` writes and flushes 4 MiB, reads
+  1 MiB of it back with the cache turned off, parks a second thread and locks
+  16 MiB of memory before the listing, because a harness that touched no disk,
+  ran one thread and wired nothing reports `disk_bytes_read` equal to
+  `disk_bytes_written`, `thread_count` equal to `running_thread_count` and
+  `wired_bytes` at 0;
+- `processes.issues-are-well-formed` and
+  `processes.issue-metadata-matches-a-fresh-read` need the account to own more
+  rusage-readable processes than the sample array holds, plus 32 behind them, so
+  the listing forks the shortfall as placeholder children first — nothing at all
+  on a desktop session (585 here), a few dozen under a service account.
+
+Both report what they did in every failure, so a machine that refuses `mlock`,
+serves the read from cache or cannot fork says so in those words instead of
+looking like a mapping regression. The one requirement that cannot be made is 16
+processes of *other* users, which is the whole population of the rusage branch
+(256 to 276 here) that `processes.rusage-issue-path-matches-a-fresh-read` and
+`processes.rusage-issue-uid-is-unknown` read; every macOS carries a hundred of
+root's, and both checks print what they counted. No check depends on how many
+processes the account has started *recently*: an earlier
+`attribution.bytes-match-an-independent-walk` gave up after 24 of them and failed
+for a whole build running alongside it, or for a second copy of the harness.
 
 `scripts/test-native.sh` regenerates the header the C tests include straight
 from the `.def` (`sed '1,/^---$/d'` into `build/native-test/`), compiles every
@@ -151,6 +150,10 @@ from the `.def` (`sed '1,/^---$/d'` into `build/native-test/`), compiles every
 plus the `.def`'s own `linkerOpts` frameworks, and runs it. The `.def` stays the
 single source of truth — cinterop cannot be pointed at a separate header, so no
 checked-in `.h` exists — and the generated copy lives for one run.
+
+Each `*_test.c` is one suite reporting under one name prefix, named after it, and
+`main.c` maps the two; `harness.h` carries the protocol and the alarm, `anchors.h`
+what more than one suite needs to compare a sample against a second reading.
 
 **The sanitized pass.** `./kotlin test` runs the C harness twice: once as above,
 once with `--sanitize`, which builds the same sources with
@@ -160,7 +163,7 @@ assertion over return values can see: a write past an allocation, a use after
 free, a signed overflow. `malloc((size_t)length)` in place of
 `malloc((size_t)length + 1U)` in `hm_receive_json_frame`, a one-byte heap
 overflow, leaves the ordinary pass green at exit 0 and stops the sanitized one
-with `heap-buffer-overflow harmon_native.h:494`, which the bridge reports as a
+with a `heap-buffer-overflow` inside that function, which the bridge reports as a
 death on signal 6. It costs about 1.2 s over the ordinary pass.
 
 Leaks are **not** part of it: LeakSanitizer refuses to start on macOS
@@ -252,88 +255,54 @@ guard is what notices. The C tests need no guard — the script recompiles them
 every run.
 
 **Accepted coverage gaps**, listed so the table above does not read as a promise
-to cover everything:
+to cover everything. Each entry names the check that owns it; the reasoning —
+what was measured, what a mutation of that line survives — lives at that check
+and is not repeated here.
 
-- `hm_http_post_json` with `hm_http_global_init`/`hm_http_global_cleanup` — would
+Nothing reaches these at all:
+
+- `hm_http_post_json` with `hm_http_global_init`/`hm_http_global_cleanup`: would
   need a local HTTP server in the tests;
 - the attribution budget split inside `hm_list_processes` (head/tail passes,
-  `hm_attribute_candidate`) — both harnesses take the listing with attribution
-  off, so the budget policy never runs; the region walk itself is covered
-  directly;
+  `hm_attribute_candidate`): both harnesses take the listing with attribution off,
+  so the policy never runs; the region walk itself is covered directly;
 - the one-line wrappers that exist only for Kotlin — `hm_free`,
   `hm_close_descriptor`, `hm_sleep_millis`;
-- the `RUSAGE_INFO_V6 → V4` fallback — only fires on older macOS;
-- the `pid-N` name fallback in `hm_list_processes` — it needs a process that
-  vanishes between the rusage read and the metadata read, so proc_name and
-  `proc_bsdinfo` both come back empty; deleting the fallback leaves every
-  `processes.*` check green, because on a live machine the branch never fires.
-  The empty-name branch of `processes.samples-are-well-formed` is a guard against
-  that, not coverage of it. What *is* covered is the fallback firing when it
-  should not: `processes.own-sample-carries-metadata` compares this process's own
-  sample against `proc_pidpath`, so an unconditional `pid-%d` — every process on
-  the machine named after its pid — fails it;
-- `nice_ticks` in `hm_read_processor` — the counter reads 0 on this machine and a
-  300 ms burn at nice 19 does not move it, so the anchor agrees with a bridge that
-  hard-coded the field to zero. The other three tick counters are anchored;
-- `package_idle_wakeups` in the process sample, for the same reason and with the
-  same shape: `ri_pkg_idle_wkups` reads 0 for a process as short-lived as the
-  harness, so its bracket is 0..0 and a hard-coded zero is inside it. The counter
-  itself is live — 354 of the 631 processes this account can read carry a non-zero
-  one, up to 2955467 — but they accumulated it over hours of the package actually
-  going idle, and neither 200 wakeups at 2 ms nor 20 at 50 ms move it inside a
-  one-second run. Closing it would mean bracketing the sample of *another*
-  process, one this harness does not otherwise need. The two disk figures and
-  `wired_bytes`, which had the same 0..0 problem, are made non-zero instead;
-- any virtual memory figure below the 8 MiB tolerance of
-  `snapshot.virtual-memory-matches-a-fresh-read`, which cannot be told from a
-  hard-coded zero. It is the small fields that are exposed: `purgeable_bytes` is
-  25 to 56 MB here and separated, but a machine holding less than 8 MB of it is
-  not, and neither is `compressed_bytes` on a runner with no memory pressure at
-  all;
-- `root_filesystem_available_bytes` from `f_bfree` instead of `f_bavail` — the two
-  are equal on the APFS root here, so the anchor cannot tell them apart. It would
-  on a filesystem that reserves blocks for root. `hm_read_storage` also hard-codes
-  `/`, so no check can tell it from another mount point;
-- the summation across devices in `hm_add_storage_statistic` — it adds the
-  statistics of every `IOBlockStorageDriver` in the registry, and a machine with
-  one internal drive cannot distinguish adding them from overwriting. The filter
-  that decides which drivers are summed is anchored: `hm_read_storage_anchor` used
-  to call the bridge's own `hm_storage_driver_is_internal` and moved with it, and
-  now decides for itself, so a bridge accepting every driver reports five devices
-  against the anchor's one. On a machine whose registry holds a single driver even
-  that is indistinguishable;
-- what the swap sample cannot separate on a given machine: with no swap file all
-  three figures are zero and a transposed `xsu_used`/`xsu_avail` is invisible, and
-  with unencrypted swap the `encrypted` flag cannot be told from a hard-coded 0.
-  Both are anchored against a second `vm.swapusage` where the machine has them;
-- the load averages on an idle machine, where all three read the same value and no
-  anchor can tell a transposed one-minute and fifteen-minute pair from the right
-  one. The bracketing read separates them whenever they differ at all;
-- the compressed-bytes sum on a machine whose compressor holds nothing of this
-  account. `attribution.bytes-match-an-independent-walk` prefers a process the
-  compressor is holding pages of, scanning every process of the account to find
-  one (568 of 594 qualified here); with none it walks this process instead, where
-  both sums are zero. A bridge summing the resident pages fails it either way, a
-  hard-coded zero only in the first case;
-- the `chown` branch of `hm_unix_server_open` — root only — and the `st_uid`
-  half of its occupancy test, which needs a socket at the path owned by a second
-  user; the non-socket half of the same test is covered by
+- the `RUSAGE_INFO_V6 → V4` fallback: only fires on older macOS;
+- the `pid-N` name fallback in `hm_list_processes`, which needs a process that
+  vanishes mid-listing — `hm_malformed_sample` in `processes_test.c`. Covered the
+  other way round: `processes.own-sample-carries-metadata` fails an unconditional
+  `pid-%d`;
+- the `chown` branch of `hm_unix_server_open` and the `st_uid` half of its
+  occupancy test: root, or a second user. The non-socket half is
   `socket.refuses-foreign-occupant`;
-- the peer-uid gate inside `hm_unix_connect` (`EACCES` on a socket owned by
-  someone else), `hm_unix_accept` with a null `peer_user_id`, and its bypass for
-  uid 0 — all three need a second user or root; the server-side gate that
-  matters, `hm_unix_accept` refusing a foreign uid, is covered;
-- `hm_read_battery` beyond what the machine's state exposes. Every field is
-  anchored against a second IOPS read, so the anchor is only as strong as the
-  present state: a machine on mains power leaves `minutes_remaining` at -1 in both
-  the sample and the anchor, a battery that is not charging cannot distinguish the
-  charging flag from a hard-coded 0, and a machine without a battery exercises
-  none of it;
-- `DarwinSystemCollector.capture()`, which is the largest hole on this list.
-  `capture()` (`DarwinSystemCollector.kt:156-325`) re-performs by hand every field
-  mapping the C harness spends 2500 lines pinning — some thirty
-  `field = sample.field` assignments — and nothing executes it: the only test that
-  names `DarwinSystemCollector` is `DarwinCollectorLimitsTest`, which covers the
+- the peer-uid gate inside `hm_unix_connect`, `hm_unix_accept` with a null
+  `peer_user_id`, and its bypass for uid 0: same reason. The server-side gate that
+  matters, `socket.accept-rejects-foreign-uid`, is covered.
+
+Anchored, but only as far as this machine's state separates the fields — each is
+argued at its check in `snapshot_test.c` or `attribution_test.c`:
+
+- `nice_ticks`, at `snapshot.processor-ticks-match-a-fresh-read`;
+- `package_idle_wakeups`, at `processes.own-sample-matches-a-fresh-rusage`;
+- any virtual memory or swap figure below the 8 MiB tolerance, and the swap
+  `encrypted` flag, at `snapshot.virtual-memory-matches-a-fresh-read` and
+  `snapshot.swap-and-virtual-memory-readable`;
+- `f_bfree` against `f_bavail`, the hard-coded `/`, and the summation across
+  block storage drivers, at `snapshot.storage-matches-a-fresh-read`;
+- the load averages on an idle machine, at
+  `snapshot.memory-and-load-match-a-fresh-read`;
+- every battery field the present power state does not exercise, at
+  `snapshot.battery-matches-a-fresh-read`;
+- the compressed-bytes sum where the compressor holds nothing of this account, at
+  `attribution.bytes-match-an-independent-walk`.
+
+And the largest hole on the list, which is Kotlin rather than C:
+
+- `DarwinSystemCollector.capture()` re-performs by hand every field mapping the C
+  harness spends 2500 lines pinning — some thirty `field = sample.field`
+  assignments — and nothing executes it: the only test that names
+  `DarwinSystemCollector` is `DarwinCollectorLimitsTest`, which covers the
   constructor arguments and never calls `capture()`. A `userTimeNs =
   sample.system_time_ns` written there produces exactly the report
   `processes.own-sample-matches-a-fresh-rusage` exists to prevent, and not one
@@ -386,7 +355,8 @@ src/dev/yoda/harmon/
   notify/     Notification Center, webhook, Telegram delivery
   runtime/    user-agent monitoring loop
 test/         flat directory, kotlin.test, shared fixtures in TestFixtures.kt
-  native/     the C harness: one binary from every *.c, no main outside main.c
+  native/     the C harness: one binary from every *.c, no main outside main.c,
+              one suite per file named after the prefix it reports under
 nativebridge/ kmp/lib module; cinterop/harmon_native.def holds the whole C
               bridge inline and is compiled by the Kotlin/Native cinterop tool
 selftest/     macos/app module depending on nativebridge; the binding checks
