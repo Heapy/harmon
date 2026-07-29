@@ -26,7 +26,7 @@ object HarmonApplication {
 
         when (command) {
             Command.Help -> println(CliParser.help())
-            Command.Version -> println("harmon 0.3.0")
+            Command.Version -> println("harmon 0.4.0")
             is Command.Collector -> runCollector(command)
             is Command.Run -> withConfig(command.configPath) { config ->
                 HarmonService(config, history = openHistory(config)).runForever()
