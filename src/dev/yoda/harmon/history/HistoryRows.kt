@@ -1,9 +1,12 @@
 package dev.yoda.harmon.history
 
+import dev.yoda.harmon.db.AlertsQueries
 import dev.yoda.harmon.db.ApplicationsQueries
 import dev.yoda.harmon.db.ProcessesQueries
 import dev.yoda.harmon.db.SamplesQueries
+import dev.yoda.harmon.model.Alert
 import dev.yoda.harmon.model.ApplicationUsage
+import dev.yoda.harmon.model.DeliveryResult
 import dev.yoda.harmon.model.ProcessUsage
 import dev.yoda.harmon.model.SystemUsage
 import kotlin.time.Instant
@@ -258,6 +261,53 @@ fun applicationIdsByPid(
             put(pid, applicationId)
         }
     }
+}
+
+/**
+ * Writes [alert] as one `alert` row: an alert the report actually carried, text and all.
+ *
+ * The severity goes in by name. `Severity.ordinal` would be one byte instead of eight, and would
+ * silently re-point every row already written the first time a constant is inserted into the enum —
+ * a WARNING from last week reading back as CRITICAL, with nothing to fail on.
+ */
+fun AlertsQueries.insertReportedAlert(sampleId: Long, alert: Alert) {
+    insertAlert(
+        sample_id = sampleId,
+        key = alert.key,
+        reported = true.toSqlLong(),
+        severity = alert.severity.name,
+        title = alert.title,
+        message = alert.message,
+    )
+}
+
+/**
+ * Writes one key from `MonitoringReport.suppressedAlertKeys` — over its threshold, but pushed out of
+ * the report by the per-category cap — as an `alert` row with `reported = 0` and no text.
+ *
+ * The key is all there is to write: the report carries nothing else about a suppressed alert. It is
+ * still worth a row, and the reason `reported` exists at all — a suppressed alert that was already
+ * firing is never pushed again, so this is the only place it is ever visible.
+ */
+fun AlertsQueries.insertSuppressedAlert(sampleId: Long, key: String) {
+    insertAlert(
+        sample_id = sampleId,
+        key = key,
+        reported = false.toSqlLong(),
+        severity = null,
+        title = null,
+        message = null,
+    )
+}
+
+/** Writes [result] as one `alert_delivery` row: what one channel did with this sample's push. */
+fun AlertsQueries.insertDeliveryResult(sampleId: Long, result: DeliveryResult) {
+    insertAlertDelivery(
+        sample_id = sampleId,
+        channel = result.channel,
+        successful = result.successful.toSqlLong(),
+        detail = result.detail,
+    )
 }
 
 /**

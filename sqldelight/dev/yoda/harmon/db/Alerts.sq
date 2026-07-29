@@ -1,0 +1,78 @@
+-- Every alert of one sample, both the ones the report carried and the ones it dropped. Few rows a
+-- day: alerts fire on thresholds, not on a schedule.
+--
+-- `reported` is what tells the two apart. A reported alert comes from MonitoringReport.alerts and
+-- brings its severity, title and message. A key from MonitoringReport.suppressedAlertKeys was over
+-- its threshold but lost to the per-category cap, and that list carries nothing but the key — hence
+-- reported = 0 and three null columns. Storing it is the entire reason the column exists: a
+-- suppressed alert that was already firing is never pushed again, so this row is the only trace it
+-- ever leaves.
+--
+-- severity holds the enum name rather than its ordinal. An ordinal re-points itself the day a
+-- constant is inserted into Severity, and every row written before that day would then read back as
+-- a different severity without anything failing.
+CREATE TABLE alert (
+  sample_id INTEGER NOT NULL REFERENCES sample(id) ON DELETE CASCADE,
+  key       TEXT NOT NULL,
+  reported  INTEGER NOT NULL,
+  severity  TEXT,
+  title     TEXT,
+  message   TEXT
+);
+
+-- What each notification channel did with this sample's push, the channels that failed included.
+-- `detail` is the channel's own account of the outcome, and a webhook that has been answering 500
+-- all night is visible nowhere else: the report says who was pushed, never who received it, and the
+-- retry backoff keeps no reason. Delivery is attempted once per sample, so a channel appears at most
+-- once per sample_id.
+CREATE TABLE alert_delivery (
+  sample_id  INTEGER NOT NULL REFERENCES sample(id) ON DELETE CASCADE,
+  channel    TEXT NOT NULL,
+  successful INTEGER NOT NULL,
+  detail     TEXT NOT NULL
+);
+
+-- Both tables hang off sample_id and are read one sample at a time, and the cascade behind
+-- `DELETE FROM sample` does one child lookup per removed sample — without an index each of those is
+-- a scan of the whole table. Cheaper here than anywhere else: these tables gain a handful of rows a
+-- day, not the ~222 000 of process_sample.
+CREATE INDEX alert_sample_id ON alert(sample_id);
+
+CREATE INDEX alert_delivery_sample_id ON alert_delivery(sample_id);
+
+-- Agent state rather than history, so retention must never touch it: no sample_id, no cascade. This
+-- is AlertState's per-key half — which keys were confirmed delivered, and how far the delivery
+-- backoff of a failing one has run — restored at startup so that a restart neither pushes an alert
+-- that was already firing a second time nor forgets the backoff a broken channel earned. The
+-- absolute sample number retry_at_sample counts against lives in agent_state.
+--
+-- There is deliberately no `firing` column: only firing keys enter a snapshot, so it would be 1 on
+-- every row. Written from task 9 onwards; the table exists now so the schema is created in one place.
+CREATE TABLE alert_state (
+  key             TEXT NOT NULL PRIMARY KEY,
+  settled         INTEGER NOT NULL,
+  failures        INTEGER NOT NULL,
+  retry_at_sample INTEGER NOT NULL
+);
+
+insertAlert:
+INSERT INTO alert(sample_id, key, reported, severity, title, message)
+VALUES (?, ?, ?, ?, ?, ?);
+
+-- Ordered by key rather than by insertion, which would need rowid: a key appears at most once per
+-- sample, since a suppressed key is by definition one the report did not carry.
+selectAlerts:
+SELECT *
+FROM alert
+WHERE sample_id = ?
+ORDER BY key;
+
+insertAlertDelivery:
+INSERT INTO alert_delivery(sample_id, channel, successful, detail)
+VALUES (?, ?, ?, ?);
+
+selectAlertDeliveries:
+SELECT *
+FROM alert_delivery
+WHERE sample_id = ?
+ORDER BY channel;
