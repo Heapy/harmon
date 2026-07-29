@@ -138,6 +138,53 @@ produces `build/tasks/_<directory>_linkMacosArm64Debug/harmon.kexe` instead.
 `selftest` lives in its own directory, so `_selftest_linkMacosArm64Debug` is
 stable everywhere.
 
+## The history database
+
+`harmon run` writes every sample to
+`~/Library/Application Support/Harmon/history.db` through SQLDelight. The `.sq`
+schema is in `sqldelight/dev/yoda/harmon/db/`, and `plugins/sqldelight-gen` — a
+`jvm/amper-plugin` module, registered in `project.yaml` and enabled in
+`module.yaml` — runs the SQLDelight compiler over it at build time. The
+compiler, its dialect and the runtime `native-driver` share one `version.ref` in
+`libs.versions.toml`; a mismatch between generator and driver surfaces as a
+compile error against a stranger's API rather than as a resolution failure.
+`docs/history.md` is the schema reference.
+
+Five facts that each cost a day to find. All were established in this
+repository; none are visible from the code that depends on them.
+
+**A `.sqm` file never runs.** The plugin generates with
+`deriveSchemaFromMigrations = false` and `verifyMigrations = false`, so `.sqm`
+files contribute nothing and the generated `Schema.migrate()` is a body that
+returns `QueryResult.Unit`. Adding a migration file and waiting for the driver
+to apply it fails silently. Schema evolution is hand-rolled in the store;
+`docs/history.md` has the two forms.
+
+**`PRAGMA auto_vacuum` belongs in `lifecycleConfig.onCreateConnection`.** That
+is the only hook sqliter runs before it applies `journal_mode`
+(open → onCreateConnection → synchronous → foreign keys → journal_mode →
+migrateIfNeeded). Once WAL has written a fresh file's header, `auto_vacuum` is
+frozen at 0 for the life of the file and only a full `VACUUM` cures it —
+retention then deletes rows and returns no space, which nothing reports.
+
+**Foreign keys are off on a fresh connection, and `inMemoryDriver(Schema)` does
+not turn them on.** A cascade test written against that driver passes without
+asserting anything. Tests open the store through `openOrNull` over a scratch
+`HOME` so they run the production `openHistoryDriver` configuration.
+
+**`last_insert_rowid()` has to be read inside the transaction that wrote.** The
+driver keeps a transaction pool apart from a reader pool; outside a transaction
+the query lands on a reader whose counter is 0, and every child row then fails
+its `sample_id` foreign key. `inMemoryDriver` hides this — it has one
+connection.
+
+**`PRAGMA incremental_vacuum` returns one empty row per freed page.** So
+`driver.execute` throws on the first `SQLITE_ROW`, after the preceding `DELETE`
+has already committed, and a bare `driver.executeQuery` hits the read-only pool
+and fails `SQLITE_READONLY`. It works as an `executeQuery` inside its own
+transaction. Invisible in a small database: a delete that frees no page returns
+no row.
+
 ## Layout
 
 ```text
@@ -146,21 +193,35 @@ src/dev/yoda/harmon/
   monitor/    privileged macOS collection and interval calculations
   analysis/   application grouping, alert rules, alert state
   config/     user-agent configuration
+  history/    the SQLite sample history, its retention, and the model mapping
   report/     text, HTML, and JSON reporting
   notify/     Notification Center, webhook, Telegram delivery
   runtime/    user-agent monitoring loop
 test/         flat directory, kotlin.test, shared fixtures in TestFixtures.kt
   native/     the C harness: one binary from every *.c, no main outside main.c,
               one suite per file named after the prefix it reports under
+sqldelight/   the .sq schema and queries; codegen output goes to the build tree
 nativebridge/ kmp/lib module; cinterop/harmon_native.def holds the whole C
               bridge inline and is compiled by the Kotlin/Native cinterop tool
 selftest/     macos/app module depending on nativebridge; the binding checks
               that ./kotlin test cannot reach
+plugins/sqldelight-gen/
+              jvm/amper-plugin module driving the SQLDelight compiler
 scripts/      install and uninstall flows, plus test-native.sh
-project.yaml  the extra modules; the root module is included implicitly
+project.yaml  the extra modules and the plugin; the root module is included
+              implicitly
+libs.versions.toml
+              one version.ref for the SQLDelight compiler and driver
 harmon.module-template.yaml
               settings.kotlin applied by every module
 ```
+
+`test/` is flat and its files declare no package, so a **private top-level
+classifier collides across files**: two files each declaring
+`private object Fake` fail with `redeclaration`, and the second file's own
+reference to it then fails with `it is private in file`. Private top-level
+functions and properties do not collide — same name, same signature, two files
+compiles. Verified A/B in this repository.
 
 Dependency injection is through constructor parameters with default values
 (`HarmonService`, `CollectorServer`, `UsageCalculator`, `DarwinSystemCollector`,
@@ -170,9 +231,11 @@ it, which fixes the order in some of those constructors.
 
 ## Documentation
 
-`README.md`, `docs/collection.md`, `docs/architecture.md`, and
-`docs/native-testing.md` describe observed behaviour, not intent. When
+`README.md`, `docs/collection.md`, `docs/architecture.md`, `docs/history.md`,
+and `docs/native-testing.md` describe observed behaviour, not intent. When
 collection limits, alert semantics, or metric definitions change, the doc change
-belongs in the same commit. The same rule binds `docs/native-testing.md` harder
+belongs in the same commit. `docs/history.md` carries the same obligation for
+the schema: it is the only interface the stored samples have, so a column added
+or renamed is a doc change in the same commit. The same rule binds `docs/native-testing.md` harder
 than the rest: its accepted-gaps list is only worth having while it is exhaustive,
 so a check that closes a gap removes its entry in the same commit.

@@ -22,9 +22,10 @@ credentials. The user agent never calls the process-inspection APIs directly.
 Both roles currently use the same native executable, installed at different,
 appropriately owned paths.
 
-See [the collection model](docs/collection.md) for metric definitions and
+See [the collection model](docs/collection.md) for metric definitions,
 [the service architecture](docs/architecture.md) for the privilege and IPC
-boundary.
+boundary, and [the sample history](docs/history.md) for the schema the stored
+samples are queried through.
 
 ## What Harmon monitors
 
@@ -302,8 +303,10 @@ confirmed delivery clears that backoff at once. Alert state is stored in the
 history database and resumed on restart, so an alert that never stopped firing
 is not pushed a second time and a failing channel keeps the backoff it earned.
 A stored state older than two sampling intervals is dropped rather than
-resumed: it describes a machine that has since moved on. With history turned
-off the agent starts from an empty state every time, as it did before.
+resumed: it describes a machine that has since moved on. So is one the database
+refuses to hand back: the failure is logged and the agent starts empty, because
+a damaged record of yesterday's monitoring must not cost today's. With history
+turned off the agent starts from an empty state every time, as it did before.
 
 The push text names only the alerts that fired on this sample. The attached HTML
 report and the JSON webhook payload both carry the sample's whole reported alert
@@ -353,7 +356,8 @@ Only `harmon run` writes. `once` and `diagnose` measure a two-second window
 instead of the sampling interval, so their numbers would mean something
 different inside the same series. Harmon itself reads the database only for the
 alert state it resumes after a restart; everything else is a `sqlite3` query
-against a schema that is meant to be queried by hand.
+against a schema that is meant to be queried by hand. That schema, with the
+queries worth starting from, is [the sample history](docs/history.md).
 
 ## Install with launchd
 
@@ -412,7 +416,7 @@ selftest/      binding checks that run the bridge from Kotlin
 test/          unit tests, plus the C test harness in test/native
 launchd/       LaunchDaemon and LaunchAgent templates
 scripts/       install and uninstall flows, plus the C harness runner
-docs/          architecture and metric semantics
+docs/          architecture, metric semantics, and the history schema
 LICENSE        GPL-3.0-only license text
 ```
 

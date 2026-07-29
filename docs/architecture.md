@@ -94,10 +94,14 @@ and writing it would duplicate the process row it already wrote, line for line,
 several hundred times a sample.
 
 History is an addition to monitoring rather than a precondition for it. A
-database that cannot be opened costs the run its history and is reported once;
-a sample that cannot be written is rolled back whole and reported once until a
-write succeeds again, because sqliter prints a stack trace of its own before it
-throws and a full disk would otherwise fill the launchd log once per interval.
+database that cannot be opened costs the run its history and is reported once. A
+database that opens and then refuses the first read — the alert state, read while
+the agent is being constructed — costs that restore alone: the reason is logged
+and the agent starts from an empty alert state, rather than dying before its
+first sample and being restarted by launchd into the same death. A sample that
+cannot be written is rolled back whole and reported once until a write succeeds
+again, because sqliter prints a stack trace of its own before it throws and a
+full disk would otherwise fill the launchd log once per interval.
 
 ## IPC protocol
 
@@ -185,8 +189,9 @@ intended only for a socket under `/tmp` and does not improve process access.
   still-firing alert is never dropped; after three consecutive failed deliveries
   its retries widen from two samples up to thirty-two, and any confirmed
   delivery clears that backoff. Alert state is written to history with each
-  sample and resumed on restart, unless it is older than two sampling intervals
-  or history is turned off, in which case the agent starts from an empty state.
+  sample and resumed on restart, unless it is older than two sampling intervals,
+  unreadable, or history is turned off, in which case the agent starts from an
+  empty state.
 - Reports carry at most `maxAlertsPerCategory` alerts per rule and name every
   key the cap left out in `suppressedAlertKeys`, so a dropped alert is
   distinguishable from a cleared one and the count is the whole overflow. The

@@ -1,5 +1,525 @@
 # Sample history
 
+`harmon run` writes every sample it takes to
+`~/Library/Application Support/Harmon/history.db`, and nothing reads it back
+except the agent's own alert state. There is no `harmon history` command: the
+schema below is the interface, and `sqlite3` is the client.
+
+```shell
+sqlite3 "$HOME/Library/Application Support/Harmon/history.db"
+```
+
+The agent holds the file open for the length of its run in WAL mode, so a
+reader can query it while the agent samples. `once` and `diagnose` measure a
+two-second window rather than the sampling interval and write nothing;
+`historyRetentionDays=0` writes nothing at all and creates no file.
+
+## Timestamps
+
+`sample.captured_at` is the only clock in the schema, and it is ISO-8601 **UTC**
+truncated to whole seconds — always exactly twenty characters,
+`YYYY-MM-DDTHH:MM:SSZ`. Every ordering and every retention comparison is a string
+comparison over that form, which is why it is fixed-width: `Instant.toString()`
+prints 0, 3, 6 or 9 fractional digits depending on the value, and
+`'2026-07-29T00:05:00.500Z' < '2026-07-29T00:05:00Z'` sorts the later moment
+first.
+
+Two consequences for anyone querying it:
+
+- questions about local time need `datetime(captured_at, 'localtime')`, or the
+  answer is off by the machine's offset — at UTC+3 the "three in the morning"
+  sample is stored as `00:00:00Z`;
+- a bound compared against `captured_at` has to be built in the same form.
+  `strftime('%Y-%m-%dT%H:%M:%SZ', 'now', '-1 day')` produces it;
+  `datetime('now', '-1 day')` does not — it yields a space instead of the `T`,
+  and the comparison then silently matches nothing.
+
+Going the other way, the `utc` modifier turns a local wall-clock time into the
+instant to look for: `strftime('%s', '2026-07-29 03:00:00', 'utc')`.
+
+`min()`, `max()` and `ORDER BY` over the column need no conversion at all; the
+fixed width is what makes the lexicographic order the chronological one.
+
+`process.started_at` is not a timestamp of this kind. It is the kernel's
+`ri_proc_start_abstime` — mach absolute ticks — carried through unchanged. It
+identifies one tenant of a pid and is not a date.
+
+## Queries
+
+The sample nearest a moment, and what was running in it:
+
+```sql
+SELECT p.name, p.pid, round(ps.cpu_percent, 1) AS cpu,
+       ps.physical_footprint_bytes / 1048576 AS mib
+FROM process_sample ps
+JOIN process p ON p.id = ps.process_id
+WHERE ps.sample_id = (
+    SELECT id FROM sample
+    ORDER BY abs(strftime('%s', captured_at) -
+                 strftime('%s', '2026-07-29 03:00:00', 'utc'))
+    LIMIT 1)
+ORDER BY ps.cpu_percent DESC
+LIMIT 20;
+```
+
+The system side of the last day, in local time:
+
+```sql
+SELECT datetime(captured_at, 'localtime') AS local_time,
+       round(processor_total_percent, 1)  AS cpu,
+       vm_free_bytes   / 1048576          AS free_mib,
+       swap_used_bytes / 1048576          AS swap_mib
+FROM sample
+WHERE captured_at >= strftime('%Y-%m-%dT%H:%M:%SZ', 'now', '-1 day')
+ORDER BY captured_at;
+```
+
+The heaviest applications over a window:
+
+```sql
+SELECT a.name,
+       max(aps.physical_footprint_bytes) / 1048576 AS peak_mib,
+       round(avg(aps.cpu_percent), 1)              AS mean_cpu,
+       max(aps.process_count)                      AS processes
+FROM application_sample aps
+JOIN application a ON a.id = aps.application_id
+JOIN sample s      ON s.id = aps.sample_id
+WHERE s.captured_at BETWEEN '2026-07-29T00:00:00Z' AND '2026-07-29T06:00:00Z'
+GROUP BY a.id
+ORDER BY peak_mib DESC
+LIMIT 10;
+```
+
+Which helpers of one application were busy, which is what
+`process_sample.application_id` exists for:
+
+```sql
+SELECT datetime(s.captured_at, 'localtime') AS local_time,
+       p.name, p.pid, round(ps.cpu_percent, 1) AS cpu
+FROM process_sample ps
+JOIN sample s      ON s.id = ps.sample_id
+JOIN process p     ON p.id = ps.process_id
+JOIN application a ON a.id = ps.application_id
+WHERE a.name = 'Google Chrome'
+  AND s.captured_at BETWEEN '2026-07-29T00:00:00Z' AND '2026-07-29T06:00:00Z'
+ORDER BY s.captured_at, ps.cpu_percent DESC;
+```
+
+One process across the window it lived in. The subquery is what makes this a
+question about a process rather than about a pid: a pid is recycled within
+minutes on a busy machine, and `(pid, started_at)` is what separates the tenants.
+
+```sql
+SELECT datetime(s.captured_at, 'localtime') AS local_time,
+       round(ps.cpu_percent, 1) AS cpu,
+       ps.physical_footprint_bytes / 1048576 AS mib
+FROM process_sample ps
+JOIN sample s ON s.id = ps.sample_id
+WHERE ps.process_id = (
+    SELECT id FROM process WHERE pid = 4711 ORDER BY started_at DESC LIMIT 1)
+ORDER BY s.captured_at;
+```
+
+Alerts, with the application an application alert names. The key of an
+application alert is the rule prefixed to `application.key`, so the join is a
+concatenation; a `LEFT JOIN` because not every alert is about an application, and
+because an alert about a bundle-less group has no row in `application` to reach —
+see below.
+
+```sql
+SELECT datetime(s.captured_at, 'localtime') AS local_time,
+       al.key, al.reported, al.severity, al.message, a.name AS application
+FROM alert al
+JOIN sample s           ON s.id = al.sample_id
+LEFT JOIN application a ON al.key IN ('cpu:' || a.key, 'memory:' || a.key)
+ORDER BY s.captured_at, al.key;
+```
+
+What a notification channel actually did — the one record of a webhook that has
+been answering 500 all night:
+
+```sql
+SELECT datetime(s.captured_at, 'localtime') AS local_time, d.channel, d.detail
+FROM alert_delivery d
+JOIN sample s ON s.id = d.sample_id
+WHERE d.successful = 0
+ORDER BY s.captured_at DESC
+LIMIT 20;
+```
+
+How far back the file goes:
+
+```sql
+SELECT count(*)                                AS samples,
+       datetime(min(captured_at), 'localtime') AS oldest,
+       datetime(max(captured_at), 'localtime') AS newest
+FROM sample;
+```
+
+## Schema
+
+`sqlite3 history.db .schema` prints the authoritative version; what follows is
+the same DDL with its inline comments taken out, and what each column carries.
+The source of every number is `docs/collection.md` — this document says which
+model field a column comes from, not what the metric means.
+
+Booleans are plain `INTEGER` 0/1 throughout. `INTEGER AS Boolean` would make
+SQLDelight demand a `ColumnAdapter<Boolean, Long>` through the database
+constructor, which is the plumbing the explicit conversions exist to avoid.
+`ULong` counters are stored as signed `INTEGER` clamped at `Long.MAX_VALUE`
+(`SqlConversions.kt`), so a byte count past 9.2 exabytes reads as that boundary
+rather than as a negative number.
+
+All three lookup keys are `AUTOINCREMENT`, so an id retention frees is never
+handed to a different row.
+
+### sample
+
+One row per sample, holding the whole of `SystemUsage` except its three lists.
+
+```sql
+CREATE TABLE sample (
+  id                                   INTEGER PRIMARY KEY AUTOINCREMENT,
+  captured_at                          TEXT NOT NULL,
+  elapsed_seconds                      REAL NOT NULL,
+  physical_memory_bytes                INTEGER NOT NULL,
+
+  swap_total_bytes                     INTEGER NOT NULL,
+  swap_available_bytes                 INTEGER NOT NULL,
+  swap_used_bytes                      INTEGER NOT NULL,
+  swap_encrypted                       INTEGER NOT NULL,
+
+  battery_available                    INTEGER NOT NULL,
+  on_battery                           INTEGER NOT NULL,
+  charging                             INTEGER NOT NULL,
+  battery_percentage                   INTEGER,
+  battery_minutes_remaining            INTEGER,
+
+  processor_total_percent              REAL NOT NULL,
+  processor_user_percent               REAL NOT NULL,
+  processor_system_percent             REAL NOT NULL,
+  processor_nice_percent               REAL NOT NULL,
+  processor_idle_percent               REAL NOT NULL,
+
+  load_average_1m                      REAL NOT NULL,
+  load_average_5m                      REAL NOT NULL,
+  load_average_15m                     REAL NOT NULL,
+
+  vm_free_bytes                        INTEGER NOT NULL,
+  vm_active_bytes                      INTEGER NOT NULL,
+  vm_inactive_bytes                    INTEGER NOT NULL,
+  vm_wired_bytes                       INTEGER NOT NULL,
+  vm_purgeable_bytes                   INTEGER NOT NULL,
+  vm_compressed_bytes                  INTEGER NOT NULL,
+  vm_uncompressed_bytes_in_compressor  INTEGER NOT NULL,
+  vm_swap_backed_uncompressed_bytes    INTEGER NOT NULL,
+  vm_page_in_bytes_per_second          REAL NOT NULL,
+  vm_page_out_bytes_per_second         REAL NOT NULL,
+  vm_fault_rate                        REAL NOT NULL,
+  vm_copy_on_write_fault_rate          REAL NOT NULL,
+  vm_compression_bytes_per_second      REAL NOT NULL,
+  vm_decompression_bytes_per_second    REAL NOT NULL,
+  vm_swap_in_bytes_per_second          REAL NOT NULL,
+  vm_swap_out_bytes_per_second         REAL NOT NULL,
+
+  storage_available                    INTEGER NOT NULL,
+  storage_device_count                 INTEGER NOT NULL,
+  storage_read_bytes_per_second        REAL NOT NULL,
+  storage_write_bytes_per_second       REAL NOT NULL,
+  storage_read_operations_per_second   REAL NOT NULL,
+  storage_write_operations_per_second  REAL NOT NULL,
+  storage_read_service_time_percent    REAL NOT NULL,
+  storage_write_service_time_percent   REAL NOT NULL,
+  storage_root_total_bytes             INTEGER NOT NULL,
+  storage_root_available_bytes         INTEGER NOT NULL,
+
+  total_process_count                  INTEGER NOT NULL,
+  inaccessible_process_count           INTEGER NOT NULL,
+  compressed_attribution_process_count INTEGER NOT NULL,
+  compressed_attribution_failure_count INTEGER NOT NULL
+);
+
+CREATE INDEX sample_captured_at ON sample(captured_at);
+```
+
+| Column group | Model | Notes |
+|---|---|---|
+| `captured_at` | `SystemUsage.capturedAt` | wall clock of the second of the two snapshots |
+| `elapsed_seconds` | `SystemUsage.elapsedSeconds` | the monotonic distance between those two snapshots, which every rate in the sample is divided by. Not the configured interval: a slow collector call widens it |
+| `physical_memory_bytes` | `SystemUsage.physicalMemoryBytes` | installed RAM |
+| `swap_*` | `SystemUsage.swap` | `swap_encrypted` is 0/1 |
+| `battery_*`, `on_battery`, `charging` | `SystemUsage.power` | the three flags are 0/1. `battery_percentage` and `battery_minutes_remaining` are null on a machine with no battery — null rather than 0, because 0 percent is a reading |
+| `processor_*` | `SystemUsage.processor` | percentages over `elapsed_seconds` |
+| `load_average_*` | `SystemUsage.loadAverages` | instantaneous, not derived from the interval |
+| `vm_*` | `SystemUsage.virtualMemory` | `*_bytes` are levels at the moment of the sample; `*_per_second` and `*_rate` are derived over `elapsed_seconds` |
+| `storage_*` | `SystemUsage.storage` | `storage_available = 0` means the device counters were not comparable across the two snapshots, and then all six rate columns are a written 0.0 rather than a reading. `storage_root_*` come from the snapshot either way |
+| the four counts | `SystemUsage.totalProcessCount`, `.inaccessibleProcessCount`, `.compressedAttributionProcessCount`, `.compressedAttributionFailureCount` | `total_process_count - inaccessible_process_count` is the number of `process_sample` rows the sample has |
+
+The index carries both readers: the time-slice query and the retention delete.
+
+### process, process_sample
+
+```sql
+CREATE TABLE process (
+  id              INTEGER PRIMARY KEY AUTOINCREMENT,
+  pid             INTEGER NOT NULL,
+  started_at      INTEGER NOT NULL,
+  name            TEXT NOT NULL,
+  executable_path TEXT,
+  uid             INTEGER,
+  parent_pid      INTEGER NOT NULL,
+  UNIQUE (pid, started_at)
+);
+
+CREATE TABLE process_sample (
+  sample_id                             INTEGER NOT NULL REFERENCES sample(id) ON DELETE CASCADE,
+  process_id                            INTEGER NOT NULL REFERENCES process(id),
+  application_id                        INTEGER REFERENCES application(id),
+
+  cpu_percent                           REAL NOT NULL,
+  user_cpu_percent                      REAL NOT NULL,
+  system_cpu_percent                    REAL NOT NULL,
+
+  physical_footprint_bytes              INTEGER NOT NULL,
+  resident_bytes                        INTEGER NOT NULL,
+  wired_bytes                           INTEGER NOT NULL,
+  lifetime_max_physical_footprint_bytes INTEGER NOT NULL,
+  compressed_or_paged_out_bytes         INTEGER,
+  virtual_memory_region_count           INTEGER,
+
+  wakeups_per_second                    REAL NOT NULL,
+  page_ins_per_second                   REAL NOT NULL,
+  disk_read_bytes_per_second            REAL NOT NULL,
+  disk_write_bytes_per_second           REAL NOT NULL,
+  logical_write_bytes_per_second        REAL NOT NULL,
+  instructions_per_second               REAL NOT NULL,
+  cycles_per_second                     REAL NOT NULL,
+  energy_watts                          REAL NOT NULL,
+  faults_per_second                     REAL NOT NULL,
+  copy_on_write_faults_per_second       REAL NOT NULL,
+  system_calls_per_second               REAL NOT NULL,
+  context_switches_per_second           REAL NOT NULL,
+  thread_count                          INTEGER NOT NULL,
+  running_thread_count                  INTEGER NOT NULL,
+  billed_energy_per_second              REAL NOT NULL,
+  battery_impact_score                  REAL NOT NULL
+);
+
+CREATE INDEX process_sample_sample_id ON process_sample(sample_id);
+```
+
+`process` is the lookup: `pid` and `started_at` are `ProcessUsage.identity`, the
+rest is the naming half of `ProcessUsage`, written once instead of 288 times a
+day. `uid` is null when the collector could not read it.
+
+`process_sample` is one row per readable process per sample — around 222 000 a
+day on a machine running several hundred processes — and every column after the
+three ids is a numeric field of `ProcessUsage` under the same name.
+`compressed_or_paged_out_bytes` and `virtual_memory_region_count` are null when
+the kernel refused that reading for the process, null rather than 0 for the same
+reason as the battery columns.
+
+`application_id` is the group the process was charged to, and null means the
+process runs outside an `.app` bundle rather than that the grouping failed. There
+is deliberately no `(process_id, sample_id)` index: it would add another 222 000
+entries a day to speed up a question a full scan of the window answers in a
+couple of seconds.
+
+### application, application_sample
+
+```sql
+CREATE TABLE application (
+  id          INTEGER PRIMARY KEY AUTOINCREMENT,
+  key         TEXT NOT NULL UNIQUE,
+  name        TEXT NOT NULL,
+  bundle_path TEXT NOT NULL
+);
+
+CREATE TABLE application_sample (
+  sample_id                             INTEGER NOT NULL REFERENCES sample(id) ON DELETE CASCADE,
+  application_id                        INTEGER NOT NULL REFERENCES application(id),
+  root_pid                              INTEGER NOT NULL,
+  process_count                         INTEGER NOT NULL,
+
+  cpu_percent                           REAL NOT NULL,
+  user_cpu_percent                      REAL NOT NULL,
+  system_cpu_percent                    REAL NOT NULL,
+
+  physical_footprint_bytes              INTEGER NOT NULL,
+  resident_bytes                        INTEGER NOT NULL,
+  wired_bytes                           INTEGER NOT NULL,
+  lifetime_max_physical_footprint_bytes INTEGER NOT NULL,
+  compressed_or_paged_out_bytes         INTEGER NOT NULL,
+  compressed_attribution_process_count  INTEGER NOT NULL,
+
+  wakeups_per_second                    REAL NOT NULL,
+  page_ins_per_second                   REAL NOT NULL,
+  disk_read_bytes_per_second            REAL NOT NULL,
+  disk_write_bytes_per_second           REAL NOT NULL,
+  logical_write_bytes_per_second        REAL NOT NULL,
+  instructions_per_second               REAL NOT NULL,
+  cycles_per_second                     REAL NOT NULL,
+  energy_watts                          REAL NOT NULL,
+  faults_per_second                     REAL NOT NULL,
+  copy_on_write_faults_per_second       REAL NOT NULL,
+  system_calls_per_second               REAL NOT NULL,
+  context_switches_per_second           REAL NOT NULL,
+  thread_count                          INTEGER NOT NULL,
+  running_thread_count                  INTEGER NOT NULL,
+  billed_energy_per_second              REAL NOT NULL,
+  battery_impact_score                  REAL NOT NULL
+);
+
+CREATE INDEX application_sample_sample_id ON application_sample(sample_id);
+```
+
+`application.key` is `ApplicationUsage.id`, which for a stored row is always
+`bundle:<hash of the bundle path>`. `name` and `bundle_path` are the rest of the
+group's identity; `bundle_path` is `NOT NULL` because a group without one is
+never written.
+
+`application_sample` is the aggregate `ApplicationGrouper` produced over the
+member processes, not a second copy of them: `root_pid` and `process_count` come
+from `ApplicationUsage`, and the rest are its numeric fields under the same names.
+`compressed_or_paged_out_bytes` is `NOT NULL` here while its `process_sample`
+counterpart is nullable — the grouper sums a refused reading as 0 and records how
+many members it could attribute in `compressed_attribution_process_count`, so the
+uncertainty is already a count.
+
+Both `application_sample_sample_id` and `process_sample_sample_id` are as much
+about the retention cascade as about reading: `DELETE FROM sample` does one child
+lookup per removed sample, and without an index each of those scans the whole
+window.
+
+### alert, alert_delivery
+
+```sql
+CREATE TABLE alert (
+  sample_id INTEGER NOT NULL REFERENCES sample(id) ON DELETE CASCADE,
+  key       TEXT NOT NULL,
+  reported  INTEGER NOT NULL,
+  severity  TEXT,
+  title     TEXT,
+  message   TEXT
+);
+
+CREATE TABLE alert_delivery (
+  sample_id  INTEGER NOT NULL REFERENCES sample(id) ON DELETE CASCADE,
+  channel    TEXT NOT NULL,
+  successful INTEGER NOT NULL,
+  detail     TEXT NOT NULL
+);
+
+CREATE INDEX alert_sample_id ON alert(sample_id);
+
+CREATE INDEX alert_delivery_sample_id ON alert_delivery(sample_id);
+```
+
+`reported = 1` is an alert the report carried, with its `Alert.severity`,
+`.title` and `.message`. `reported = 0` is a key from
+`MonitoringReport.suppressedAlertKeys` — over its threshold, but pushed out of
+the report by `maxAlertsPerCategory` — and that list carries nothing but the key,
+hence the three nulls. A suppressed alert that was already firing is never pushed
+again, so the row is the only trace it leaves anywhere.
+
+`severity` holds the enum name (`INFO`, `WARNING`, `CRITICAL`) rather than its
+ordinal, so that inserting a constant into `Severity` cannot re-point rows
+written before it.
+
+`alert.key` is the rule's key: `swap`, `swap-out`, `battery-low`, or
+`cpu:<application key>` and `memory:<application key>` for the per-application
+rules. A key appears at most once per sample.
+
+`alert_delivery` is what each notification channel did with this sample's push —
+`system`, `webhook` or `telegram`, once per sample each, failures included.
+`detail` is the channel's own account of the outcome.
+
+### alert_state, agent_state
+
+```sql
+CREATE TABLE alert_state (
+  key             TEXT NOT NULL PRIMARY KEY,
+  settled         INTEGER NOT NULL,
+  failures        INTEGER NOT NULL,
+  retry_at_sample INTEGER NOT NULL
+);
+
+CREATE TABLE agent_state (
+  singleton      INTEGER NOT NULL PRIMARY KEY CHECK (singleton = 1),
+  sample_counter INTEGER NOT NULL,
+  last_sample_at TEXT NOT NULL
+);
+```
+
+These two are the agent's own state rather than history. They hang off no sample,
+retention never touches them, and they are rewritten whole inside every sample
+transaction.
+
+`alert_state` holds the keys that were firing after the last sample, with
+`settled` — whether a channel ever confirmed delivery — and the delivery backoff
+a failing channel earned. `agent_state.sample_counter` is the absolute sample
+number `retry_at_sample` counts against, which is why the two have to be restored
+together: keys restored against a counter starting from zero would defer
+themselves for the life of the run.
+
+`agent_state.last_sample_at` is the `captured_at` of the sample the state was
+written with, and it is what decides whether the state is still worth restoring.
+The agent drops it past two sampling intervals and starts from an empty alert
+state.
+
+## Three things the schema does not carry
+
+**The first name a process was seen under.** The lookup insert is
+`INSERT … ON CONFLICT DO NOTHING` against `UNIQUE(pid, started_at)`, so `name`,
+`executable_path`, `uid` and `parent_pid` freeze at first sighting and are never
+corrected. Two ordinary events make them wrong afterwards: an `exec()` replaces
+the image without changing the pid or its start time, so the row keeps the name
+of the program that came before; and a process whose parent exits is re-parented
+to launchd, so `parent_pid` names a parent that is no longer the real one.
+Correcting either would cost an `UPDATE` per process per sample — around 222 000
+writes a day — to track something that almost never changes, and the row would
+then no longer describe the moment it was written either.
+
+**Application groups without a bundle.** `ApplicationGrouper` gives every process
+it cannot tie to an `.app` bundle a singleton group of its own, keyed
+`process:<pid>:<startedAt>`. Such a group is one process, and its aggregate is
+that process's own `process_sample` row copied line for line — several hundred a
+sample on an ordinary machine, and a lookup table growing at the speed of process
+churn. Neither the group nor its lookup row is written, which is what
+`process_sample.application_id IS NULL` means. Nothing is lost: the numbers are in
+the process row. Two consequences when querying: a `count(*)` over
+`application_sample` is a count of bundled applications only, and an alert key of
+the form `cpu:process:200:666` has no row in `application` to join to.
+
+**The per-process access failures.** `SystemUsage.processIssues` is not stored row
+by row. The four counters in `sample` are the historical record of it; the list of
+which process was refused for which reason is a `harmon diagnose` concern.
+
+## Changing the schema
+
+Nothing here is a migration yet. The schema has exactly one version, sqliter
+maintains `user_version` from it, and the generated `Schema.migrate()` is a body
+that returns `QueryResult.Unit`.
+
+**A `.sqm` file never runs.** `plugins/sqldelight-gen` drives the SQLDelight
+compiler with `deriveSchemaFromMigrations = false` and `verifyMigrations = false`,
+so `.sqm` files contribute nothing to generation and the empty `migrate()` is not
+an oversight — it is what those two flags produce. Adding a migration file and
+expecting the driver to apply it is the one mistake this section exists to
+prevent.
+
+Schema evolution therefore belongs in `HistoryStore` itself, in the two forms
+SQLite allows without one:
+
+- a new table as `CREATE TABLE IF NOT EXISTS` when the store opens;
+- a new column as an `ALTER TABLE … ADD COLUMN` guarded by a read of
+  `PRAGMA table_info(<table>)`, **not** by `runCatching`. sqliter prints the full
+  stack trace of a failing statement before it throws, so a swallowed exception is
+  still a wall of red in the launchd log on every agent start.
+
+None of this is implemented. The first change to the schema is where it gets
+written.
+
 ## Checking a change against a live machine
 
 The storage layer is covered by unit tests against real SQLite, but three of the
