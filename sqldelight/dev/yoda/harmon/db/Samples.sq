@@ -1,0 +1,29 @@
+-- Smoke-test schema for the build check: one row per monitoring sample. Deliberately trimmed to
+-- the column shapes the real schema uses -- TEXT key, REAL rate, INTEGER counter, and a nullable
+-- INTEGER -- so codegen is exercised over every mapping before the full schema is written.
+CREATE TABLE sample (
+  id                INTEGER PRIMARY KEY AUTOINCREMENT,
+  captured_at       TEXT NOT NULL,
+  elapsed_seconds   REAL NOT NULL,
+  total_process_count INTEGER NOT NULL,
+  battery_percentage  INTEGER
+);
+
+CREATE INDEX sample_captured_at ON sample(captured_at);
+
+insert:
+INSERT INTO sample(captured_at, elapsed_seconds, total_process_count, battery_percentage)
+VALUES (?, ?, ?, ?);
+
+lastInsertedId:
+SELECT last_insert_rowid();
+
+selectBetween:
+SELECT id, captured_at, elapsed_seconds, total_process_count, battery_percentage
+FROM sample
+WHERE captured_at BETWEEN ? AND ?
+ORDER BY captured_at;
+
+deleteOlderThan:
+DELETE FROM sample
+WHERE captured_at < ?;

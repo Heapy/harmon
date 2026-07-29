@@ -4,9 +4,22 @@ product:
 
 apply: [./harmon.module-template.yaml]
 
+plugins:
+  # Runs SQLDelight codegen over sqldelight/*.sq into this module's compilation.
+  # See plugins/sqldelight-gen/plugin.yaml.
+  sqldelight-gen: enabled
+
 dependencies:
   - ./nativebridge
+  # SQLDelight's native SQLite driver, over co.touchlab:sqliter-driver. A THIRD-PARTY klib that
+  # carries its own cinterop, which is why -- unlike our own nativebridge/cinterop/harmon_native.def
+  # -- it links into the TEST binary too (KTC-5573 only affects a module's own cinterop klibs).
+  - $libs.sqldelight.native.driver
 
 settings:
   kotlin:
     serialization: json
+    # sqliter's own `linkerOpts = -lsqlite3` is not propagated to the final Kotlin/Native link by
+    # toolchain 0.11.x, so both binaries fail with `ld: symbol(s) not found` for _sqlite3_*
+    # without this. Portable: -lsqlite3 is a system library in every macOS SDK, no -L needed.
+    freeCompilerArgs: [-linker-option, -lsqlite3]

@@ -1,0 +1,17 @@
+[versions]
+sqldelight = "2.3.2"
+sql-psi = "0.7.3"
+
+[libraries]
+# Build-time only: the SQLDelight compiler and everything it needs to parse .sq files
+# headlessly. Consumed by plugins/sqldelight-gen, never linked into the native binary.
+sqldelight-compiler-env = { module = "app.cash.sqldelight:compiler-env", version.ref = "sqldelight" }
+sqldelight-core = { module = "app.cash.sqldelight:core", version.ref = "sqldelight" }
+sqldelight-sqlite-dialect = { module = "app.cash.sqldelight:sqlite-3-38-dialect", version.ref = "sqldelight" }
+sql-psi-environment = { module = "app.cash.sql-psi:environment", version.ref = "sql-psi" }
+
+# Runtime driver for the native app. Its version must match the compiler above: the
+# generated code is written against this artifact's API, and a mismatch is a compile
+# error against a stranger's API rather than a resolution failure. One version.ref
+# for all five coordinates is the whole reason this catalogue exists.
+sqldelight-native-driver = { module = "app.cash.sqldelight:native-driver", version.ref = "sqldelight" }

@@ -2,4 +2,10 @@
 # listed here.
 modules:
   - ./nativebridge
+  # The build-time codegen plugin is also a normal module and must be listed here.
+  - ./plugins/sqldelight-gen
   - ./selftest
+
+plugins:
+  # Register the SQLDelight codegen plugin so the root module can enable it.
+  - ./plugins/sqldelight-gen

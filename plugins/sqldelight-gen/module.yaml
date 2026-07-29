@@ -1,0 +1,24 @@
+# sqldelight-gen — a build plugin that runs SQLDelight's code generation over sqldelight/*.sq
+# and contributes the generated Kotlin to the enabling module's compilation.
+#
+# SQLDelight ships only a Gradle plugin and the Kotlin Toolchain has no Gradle plugins, so the
+# compiler is driven directly from a @TaskAction (src/Generate.kt) over a vendored, Gradle-free
+# SqlDelightEnvironment (src/SqlDelightEnvironment.kt, Apache 2.0, (c) Square).
+#
+# This is a JVM module: it runs at BUILD time and is never linked into the native binary, so it
+# can depend on SQLDelight's heavy JVM compiler artifacts.
+product: jvm/amper-plugin
+
+dependencies:
+  # SqlDelightCompiler plus the input-model interfaces Generate.kt implements.
+  - $libs.sqldelight.core
+  # The SQLite dialect, discovered through ServiceLoader by SqlDelightEnvironment.
+  - $libs.sqldelight.sqlite.dialect
+  # com.alecstrong.sql.psi.core.SqlCoreEnvironment, which SqlDelightEnvironment extends.
+  - $libs.sql.psi.environment
+  # The shaded IntelliJ platform SqlCoreEnvironment needs. A ~48MB fat jar, build-time only.
+  - $libs.sqldelight.compiler.env
+
+settings:
+  kotlin:
+    version: 2.4.10
