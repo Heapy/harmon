@@ -1,5 +1,6 @@
 package dev.yoda.harmon.history
 
+import app.cash.sqldelight.db.QueryResult
 import app.cash.sqldelight.db.SqlDriver
 import app.cash.sqldelight.driver.native.NativeSqliteDriver
 import co.touchlab.sqliter.SynchronousFlag
@@ -171,9 +172,11 @@ class HistoryStore(
      * The lookups are cleaned last, because a process is orphaned only once the last sample naming it
      * is gone. Their `NOT IN` form is load-bearing; see the queries themselves.
      *
-     * The vacuum sits outside the transaction and returns [VACUUM_PAGE_LIMIT] pages at most. Deleting
-     * rows in WAL mode frees pages inside the file without shrinking it, and `auto_vacuum` is
+     * The vacuum runs in a transaction of its own and returns [VACUUM_PAGE_LIMIT] pages at most.
+     * Deleting rows in WAL mode frees pages inside the file without shrinking it, and `auto_vacuum` is
      * INCREMENTAL precisely so that this call, and only this call, decides when the space goes back.
+     * Separate from the delete so that a vacuum that fails cannot take the retention with it — the
+     * space is worth a retry, the samples are already gone either way.
      */
     fun prune(cutoff: String = retentionCutoff(Clock.System.now(), retentionDays)) {
         database.transaction {
@@ -181,11 +184,41 @@ class HistoryStore(
             database.processesQueries.deleteOrphanProcesses()
             database.applicationsQueries.deleteOrphanApplications()
         }
-        driver.execute(identifier = null, sql = INCREMENTAL_VACUUM_PRAGMA, parameters = 0)
+        returnFreedPages()
     }
 
     fun close() {
         driver.close()
+    }
+
+    /**
+     * Hands up to [VACUUM_PAGE_LIMIT] freed pages back to the file system.
+     *
+     * `PRAGMA incremental_vacuum` emits one row — empty, no columns — for every page it returns, and
+     * both halves of that fact decide how it has to be run. It cannot go through `driver.execute`,
+     * whose non-query path throws on the first `SQLITE_ROW` rather than vacuuming; and it cannot go
+     * through a bare `driver.executeQuery` either, because the driver sends reads to a pool of
+     * read-only connections and a vacuum there fails with `SQLITE_READONLY`. Inside a transaction the
+     * driver serves everything from the writing connection, which is what makes this work. Nothing is
+     * read from the cursor — stepping it is the work.
+     *
+     * Both failures are quiet in a way that matters: the first only appears once there is a page to
+     * reclaim, so a database small enough that a delete frees nothing at all never shows it.
+     */
+    private fun returnFreedPages() {
+        database.transaction {
+            driver.executeQuery(
+                identifier = null,
+                sql = INCREMENTAL_VACUUM_PRAGMA,
+                mapper = { cursor ->
+                    while (cursor.next().value) {
+                        /* One step, one page. */
+                    }
+                    QueryResult.Unit
+                },
+                parameters = 0,
+            ).value
+        }
     }
 
     /**

@@ -1,3 +1,5 @@
+import app.cash.sqldelight.db.QueryResult
+import app.cash.sqldelight.db.SqlDriver
 import dev.yoda.harmon.history.PRUNE_PERIOD_SECONDS
 import dev.yoda.harmon.history.retentionCutoff
 import dev.yoda.harmon.history.shouldPrune
@@ -7,6 +9,7 @@ import dev.yoda.harmon.model.MonitoringReport
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertTrue
+import kotlin.test.fail
 import kotlin.time.Clock
 import kotlin.time.Duration.Companion.seconds
 import kotlin.time.Instant
@@ -195,7 +198,57 @@ class RetentionTest {
             assertEquals(2L, store.driver.countRows("process"), "the stale lookup rows went too")
         }
     }
+
+    /**
+     * The pass has to return the space and not only drop the rows: `auto_vacuum` is INCREMENTAL, so
+     * pages a `DELETE` frees stay inside the file until the vacuum hands them back, and nothing but
+     * the pass ever asks it to.
+     *
+     * The width of the report is the point rather than a detail. `PRAGMA incremental_vacuum` yields
+     * one row per page it returns, a driver path that refuses rows throws on the first one, and on a
+     * database holding two processes per sample the free list is empty and the statement is done
+     * after a single step — so every other test in this file passes over a vacuum that never ran.
+     */
+    @Test
+    fun theRetentionPassReturnsTheSpaceAndNotOnlyTheRows() = withScratchHome { home ->
+        withHistoryStore(home) { store ->
+            repeat(4) { store.record(crowdedReport()) }
+            val allocated = store.driver.pageCount()
+
+            store.prune(AFTER_ALL_HISTORY)
+
+            assertEquals(0L, store.driver.countRows("process_sample"), "the rows were meant to go")
+            assertTrue(
+                store.driver.pageCount() < allocated,
+                "the file still spans $allocated pages with nothing left in it",
+            )
+        }
+    }
 }
+
+/** Processes per sample in [crowdedReport]; enough rows that deleting them frees whole pages. */
+private const val CROWD_SIZE = 250
+
+/** `PRAGMA page_count` — the size of the file in pages, which is what the vacuum changes. */
+private fun SqlDriver.pageCount(): Long = executeQuery(
+    identifier = null,
+    sql = "PRAGMA page_count",
+    mapper = { cursor ->
+        cursor.next()
+        QueryResult.Value(cursor.getLong(0))
+    },
+    parameters = 0,
+).value ?: fail("PRAGMA page_count returned no row")
+
+/** A sample wide enough to span pages of its own, so that dropping it can give pages back. */
+private fun crowdedReport(): MonitoringReport = MonitoringReport(
+    usage = systemUsage(
+        processes = (1..CROWD_SIZE).map { pid -> processUsage(pid = pid, name = "process-$pid") },
+    ).copy(capturedAt = ANCIENT),
+    alerts = emptyList(),
+    topProcessCount = 2,
+    suppressedAlertKeys = emptyList(),
+)
 
 /** Far enough back that every plausible retention window has already passed it by. */
 private val ANCIENT = Instant.parse("2020-01-01T00:00:00Z")
