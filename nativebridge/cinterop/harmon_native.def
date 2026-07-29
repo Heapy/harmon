@@ -872,7 +872,6 @@ static inline int hm_list_processes(
                 HMProcessIssue *issue = &issues[issue_count++];
                 memset(issue, 0, sizeof(*issue));
                 issue->pid = pid;
-                issue->uid = UINT32_MAX;
                 issue->reason = HM_PROCESS_ISSUE_RUSAGE;
                 issue->error_code = usage_errno;
                 hm_read_process_metadata(
@@ -891,7 +890,6 @@ static inline int hm_list_processes(
         HMProcessSample *sample = &output[written];
         memset(sample, 0, sizeof(*sample));
         sample->pid = pid;
-        sample->uid = UINT32_MAX;
         sample->started_at = usage.ri_proc_start_abstime;
         sample->user_time_ns = hm_mach_time_to_ns(usage.ri_user_time);
         sample->system_time_ns = hm_mach_time_to_ns(usage.ri_system_time);

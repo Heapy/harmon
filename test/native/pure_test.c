@@ -4,9 +4,10 @@
 #include "harness.h"
 
 /*
- * The arithmetic helpers of the bridge. Every one of them is `static inline` and
- * free of side effects, so the checks below are exact equalities rather than
- * plausibility bounds — the only suite in the harness that can afford them.
+ * The arithmetic helpers of the bridge, and at the end of the file the harness's
+ * own in `anchors.h`. Every one of them is `static inline` and free of side
+ * effects, so the checks below are exact equalities rather than plausibility
+ * bounds — the only suite in the harness that can afford them.
  */
 
 static void hm_check_saturating_add(void) {
@@ -434,6 +435,188 @@ static void hm_check_constants(void) {
     );
 }
 
+/*
+ * The harness's own comparison helpers, in `anchors.h`. They are as pure as the
+ * bridge's own, and they are the sole gate on nine anchored checks across
+ * `snapshot_test.c`, `processes_test.c` and `attribution_test.c`: those checks
+ * see the second reading they compare only through `hm_absolute_difference`, one
+ * of the two table loops, or a `hm_lowest`/`hm_highest` pair. A helper that
+ * silently agrees with everything therefore turns them green over a broken
+ * bridge, and each of the corruptions below was measured doing exactly that —
+ * applied together with a bridge defect, all other checks stayed green:
+ *
+ *   - `hm_absolute_difference` returning 0 hides a transposed swap used/avail
+ *     pair, transposed processor user/system ticks, a battery percentage off by
+ *     a factor of ten and a monotonic clock scaled by 1e6;
+ *   - a table loop that always continues hides transposed storage read/write
+ *     times, a zeroed `compressed_bytes` and transposed rusage user/system time;
+ *   - `hm_below` returning 0 hides `wired_bytes` forced to 0;
+ *   - a widened `hm_lowest_int`/`hm_highest_int` hides a PID list truncated to a
+ *     quarter of the machine, which is the regression the harness exists for.
+ *
+ * So they are pinned the same way the bridge's pure functions are: exact values,
+ * both argument orders, the degenerate input and the boundary each one exists
+ * for.
+ */
+static void hm_check_anchor_arithmetic(void) {
+    CHECK(
+        "pure.anchor-absolute-difference",
+        hm_absolute_difference(7, 3) == 4 && hm_absolute_difference(3, 7) == 4 &&
+            hm_absolute_difference(5, 5) == 0 &&
+            hm_absolute_difference(UINT64_MAX, 0) == UINT64_MAX,
+        "expected 4/4/0/%llu, got %llu/%llu/%llu/%llu",
+        (unsigned long long)UINT64_MAX,
+        (unsigned long long)hm_absolute_difference(7, 3),
+        (unsigned long long)hm_absolute_difference(3, 7),
+        (unsigned long long)hm_absolute_difference(5, 5),
+        (unsigned long long)hm_absolute_difference(UINT64_MAX, 0)
+    );
+    /* The floor is the whole point: a bracket's low edge must not wrap to 2^64. */
+    CHECK(
+        "pure.anchor-below-floors-at-zero",
+        hm_below(10, 4) == 6 && hm_below(4, 4) == 0 && hm_below(4, 10) == 0 &&
+            hm_below(0, 1) == 0 && hm_below(UINT64_MAX, 1) == UINT64_MAX - 1,
+        "expected 6/0/0/0/%llu, got %llu/%llu/%llu/%llu/%llu",
+        (unsigned long long)(UINT64_MAX - 1),
+        (unsigned long long)hm_below(10, 4),
+        (unsigned long long)hm_below(4, 4),
+        (unsigned long long)hm_below(4, 10),
+        (unsigned long long)hm_below(0, 1),
+        (unsigned long long)hm_below(UINT64_MAX, 1)
+    );
+    CHECK(
+        "pure.anchor-lowest-and-highest",
+        hm_lowest(3, 9) == 3 && hm_lowest(9, 3) == 3 && hm_lowest(4, 4) == 4 &&
+            hm_lowest(0, UINT64_MAX) == 0 && hm_highest(3, 9) == 9 &&
+            hm_highest(9, 3) == 9 && hm_highest(4, 4) == 4 &&
+            hm_highest(0, UINT64_MAX) == UINT64_MAX,
+        "expected 3/3/4/0 lowest and 9/9/4/%llu highest, got %llu/%llu/%llu/%llu "
+            "and %llu/%llu/%llu/%llu",
+        (unsigned long long)UINT64_MAX,
+        (unsigned long long)hm_lowest(3, 9),
+        (unsigned long long)hm_lowest(9, 3),
+        (unsigned long long)hm_lowest(4, 4),
+        (unsigned long long)hm_lowest(0, UINT64_MAX),
+        (unsigned long long)hm_highest(3, 9),
+        (unsigned long long)hm_highest(9, 3),
+        (unsigned long long)hm_highest(4, 4),
+        (unsigned long long)hm_highest(0, UINT64_MAX)
+    );
+    /*
+     * The `int` pair takes a negative argument as well: `proc_listallpids`
+     * reports a failed count as -1, and the process bracket is built out of two
+     * of those counts, so the comparison has to be the signed one.
+     */
+    CHECK(
+        "pure.anchor-lowest-and-highest-int",
+        hm_lowest_int(3, 9) == 3 && hm_lowest_int(9, 3) == 3 &&
+            hm_lowest_int(4, 4) == 4 && hm_lowest_int(-1, 0) == -1 &&
+            hm_highest_int(3, 9) == 9 && hm_highest_int(9, 3) == 9 &&
+            hm_highest_int(4, 4) == 4 && hm_highest_int(-1, 0) == 0,
+        "expected 3/3/4/-1 lowest and 9/9/4/0 highest, got %d/%d/%d/%d and %d/%d/%d/%d",
+        hm_lowest_int(3, 9),
+        hm_lowest_int(9, 3),
+        hm_lowest_int(4, 4),
+        hm_lowest_int(-1, 0),
+        hm_highest_int(3, 9),
+        hm_highest_int(9, 3),
+        hm_highest_int(4, 4),
+        hm_highest_int(-1, 0)
+    );
+}
+
+/*
+ * The two table loops, over tables built so that both ways of breaking a loop
+ * fail: the first entry is inside its allowance and a later one is outside, so a
+ * loop that always continues reports nothing and a loop that always reports the
+ * first entry names the wrong field. A second outlier behind the first makes
+ * "the first" a claim rather than a coincidence, and the values written back are
+ * pinned too — they are what the failure message of every anchored check prints.
+ */
+static void hm_check_anchor_tables(void) {
+    /* 100 apart at a tolerance of 100 is inside it; 101 is not. */
+    const HMAnchoredField anchored[] = {
+        {"agrees-exactly", 4096, 4096, 0},
+        {"at-the-tolerance", 4096, 4196, 100},
+        {"past-the-tolerance", 4096, 4197, 100},
+        {"further-still", 4096, 8192, 100},
+    };
+    uint64_t reported = 0;
+    uint64_t anchor = 0;
+    const char *mismatch = HM_FIRST_MISMATCH(anchored, &reported, &anchor);
+    CHECK(
+        "pure.anchor-first-mismatch-names-the-first-outlier",
+        mismatch != NULL && strcmp(mismatch, "past-the-tolerance") == 0 &&
+            reported == 4096 && anchor == 4197,
+        "expected past-the-tolerance reporting 4096 against 4197, got %s reporting "
+            "%llu against %llu",
+        mismatch == NULL ? "no mismatch" : mismatch,
+        (unsigned long long)reported,
+        (unsigned long long)anchor
+    );
+
+    /* The same allowance read from both sides, so neither direction reports. */
+    const HMAnchoredField agreeing[] = {
+        {"agrees-exactly", 4096, 4096, 0},
+        {"below-the-anchor", 4096, 4196, 100},
+        {"above-the-anchor", 4196, 4096, 100},
+    };
+    reported = 0;
+    anchor = 0;
+    const char *no_mismatch = HM_FIRST_MISMATCH(agreeing, &reported, &anchor);
+    CHECK(
+        "pure.anchor-first-mismatch-passes-a-table-within-tolerance",
+        no_mismatch == NULL,
+        "expected no mismatch, got %s reporting %llu against %llu",
+        no_mismatch == NULL ? "none" : no_mismatch,
+        (unsigned long long)reported,
+        (unsigned long long)anchor
+    );
+
+    /* Both edges of a bracket are inside it; one below and one above are not. */
+    const HMBracketedField bracketed[] = {
+        {"a-degenerate-range", 4096, 4096, 4096},
+        {"at-the-low-edge", 1024, 1024, 8192},
+        {"below-the-low-edge", 1023, 1024, 8192},
+        {"above-the-high-edge", 8193, 1024, 8192},
+    };
+    uint64_t low = 0;
+    uint64_t high = 0;
+    reported = 0;
+    const char *outside = HM_FIRST_OUTSIDE_RANGE(bracketed, &reported, &low, &high);
+    CHECK(
+        "pure.anchor-first-outside-range-names-the-first-outlier",
+        outside != NULL && strcmp(outside, "below-the-low-edge") == 0 &&
+            reported == 1023 && low == 1024 && high == 8192,
+        "expected below-the-low-edge reporting 1023 against 1024..8192, got %s "
+            "reporting %llu against %llu..%llu",
+        outside == NULL ? "nothing outside" : outside,
+        (unsigned long long)reported,
+        (unsigned long long)low,
+        (unsigned long long)high
+    );
+
+    const HMBracketedField inside[] = {
+        {"at-the-low-edge", 1024, 1024, 8192},
+        {"between-the-edges", 4096, 1024, 8192},
+        {"at-the-high-edge", 8192, 1024, 8192},
+    };
+    reported = 0;
+    low = 0;
+    high = 0;
+    const char *nothing_outside =
+        HM_FIRST_OUTSIDE_RANGE(inside, &reported, &low, &high);
+    CHECK(
+        "pure.anchor-first-outside-range-passes-a-bracketed-table",
+        nothing_outside == NULL,
+        "expected nothing outside its range, got %s reporting %llu against %llu..%llu",
+        nothing_outside == NULL ? "none" : nothing_outside,
+        (unsigned long long)reported,
+        (unsigned long long)low,
+        (unsigned long long)high
+    );
+}
+
 void hm_run_pure_tests(void) {
     hm_check_constants();
     hm_check_saturating_add();
@@ -444,4 +627,6 @@ void hm_run_pure_tests(void) {
     hm_check_mach_time();
     hm_check_monotonic_time();
     hm_check_discard_http_response();
+    hm_check_anchor_arithmetic();
+    hm_check_anchor_tables();
 }

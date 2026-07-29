@@ -100,7 +100,10 @@ the comment.
 
 Two shapes of anchor are in use — a *bracket* around the bridge's read and a
 *tolerance* on two reads in a row — and `test/native/anchors.h` describes both.
-Which fields take which: the bracket covers most of the process sample, the load
+The comparison helpers both shapes run through are pinned to exact values by the
+`pure.anchor-` checks, because between them they gate nine anchored checks: one
+that agreed with everything would turn all nine green over a broken bridge, and
+each corruption was measured doing exactly that. Which fields take which: the bracket covers most of the process sample, the load
 averages and the compressed bytes; a tolerance covers the tick counters, the
 virtual memory statistics, storage, swap and the battery estimate, and each is
 documented at its constant with what it was measured at. Neither is exact
@@ -279,6 +282,13 @@ Nothing reaches these at all:
 - the peer-uid gate inside `hm_unix_connect`, `hm_unix_accept` with a null
   `peer_user_id`, and its bypass for uid 0: same reason. The server-side gate that
   matters, `socket.accept-rejects-foreign-uid`, is covered.
+
+One piece of the C harness is on this list rather than the bridge:
+`hm_top_up_own_processes` in `processes_test.c` forks the shortfall of
+rusage-readable processes the two issue checks need, and no run on a desktop
+account can tell whether it works — 585 are there already, so a version that
+forks nothing leaves every check green. It matters only on the account that
+needs it, which is the one this machine cannot be.
 
 Anchored, but only as far as this machine's state separates the fields — each is
 argued at its check in `snapshot_test.c` or `attribution_test.c`:
