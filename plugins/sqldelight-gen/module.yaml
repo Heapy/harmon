@@ -9,6 +9,9 @@
 # can depend on SQLDelight's heavy JVM compiler artifacts.
 product: jvm/amper-plugin
 
+# The same Kotlin settings every other module gets, allWarningsAsErrors included.
+apply: [../../harmon.module-template.yaml]
+
 dependencies:
   # SqlDelightCompiler plus the input-model interfaces Generate.kt implements.
   - $libs.sqldelight.core
@@ -18,7 +21,3 @@ dependencies:
   - $libs.sql.psi.environment
   # The shaded IntelliJ platform SqlCoreEnvironment needs. A ~48MB fat jar, build-time only.
   - $libs.sqldelight.compiler.env
-
-settings:
-  kotlin:
-    version: 2.4.10

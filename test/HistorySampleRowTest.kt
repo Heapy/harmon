@@ -131,8 +131,9 @@ class HistorySampleRowTest {
     }
 
     /**
-     * Counters past the signed boundary are clamped rather than wrapped, so a byte count never comes
-     * back negative. `toSqlLong` owns the rule; this pins that the write path actually goes through it.
+     * Counters past the signed boundary are clamped rather than wrapped, so a byte count never
+     * comes back negative. `toSqlLong` owns the rule; this pins that the write path actually goes
+     * through it.
      */
     @Test
     fun aCounterAboveTheSignedBoundaryIsClampedOnTheWayIn() {

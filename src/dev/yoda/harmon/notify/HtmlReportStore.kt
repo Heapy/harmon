@@ -1,5 +1,6 @@
 package dev.yoda.harmon.notify
 
+import dev.yoda.harmon.util.systemErrorText
 import kotlinx.cinterop.BetaInteropApi
 import kotlinx.cinterop.ExperimentalForeignApi
 import kotlinx.cinterop.ObjCObjectVar
@@ -15,7 +16,6 @@ import platform.Foundation.NSFileManager
 import platform.posix.S_IRUSR
 import platform.posix.S_IWUSR
 import platform.posix.chmod
-import platform.posix.errno
 import platform.posix.fclose
 import platform.posix.fflush
 import platform.posix.fileno
@@ -25,7 +25,6 @@ import platform.posix.fwrite
 import platform.posix.getpid
 import platform.posix.getenv
 import platform.posix.rename
-import platform.posix.strerror
 import platform.posix.unlink
 
 internal class HtmlReportStore(
@@ -104,12 +103,8 @@ internal class HtmlReportStore(
         }
     }
 
-    @OptIn(ExperimentalForeignApi::class)
-    private fun fileFailure(message: String): IllegalStateException {
-        val code = errno
-        val reason = strerror(code)?.toKString() ?: "error $code"
-        return IllegalStateException("$message: $reason")
-    }
+    private fun fileFailure(message: String): IllegalStateException =
+        IllegalStateException("$message: ${systemErrorText()}")
 
     private companion object {
         @OptIn(ExperimentalForeignApi::class)

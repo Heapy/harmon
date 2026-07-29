@@ -52,9 +52,15 @@ class HistoryTimestampTest {
      */
     @Test
     fun truncatesTowardsTheSecondAndKeepsZeroSeconds() {
-        assertEquals("2026-07-29T00:05:00Z", Instant.parse("2026-07-29T00:05:00.999999999Z").toSqlTimestamp())
+        assertEquals(
+            "2026-07-29T00:05:00Z",
+            Instant.parse("2026-07-29T00:05:00.999999999Z").toSqlTimestamp(),
+        )
         assertEquals("2026-07-29T00:05:00Z", Instant.parse("2026-07-29T00:05:00Z").toSqlTimestamp())
-        assertEquals("2026-07-29T00:05:07Z", Instant.parse("2026-07-29T00:05:07.123456789Z").toSqlTimestamp())
+        assertEquals(
+            "2026-07-29T00:05:07Z",
+            Instant.parse("2026-07-29T00:05:07.123456789Z").toSqlTimestamp(),
+        )
         assertEquals("1970-01-01T00:00:00Z", Instant.fromEpochSeconds(0).toSqlTimestamp())
     }
 }

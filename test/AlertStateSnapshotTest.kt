@@ -34,8 +34,8 @@ class AlertStateSnapshotTest {
     /**
      * The point of putting the sample counter in the snapshot. `retryAtSample` is an absolute sample
      * number, so keys restored against a counter starting at zero would be waiting for a sample
-     * thousands of intervals out — an alert with an earned backoff would never be pushed again, which
-     * is a worse outcome than the duplicate push restoring exists to prevent.
+     * thousands of intervals out — an alert with an earned backoff would never be pushed again,
+     * which is a worse outcome than the duplicate push restoring exists to prevent.
      */
     @Test
     fun aRestoredKeyWaitsOutExactlyTheBackoffItHadLeft() {
@@ -97,7 +97,8 @@ class AlertStateSnapshotTest {
             }
             val snapshot = state.snapshot()
             assertTrue(
-                snapshot.keys.values.any { it.settled } && snapshot.keys.values.any { it.failures > 0 },
+                snapshot.keys.values.any { it.settled } &&
+                    snapshot.keys.values.any { it.failures > 0 },
                 "a round trip over rows that are all zero would prove nothing",
             )
 

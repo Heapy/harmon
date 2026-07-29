@@ -1,6 +1,4 @@
-import dev.yoda.harmon.db.HarmonDatabase
 import dev.yoda.harmon.history.insertProcessUsage
-import dev.yoda.harmon.history.insertSample
 import dev.yoda.harmon.history.upsertProcess
 import dev.yoda.harmon.model.ProcessIdentity
 import dev.yoda.harmon.model.ProcessUsage
@@ -151,16 +149,6 @@ class HistoryProcessRowTest {
         assertNull(stored.compressed_or_paged_out_bytes)
         assertNull(stored.virtual_memory_region_count)
     }
-
-}
-
-/**
- * A sample row for the process rows to hang off. Nothing about it is asserted — `sample_id` just
- * needs a parent that exists — so the fixture is the right source here.
- */
-private fun HarmonDatabase.insertParentSample(): Long {
-    samplesQueries.insertSample(systemUsage(emptyList()))
-    return samplesQueries.lastInsertedId().executeAsOne()
 }
 
 /**

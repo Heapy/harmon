@@ -16,8 +16,9 @@ import kotlin.time.Instant
  * None of these is hypothetical: a desktop Mac has no battery, an unreadable drive yields no storage
  * counters, a quiet hour produces no alerts, and a sample in which every readable process lives
  * outside an `.app` bundle leaves both application tables empty. Each of them empties a list the
- * write path iterates or a subquery the retention pass compares against — and `NOT IN` over an empty
- * subquery is true for every row, where `NOT IN` over an occupied one is true for almost none.
+ * write path iterates or a subquery the retention pass compares against — and `NOT IN` over an
+ * empty subquery is true for every row, where `NOT IN` over an occupied one is true for almost
+ * none.
  *
  * All of it goes through the configured store rather than `inMemoryDriver`: the questions here are
  * about foreign keys and about what a cascade leaves behind, and an in-memory driver has foreign
@@ -26,9 +27,10 @@ import kotlin.time.Instant
 class HistoryEdgeCaseTest {
 
     /**
-     * The collector can come back with nothing readable — every process refused, or none matched. The
-     * sample is still a reading and still belongs in the series: it says the machine looked empty at
-     * this moment, and dropping it would leave a gap no reader could tell from an agent that was down.
+     * The collector can come back with nothing readable — every process refused, or none matched.
+     * The sample is still a reading and still belongs in the series: it says the machine looked
+     * empty at this moment, and dropping it would leave a gap no reader could tell from an agent
+     * that was down.
      */
     @Test
     fun aSampleWithNoProcessesIsStillWritten() = withScratchHome { home ->
@@ -83,7 +85,11 @@ class HistoryEdgeCaseTest {
             assertEquals(2, store.samples().size)
             assertTrue(store.database.alertsQueries.selectAlerts(quiet.id).executeAsList().isEmpty())
             assertEquals(0L, store.driver.countRows("alert_state"))
-            assertEquals(1L, store.driver.countRows("alert_delivery"), "the earlier sample kept its own")
+            assertEquals(
+                1L,
+                store.driver.countRows("alert_delivery"),
+                "the earlier sample kept its own",
+            )
         }
     }
 

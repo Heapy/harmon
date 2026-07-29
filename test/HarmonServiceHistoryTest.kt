@@ -1,3 +1,4 @@
+import app.cash.sqldelight.db.SqlDriver
 import dev.yoda.harmon.analysis.AlertState
 import dev.yoda.harmon.config.HarmonConfig
 import dev.yoda.harmon.config.NotificationConfig
@@ -12,6 +13,7 @@ import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertNotNull
 import kotlin.test.assertTrue
+import kotlin.test.fail
 import kotlin.time.Clock
 import kotlin.time.Duration.Companion.seconds
 import kotlin.time.Instant
@@ -33,15 +35,17 @@ private const val FIRING_KEY = "memory:process:42:100"
 private const val INTERVAL_SECONDS = 300L
 
 /**
- * `alert` as the schema declares it, for putting back after a test has dropped it to break a write.
- * Only the columns matter here — the index and the comments are the schema's business, and a write
- * that works again is all this has to buy.
+ * The `CREATE TABLE` sqlite itself holds for [table], read back so that a test can drop the table
+ * and put it back exactly as `Alerts.sq` declared it.
+ *
+ * Read rather than written out here on purpose: a hand-copied DDL goes stale the day a column is
+ * added, and a green test against a table that no longer matches the schema is worth nothing —
+ * which is precisely the recovery path this file exists to prove.
  */
-private const val RECREATED_ALERT_TABLE =
-    "CREATE TABLE alert (" +
-        "sample_id INTEGER NOT NULL REFERENCES sample(id) ON DELETE CASCADE, " +
-        "key TEXT NOT NULL, reported INTEGER NOT NULL, " +
-        "severity TEXT, title TEXT, message TEXT)"
+private fun SqlDriver.createStatementFor(table: String): String =
+    scalar("SELECT sql FROM sqlite_master WHERE type = 'table' AND name = '$table'") {
+        it.getString(0)
+    } ?: fail("sqlite_master has no CREATE TABLE for $table")
 
 /**
  * Covers the history write where the agent loop performs it, against the database it writes to.
@@ -183,11 +187,12 @@ class HarmonServiceHistoryTest {
         withHistoryStore(home, intervalSeconds = INTERVAL_SECONDS) { store ->
             val errors = mutableListOf<String>()
             val service = serviceOver(store, logError = { errors += it })
+            val recreateAlert = store.driver.createStatementFor("alert")
 
             store.driver.execute(null, "DROP TABLE alert", 0)
             service.handleSample(snapshotAt(0uL, OVER_THRESHOLD), snapshotAt(1uL, OVER_THRESHOLD))
 
-            store.driver.execute(null, RECREATED_ALERT_TABLE, 0)
+            store.driver.execute(null, recreateAlert, 0)
             service.handleSample(snapshotAt(2uL, OVER_THRESHOLD), snapshotAt(3uL, OVER_THRESHOLD))
 
             store.driver.execute(null, "DROP TABLE alert", 0)

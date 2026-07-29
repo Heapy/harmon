@@ -11,20 +11,6 @@ import dev.yoda.harmon.model.ApplicationUsage
 import dev.yoda.harmon.model.DeliveryResult
 import dev.yoda.harmon.model.ProcessUsage
 import dev.yoda.harmon.model.SystemUsage
-import kotlin.time.Instant
-
-/**
- * The instant as `sample.captured_at` stores it: ISO-8601 UTC truncated to whole seconds, so the
- * string is always exactly `YYYY-MM-DDTHH:MM:SSZ`.
- *
- * Fixed width is the requirement, not the precision. [Instant.toString] prints 0, 3, 6 or 9
- * fractional digits depending on the value, and
- * `'2026-07-29T00:05:00.500Z' < '2026-07-29T00:05:00Z'` — the later moment sorts first.
- * `ORDER BY captured_at` and the retention cutoff both compare these strings, so a variable-width
- * fraction would silently reorder history and strand rows past the cutoff. The sampling interval
- * is hundreds of seconds; sub-second precision carries no information.
- */
-fun Instant.toSqlTimestamp(): String = Instant.fromEpochSeconds(epochSeconds).toString()
 
 /**
  * Writes [usage] as one `sample` row. The caller takes the new id from `lastInsertedId`.

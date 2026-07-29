@@ -17,16 +17,13 @@ import kotlin.test.assertTrue
 class ConfigLoaderTest {
     @Test
     fun parsesValuesAndAcceptsLegacyProcessThresholdKeys() {
-        val config = ConfigLoader.parse(
-            lines = sequenceOf(
-                "# harmon",
-                "intervalSeconds=60",
-                "processCpuAlertPercent=0",
-                "applicationMemoryAlertMiB=4096",
-                "systemNotifications=no",
-                "webhookUrl=https://example.test/events",
-            ),
-            environment = emptyMap(),
+        val config = parseConfig(
+            "# harmon",
+            "intervalSeconds=60",
+            "processCpuAlertPercent=0",
+            "applicationMemoryAlertMiB=4096",
+            "systemNotifications=no",
+            "webhookUrl=https://example.test/events",
         )
 
         assertEquals(60, config.intervalSeconds)
@@ -84,10 +81,7 @@ class ConfigLoaderTest {
     @Test
     fun rejectsASampleWindowOutsideTheSharedRange() {
         val failure = assertFailsWith<ConfigException> {
-            ConfigLoader.parse(
-                lines = sequenceOf("onceSampleSeconds=${SAMPLE_SECONDS_RANGE.last + 1}"),
-                environment = emptyMap(),
-            )
+            parseConfig("onceSampleSeconds=${SAMPLE_SECONDS_RANGE.last + 1}")
         }
 
         assertContains(failure.message.orEmpty(), "onceSampleSeconds must be between")
@@ -96,37 +90,25 @@ class ConfigLoaderTest {
     @Test
     fun rejectsUnknownKeys() {
         assertFailsWith<ConfigException> {
-            ConfigLoader.parse(
-                lines = sequenceOf("intervallSeconds=60"),
-                environment = emptyMap(),
-            )
+            parseConfig("intervallSeconds=60")
         }
     }
 
     @Test
     fun rejectsMemoryAndSwapThresholdsAboveOneTebibyte() {
         assertFailsWith<ConfigException> {
-            ConfigLoader.parse(
-                lines = sequenceOf("applicationMemoryAlertMiB=1048577"),
-                environment = emptyMap(),
-            )
+            parseConfig("applicationMemoryAlertMiB=1048577")
         }
         assertFailsWith<ConfigException> {
-            ConfigLoader.parse(
-                lines = sequenceOf("swapAlertMiB=1048577"),
-                environment = emptyMap(),
-            )
+            parseConfig("swapAlertMiB=1048577")
         }
     }
 
     @Test
     fun acceptsMemoryAndSwapThresholdsAtOneTebibyte() {
-        val config = ConfigLoader.parse(
-            lines = sequenceOf(
-                "applicationMemoryAlertMiB=1048576",
-                "swapAlertMiB=1048576",
-            ),
-            environment = emptyMap(),
+        val config = parseConfig(
+            "applicationMemoryAlertMiB=1048576",
+            "swapAlertMiB=1048576",
         )
 
         assertEquals(1_048_576L, config.thresholds.applicationMemoryMiB)
@@ -135,27 +117,21 @@ class ConfigLoaderTest {
 
     @Test
     fun readsTerminalApplicationsAsALowerCasedListThatReplacesTheDefaults() {
-        val config = ConfigLoader.parse(
-            lines = sequenceOf("terminalApplications= Foo , bar ,, Foo "),
-            environment = emptyMap(),
-        )
+        val config = parseConfig("terminalApplications= Foo , bar ,, Foo ")
 
         assertEquals(setOf("foo", "bar"), config.terminalApplications)
     }
 
     @Test
     fun readsAnEmptyTerminalApplicationsValueAsNoTerminalsAtAll() {
-        val config = ConfigLoader.parse(
-            lines = sequenceOf("terminalApplications="),
-            environment = emptyMap(),
-        )
+        val config = parseConfig("terminalApplications=")
 
         assertEquals(emptySet(), config.terminalApplications)
     }
 
     @Test
     fun keepsTheDefaultTerminalListWhenTheKeyIsAbsent() {
-        val config = ConfigLoader.parse(lines = emptySequence(), environment = emptyMap())
+        val config = parseConfig()
 
         assertEquals(DEFAULT_TERMINAL_APPLICATIONS, config.terminalApplications)
         assertContains(
@@ -167,10 +143,7 @@ class ConfigLoaderTest {
     @Test
     fun doesNotMistakeAHostnamePrefixForLocalhost() {
         assertFailsWith<ConfigException> {
-            ConfigLoader.parse(
-                lines = sequenceOf("webhookUrl=http://127.0.0.1.evil.example/events"),
-                environment = emptyMap(),
-            )
+            parseConfig("webhookUrl=http://127.0.0.1.evil.example/events")
         }
     }
 
@@ -187,7 +160,7 @@ class ConfigLoaderTest {
             "http://127.0.0.1\\@evil.example/hook",
         ).forEach { url ->
             val failure = assertFailsWith<ConfigException>(url) {
-                ConfigLoader.parse(sequenceOf("webhookUrl=$url"), environment = emptyMap())
+                parseConfig("webhookUrl=$url")
             }
 
             assertContains(assertNotNull(failure.message), "webhookUrl must use HTTPS")
@@ -197,10 +170,7 @@ class ConfigLoaderTest {
     /** Userinfo in front of a genuine loopback host is still loopback, and still cleartext-safe. */
     @Test
     fun acceptsCredentialsInFrontOfALoopbackHost() {
-        val config = ConfigLoader.parse(
-            lines = sequenceOf("webhookUrl=http://user:secret@127.0.0.1:9000/hook"),
-            environment = emptyMap(),
-        )
+        val config = parseConfig("webhookUrl=http://user:secret@127.0.0.1:9000/hook")
 
         assertEquals(
             "http://user:secret@127.0.0.1:9000/hook",
@@ -281,6 +251,12 @@ class ConfigLoaderTest {
     }
 }
 
+/**
+ * A config file and nothing else — no environment, no warning sink.
+ *
+ * Which is what almost every test here wants. The two that call `ConfigLoader.parse` directly are
+ * the two with something to say about the other arguments.
+ */
 private fun parseConfig(vararg lines: String): HarmonConfig =
     ConfigLoader.parse(lines = lines.asSequence(), environment = emptyMap())
 

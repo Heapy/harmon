@@ -50,10 +50,10 @@ private const val AGENT_STATE_REFUSES_WRITES =
  * Covers `HistoryStore.record` against the database the agent actually writes to.
  *
  * The scratch home is not a detail here. `record` reads the id of the sample it just wrote from
- * `last_insert_rowid()`, which is per connection, and the configured driver keeps a writer apart from
- * a pool of readers — so the id is only correct while the read stays inside the writing transaction.
- * On `inMemoryDriver` there is one connection and foreign keys are off, and both of those failures
- * pass unnoticed.
+ * `last_insert_rowid()`, which is per connection, and the configured driver keeps a writer apart
+ * from a pool of readers — so the id is only correct while the read stays inside the writing
+ * transaction. On `inMemoryDriver` there is one connection and foreign keys are off, and both of
+ * those failures pass unnoticed.
  */
 class HistoryStoreRecordTest {
 
@@ -108,13 +108,13 @@ class HistoryStoreRecordTest {
      * is not that `record` threw but that nothing of the sample is left.
      *
      * `alert` rather than one of the tables written earlier, and that choice is the whole test.
-     * `record` runs the retention pass before it opens the transaction, and the pass is due on the
-     * first sample of every run: drop a table retention itself names — `application_sample`, say,
-     * which `deleteOrphanApplications` reads — and `record` dies in `pruneIfDue` without writing a
-     * row, leaving every count below zero for a reason that has nothing to do with a rollback.
-     * Retention never names `alert`, so the failure lands where it is meant to. The message is
-     * asserted for the same reason: it is the only evidence the write reached the alert insert
-     * rather than falling over on the way to it.
+     * Drop a table retention itself names — `application_sample`, say, which
+     * `deleteOrphanApplications` reads — and two things go wrong at once that have nothing to do
+     * with a rollback: `pruneIfDue` starts logging a retention failure on every sample it is due
+     * on, and `countRows("application_sample")` below has no table left to answer from. Retention
+     * never names `alert`, so the failure lands where it is meant to. The message is asserted for
+     * the same reason: it is the only evidence the write reached the alert insert rather than
+     * falling over on the way to it.
      *
      * The sample recorded first is what gives the counts something to be. Every row below belongs
      * to it, so an assertion of "unchanged" is an assertion that the second sample left nothing —
@@ -220,8 +220,9 @@ class HistoryStoreRecordTest {
 }
 
 /**
- * A report with both kinds of application group — two processes inside one bundle and one outside any
- * bundle — plus an alert of each kind, so nothing `record` writes is exercised by an empty list.
+ * A report with both kinds of application group — two processes inside one bundle and one outside
+ * any bundle — plus an alert of each kind, so nothing `record` writes is exercised by an empty
+ * list.
  */
 private fun recordedReport(): MonitoringReport = MonitoringReport(
     usage = systemUsage(

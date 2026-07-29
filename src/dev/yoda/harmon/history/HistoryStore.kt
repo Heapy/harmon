@@ -11,15 +11,17 @@ import dev.yoda.harmon.model.DeliveryResult
 import dev.yoda.harmon.model.MonitoringReport
 import dev.yoda.harmon.util.failureDescription
 import dev.yoda.harmon.util.printError
+import dev.yoda.harmon.util.systemErrorText
 import kotlinx.cinterop.ExperimentalForeignApi
 import kotlinx.cinterop.toKString
 import platform.posix.EEXIST
+import platform.posix.S_IRWXG
+import platform.posix.S_IRWXO
 import platform.posix.S_IRWXU
 import platform.posix.chmod
 import platform.posix.errno
 import platform.posix.getenv
 import platform.posix.mkdir
-import platform.posix.strerror
 import kotlin.time.Clock
 import kotlin.time.Instant
 
@@ -93,7 +95,8 @@ class HistoryStore(
      * Left out, the tables holding it keep whatever a previous run wrote — the callers with no
      * alert state to speak of, `once` and `diagnose`, are also the ones that must not overwrite it.
      *
-     * This is also where retention runs from, on roughly every twelfth sample; see `pruneIfDue`.
+     * This is also where retention runs from, about once an hour — every twelfth sample at the
+     * default interval, and a different count at any other; see `pruneIfDue` and [shouldPrune].
      * Hanging it off the write path is deliberate — a retention nothing calls is a database that
      * grows forever behind a green test suite.
      */
@@ -365,7 +368,7 @@ private fun openHistoryDriver(directory: String): SqlDriver = NativeSqliteDriver
 @OptIn(ExperimentalForeignApi::class)
 private fun createPrivateDirectory(path: String) {
     val ownerOnly = S_IRWXU.toUShort()
-    val inherited = 0b111_111_111.toUShort()
+    val inherited = (S_IRWXU or S_IRWXG or S_IRWXO).toUShort()
     val components = path.split('/').filter { it.isNotEmpty() }
     var current = if (path.startsWith('/')) "" else "."
 
@@ -379,12 +382,6 @@ private fun createPrivateDirectory(path: String) {
     if (chmod(path, ownerOnly) != 0) {
         throw IllegalStateException("cannot protect $path: ${systemErrorText()}")
     }
-}
-
-@OptIn(ExperimentalForeignApi::class)
-private fun systemErrorText(): String {
-    val code = errno
-    return strerror(code)?.toKString() ?: "error $code"
 }
 
 @OptIn(ExperimentalForeignApi::class)

@@ -29,8 +29,8 @@ class RetentionTest {
 
     /**
      * The schedule is about how much history piles up between passes, not about a sample count, so
-     * this states that property directly — at intervals that divide the hour and at ones that do not.
-     * The gap may exceed the period by less than one interval and must never fall below it.
+     * this states that property directly — at intervals that divide the hour and at ones that do
+     * not. The gap may exceed the period by less than one interval and must never fall below it.
      */
     @Test
     fun theScheduleKeepsAboutAnHourBetweenPasses() {
@@ -60,9 +60,9 @@ class RetentionTest {
     }
 
     /**
-     * Configuration bounds `intervalSeconds` to 1..86400, so nothing in the agent reaches this — but
-     * the floor inside `shouldPrune` is the only thing between a direct call at zero and a division
-     * by zero, and an untested guard is a guard that can be deleted as dead weight.
+     * Configuration bounds `intervalSeconds` to 1..86400, so nothing in the agent reaches this —
+     * but the floor inside `shouldPrune` is the only thing between a direct call at zero and a
+     * division by zero, and an untested guard is a guard that can be deleted as dead weight.
      */
     @Test
     fun anIntervalBelowASecondIsFlooredRatherThanDividedBy() {
@@ -126,7 +126,9 @@ class RetentionTest {
         )
     }
 
-    /** `captured_at < cutoff`, so the sample sitting exactly on the boundary lives one pass longer. */
+    /**
+     * `captured_at < cutoff`, so the sample sitting exactly on the boundary lives one pass longer.
+     */
     @Test
     fun aSampleExactlyOnTheCutoffStays() = withScratchHome { home ->
         withHistoryStore(home) { store ->
@@ -191,9 +193,9 @@ class RetentionTest {
     }
 
     /**
-     * `alert_state` and `agent_state` are what the agent knows about itself, not what it saw. Sweeping
-     * them out with the history would push an alert that was already firing a second time after every
-     * restart and reset the backoff a broken channel earned.
+     * `alert_state` and `agent_state` are what the agent knows about itself, not what it saw.
+     * Sweeping them out with the history would push an alert that was already firing a second time
+     * after every restart and reset the backoff a broken channel earned.
      */
     @Test
     fun theAgentsOwnStateSurvivesTheWholeWindowGoing() = withScratchHome { home ->
@@ -224,8 +226,8 @@ class RetentionTest {
      * database grew forever.
      *
      * At a 1200-second interval the pass falls on samples 0, 3, 6…, so the three stale samples are
-     * written unmolested and then swept by the fourth `record` — before that sample is written, which
-     * is why the fresh one is the only survivor rather than one of two.
+     * written unmolested and then swept by the fourth `record` — before that sample is written,
+     * which is why the fresh one is the only survivor rather than one of two.
      */
     @Test
     fun recordRunsTheRetentionPassItself() = withScratchHome { home ->

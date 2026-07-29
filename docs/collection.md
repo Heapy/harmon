@@ -465,7 +465,9 @@ Center has nothing to discount it against, so there its optimistic success does
 settle the alert; the alternative is an install that can never settle anything.
 An outright failure the channel reports, such as being unable to write the HTML
 report, is an observation either way: it counts, and the alert stays pushable.
-Alert state resets with the agent.
+Alert state is written to history with each sample and resumed on restart,
+unless it is older than two sampling intervals, unreadable, or history is turned
+off, in which case the agent starts from an empty state.
 
 Only the push text is narrowed that way. The HTML report attached to a system
 notification and the JSON webhook payload both carry the sample's whole reported

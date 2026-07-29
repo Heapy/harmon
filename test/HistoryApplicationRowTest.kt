@@ -1,6 +1,4 @@
-import dev.yoda.harmon.db.HarmonDatabase
 import dev.yoda.harmon.history.insertApplicationUsage
-import dev.yoda.harmon.history.insertSample
 import dev.yoda.harmon.history.upsertApplication
 import dev.yoda.harmon.model.ApplicationUsage
 import kotlin.test.Test
@@ -23,7 +21,7 @@ class HistoryApplicationRowTest {
     @Test
     fun everyApplicationUsageFieldLandsInItsOwnColumn() = withInMemoryDatabase { database ->
         val applications = database.applicationsQueries
-        val sampleId = database.insertOwningSample()
+        val sampleId = database.insertParentSample()
 
         val applicationId = assertNotNull(applications.upsertApplication(markedApplication()))
         applications.insertApplicationUsage(sampleId, applicationId, markedApplication())
@@ -76,7 +74,7 @@ class HistoryApplicationRowTest {
     @Test
     fun aGroupWithoutABundleIsNotStoredAtAll() = withInMemoryDatabase { database ->
         val applications = database.applicationsQueries
-        val sampleId = database.insertOwningSample()
+        val sampleId = database.insertParentSample()
 
         val loose = markedApplication().copy(
             id = "process:4242:21000000001",
@@ -119,15 +117,6 @@ class HistoryApplicationRowTest {
         assertNotEquals(first, other, "a different bundle is a different application")
         assertEquals(2, applications.selectApplications().executeAsList().size)
     }
-}
-
-/**
- * A sample row for the application rows to hang off. Nothing about it is asserted — `sample_id` just
- * needs a parent that exists — so the fixture is the right source here.
- */
-private fun HarmonDatabase.insertOwningSample(): Long {
-    samplesQueries.insertSample(systemUsage(emptyList()))
-    return samplesQueries.lastInsertedId().executeAsOne()
 }
 
 /**

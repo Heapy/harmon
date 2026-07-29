@@ -5,6 +5,7 @@ import app.cash.sqldelight.driver.native.inMemoryDriver
 import dev.yoda.harmon.analysis.ApplicationGrouper
 import dev.yoda.harmon.db.HarmonDatabase
 import dev.yoda.harmon.history.HistoryStore
+import dev.yoda.harmon.history.insertSample
 import dev.yoda.harmon.model.Alert
 import dev.yoda.harmon.model.DeliveryResult
 import dev.yoda.harmon.model.LoadAverages
@@ -349,9 +350,10 @@ fun alert(
 /**
  * Runs [body] against a home directory created for this test alone and removed afterwards.
  *
- * `mkdtemp` rather than a name built from the pid: whether the database is fresh decides things that
- * can never be decided again — the `auto_vacuum` header, the rows a lookup table already holds — so a
- * leftover file from an earlier run would answer a test with a value this code never chose.
+ * `mkdtemp` rather than a name built from the pid: whether the database is fresh decides things
+ * that can never be decided again — the `auto_vacuum` header, the rows a lookup table already
+ * holds — so a leftover file from an earlier run would answer a test with a value this code never
+ * chose.
  */
 @OptIn(ExperimentalForeignApi::class)
 fun withScratchHome(body: (String) -> Unit) {
@@ -375,8 +377,8 @@ fun withScratchHome(body: (String) -> Unit) {
  * neither a cascade nor a `last_insert_rowid()` read from the wrong pool would fail on it.
  *
  * [retentionDays] and [intervalSeconds] default to the shipped configuration, which schedules the
- * retention pass on every twelfth sample — far enough apart that a test writing a handful of samples
- * only meets the pass if it asks for it.
+ * retention pass on every twelfth sample — far enough apart that a test writing a handful of
+ * samples only meets the pass if it asks for it.
  *
  * [logError] is where the store reports the failures that are its own rather than the caller's — a
  * retention pass that threw — and defaults to the production sink so that a test not looking for
@@ -425,6 +427,17 @@ fun <T> withInMemoryDriver(body: (SqlDriver) -> T): T {
 fun <T> withInMemoryDatabase(body: (HarmonDatabase) -> T): T =
     withInMemoryDriver { driver -> body(HarmonDatabase(driver)) }
 
+/**
+ * A sample row for the child rows of another table to hang off, and its id.
+ *
+ * Nothing about it is asserted anywhere — `sample_id` just needs a parent that exists — which is
+ * exactly why the round-trip tests for `process`, `application` and `alert` can all share one.
+ */
+fun HarmonDatabase.insertParentSample(): Long {
+    samplesQueries.insertSample(systemUsage(emptyList()))
+    return samplesQueries.lastInsertedId().executeAsOne()
+}
+
 /** Every sample in the database, in the order the retention window reads them. */
 fun HistoryStore.samples() = database.samplesQueries
     .selectBetween("0000-01-01T00:00:00Z", "9999-12-31T23:59:59Z")
@@ -456,9 +469,9 @@ fun <T : Any> SqlDriver.scalar(sql: String, read: (SqlCursor) -> T?): T? = execu
 /**
  * The row count of [table], asked of the database rather than of a generated query.
  *
- * A generated query would not do: one test drops a table to force a rollback, and after that half of
- * them no longer compile against the file — and a table cleared by a cascade has no query of its own
- * to count through anyway.
+ * A generated query would not do: one test drops a table to force a rollback, and after that half
+ * of them no longer compile against the file — and a table cleared by a cascade has no query of its
+ * own to count through anyway.
  */
 fun SqlDriver.countRows(table: String): Long =
     scalar("SELECT count(*) FROM $table") { it.getLong(0) }

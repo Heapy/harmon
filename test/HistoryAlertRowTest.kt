@@ -1,7 +1,5 @@
-import dev.yoda.harmon.db.HarmonDatabase
 import dev.yoda.harmon.history.insertDeliveryResult
 import dev.yoda.harmon.history.insertReportedAlert
-import dev.yoda.harmon.history.insertSample
 import dev.yoda.harmon.history.insertSuppressedAlert
 import dev.yoda.harmon.model.DeliveryResult
 import dev.yoda.harmon.model.Severity
@@ -26,10 +24,13 @@ class HistoryAlertRowTest {
     @Test
     fun aReportedAlertRoundTripsWithItsSeverity() = withInMemoryDatabase { database ->
         val alerts = database.alertsQueries
-        val sampleId = database.insertHostSample()
+        val sampleId = database.insertParentSample()
 
         for (severity in Severity.entries) {
-            alerts.insertReportedAlert(sampleId, alert(key = "cpu:${severity.name}", severity = severity))
+            alerts.insertReportedAlert(
+                sampleId,
+                alert(key = "cpu:${severity.name}", severity = severity),
+            )
         }
 
         val stored = alerts.selectAlerts(sampleId).executeAsList()
@@ -52,25 +53,26 @@ class HistoryAlertRowTest {
      * from an alert that really was reported.
      */
     @Test
-    fun aSuppressedKeyIsStoredWithoutTextAndApartFromAReportedAlert() = withInMemoryDatabase { database ->
-        val alerts = database.alertsQueries
-        val sampleId = database.insertHostSample()
+    fun aSuppressedKeyIsStoredWithoutTextAndApartFromAReportedAlert() =
+        withInMemoryDatabase { database ->
+            val alerts = database.alertsQueries
+            val sampleId = database.insertParentSample()
 
-        alerts.insertReportedAlert(sampleId, alert(key = "cpu:alpha"))
-        alerts.insertSuppressedAlert(sampleId, "cpu:beta")
+            alerts.insertReportedAlert(sampleId, alert(key = "cpu:alpha"))
+            alerts.insertSuppressedAlert(sampleId, "cpu:beta")
 
-        val stored = alerts.selectAlerts(sampleId).executeAsList().associateBy { it.key }
-        assertEquals(setOf("cpu:alpha", "cpu:beta"), stored.keys)
+            val stored = alerts.selectAlerts(sampleId).executeAsList().associateBy { it.key }
+            assertEquals(setOf("cpu:alpha", "cpu:beta"), stored.keys)
 
-        val suppressed = stored.getValue("cpu:beta")
-        assertEquals(0L, suppressed.reported, "a key the cap dropped is not a reported alert")
-        assertNull(suppressed.severity)
-        assertNull(suppressed.title)
-        assertNull(suppressed.message)
+            val suppressed = stored.getValue("cpu:beta")
+            assertEquals(0L, suppressed.reported, "a key the cap dropped is not a reported alert")
+            assertNull(suppressed.severity)
+            assertNull(suppressed.title)
+            assertNull(suppressed.message)
 
-        assertEquals(1L, stored.getValue("cpu:alpha").reported)
-        assertEquals(Severity.WARNING.name, stored.getValue("cpu:alpha").severity)
-    }
+            assertEquals(1L, stored.getValue("cpu:alpha").reported)
+            assertEquals(Severity.WARNING.name, stored.getValue("cpu:alpha").severity)
+        }
 
     /**
      * A failed channel leaves no trace anywhere else: the report names who was pushed, never who
@@ -79,11 +81,15 @@ class HistoryAlertRowTest {
     @Test
     fun everyChannelsDeliveryIsStoredIncludingTheFailedOne() = withInMemoryDatabase { database ->
         val alerts = database.alertsQueries
-        val sampleId = database.insertHostSample()
+        val sampleId = database.insertParentSample()
 
         val results = listOf(
             DeliveryResult(channel = "notification-center", successful = true, detail = "posted"),
-            DeliveryResult(channel = "webhook", successful = false, detail = "HTTP 500 from example.com"),
+            DeliveryResult(
+                channel = "webhook",
+                successful = false,
+                detail = "HTTP 500 from example.com",
+            ),
         )
         results.forEach { alerts.insertDeliveryResult(sampleId, it) }
 
@@ -98,13 +104,4 @@ class HistoryAlertRowTest {
         assertEquals(0L, failed.successful)
         assertEquals("HTTP 500 from example.com", failed.detail, "the channel's own account survives")
     }
-}
-
-/**
- * A sample row for the alert rows to hang off. Nothing about it is asserted — `sample_id` just needs
- * a parent that exists — so the fixture is the right source here.
- */
-private fun HarmonDatabase.insertHostSample(): Long {
-    samplesQueries.insertSample(systemUsage(emptyList()))
-    return samplesQueries.lastInsertedId().executeAsOne()
 }

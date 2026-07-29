@@ -33,5 +33,4 @@ class SqlConversionsTest {
         assertEquals(17_179_869_184L, 17_179_869_184uL.toSqlLong())
         assertEquals(Long.MAX_VALUE, Long.MAX_VALUE.toULong().toSqlLong())
     }
-
 }
