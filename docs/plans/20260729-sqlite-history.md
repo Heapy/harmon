@@ -303,13 +303,19 @@ Nullable-поля обязаны приезжать обратно как `null`
 - Modify: `src/dev/yoda/harmon/history/HistoryRows.kt`
 - Create: `test/HistoryProcessRowTest.kt`
 
-- [ ] написать падающий тест round-trip всех числовых полей `ProcessUsage` с уникальной меткой на поле
-- [ ] написать тест: повторный сэмпл того же процесса не плодит вторую строку в справочнике, а два процесса с одним pid и разным `started_at` дают две
-- [ ] написать тест: `compressedOrPagedOutBytes = null` и `virtualMemoryRegionCount = null` приезжают обратно как `null`
-- [ ] написать тест: процесс из группы с бандлом получает `application_id`, процесс из одиночной группы без бандла — `null`
-- [ ] создать `Processes.sq`: справочник `process` с `UNIQUE(pid, started_at)`, `process_sample` с FK на `sample` и `application`, индекс на `sample_id`
-- [ ] реализовать маппинг и инверсию `processIds` в мапу `pid → application_id`, пропускающую группы без `bundlePath`
-- [ ] запустить `./kotlin test` — должны пройти до задачи 4
+- [x] написать падающий тест round-trip всех числовых полей `ProcessUsage` с уникальной меткой на поле
+- [x] написать тест: повторный сэмпл того же процесса не плодит вторую строку в справочнике, а два процесса с одним pid и разным `started_at` дают две
+- [x] написать тест: `compressedOrPagedOutBytes = null` и `virtualMemoryRegionCount = null` приезжают обратно как `null`
+- [x] написать тест: процесс из группы с бандлом получает `application_id`, процесс из одиночной группы без бандла — `null`
+- [x] создать `Processes.sq`: справочник `process` с `UNIQUE(pid, started_at)`, `process_sample` с FK на `sample` и `application`, индекс на `sample_id`
+- [x] реализовать маппинг и инверсию `processIds` в мапу `pid → application_id`, пропускающую группы без `bundlePath`
+- [x] запустить `./kotlin test` — должны пройти до задачи 4
+
+> ⚠️ FK на `application` в этой задаче поставить не удалось: SQLDelight резолвит целевую таблицу
+> внешнего ключа **на этапе генерации**, и `REFERENCES application(id)` валит сборку с
+> `No column found with name id` до того, как дело доходит до SQLite. Колонка заведена как обычный
+> `INTEGER`, клауза переезжает в задачу 4 вместе с самой таблицей. На каскад ретеншна это не влияет:
+> осиротевшие строки справочников чистятся явным `NOT IN`, а не каскадом.
 
 ### Task 4: Схема и маппинг приложений
 
@@ -322,6 +328,7 @@ Nullable-поля обязаны приезжать обратно как `null`
 - [ ] написать тест: группа без `bundlePath` не порождает ни строки справочника, ни `application_sample`
 - [ ] написать тест: справочник дедуплицирует по `key` между сэмплами
 - [ ] создать `Applications.sq`: справочник `application` с `UNIQUE(key)` и `bundle_path NOT NULL`, `application_sample`
+- [ ] ➕ дописать `REFERENCES application(id)` к `process_sample.application_id` в `Processes.sq` — в задаче 3 клауза не компилировалась, таблицы ещё не было
 - [ ] реализовать маппинг с отбором групп по наличию бандла
 - [ ] запустить `./kotlin test` — должны пройти до задачи 5
 

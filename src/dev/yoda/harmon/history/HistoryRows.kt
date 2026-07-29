@@ -1,6 +1,9 @@
 package dev.yoda.harmon.history
 
+import dev.yoda.harmon.db.ProcessesQueries
 import dev.yoda.harmon.db.SamplesQueries
+import dev.yoda.harmon.model.ApplicationUsage
+import dev.yoda.harmon.model.ProcessUsage
 import dev.yoda.harmon.model.SystemUsage
 import kotlin.time.Instant
 
@@ -91,6 +94,101 @@ fun SamplesQueries.insertSample(usage: SystemUsage) {
         compressed_attribution_process_count = usage.compressedAttributionProcessCount.toLong(),
         compressed_attribution_failure_count = usage.compressedAttributionFailureCount.toLong(),
     )
+}
+
+/**
+ * The id of [process] in the `process` lookup, inserting the row first if this identity is new.
+ *
+ * The id comes back from a `SELECT` rather than from `last_insert_rowid()`, which would be wrong
+ * here in a way it is not for `sample`: the insert is `ON CONFLICT DO NOTHING`, so on the second
+ * sighting of a process nothing is written and `last_insert_rowid()` still names the row before it —
+ * inside a sample transaction, some other process entirely.
+ */
+fun ProcessesQueries.upsertProcess(process: ProcessUsage): Long {
+    val pid = process.identity.pid.toLong()
+    val startedAt = process.identity.startedAt.toSqlLong()
+
+    insertProcess(
+        pid = pid,
+        started_at = startedAt,
+        name = process.name,
+        executable_path = process.executablePath,
+        uid = process.uid?.toLong(),
+        parent_pid = process.parentPid.toLong(),
+    )
+
+    return selectProcessId(pid = pid, started_at = startedAt).executeAsOne()
+}
+
+/**
+ * Writes [usage] as one `process_sample` row against an already-written sample and lookup row.
+ *
+ * [applicationId] is null for a process that runs outside an `.app` bundle; see [applicationIdsByPid].
+ */
+fun ProcessesQueries.insertProcessUsage(
+    sampleId: Long,
+    processId: Long,
+    applicationId: Long?,
+    usage: ProcessUsage,
+) {
+    insertProcessSample(
+        sample_id = sampleId,
+        process_id = processId,
+        application_id = applicationId,
+
+        cpu_percent = usage.cpuPercent,
+        user_cpu_percent = usage.userCpuPercent,
+        system_cpu_percent = usage.systemCpuPercent,
+
+        physical_footprint_bytes = usage.physicalFootprintBytes.toSqlLong(),
+        resident_bytes = usage.residentBytes.toSqlLong(),
+        wired_bytes = usage.wiredBytes.toSqlLong(),
+        lifetime_max_physical_footprint_bytes = usage.lifetimeMaxPhysicalFootprintBytes.toSqlLong(),
+        compressed_or_paged_out_bytes = usage.compressedOrPagedOutBytes?.toSqlLong(),
+        virtual_memory_region_count = usage.virtualMemoryRegionCount?.toLong(),
+
+        wakeups_per_second = usage.wakeupsPerSecond,
+        page_ins_per_second = usage.pageInsPerSecond,
+        disk_read_bytes_per_second = usage.diskReadBytesPerSecond,
+        disk_write_bytes_per_second = usage.diskWriteBytesPerSecond,
+        logical_write_bytes_per_second = usage.logicalWriteBytesPerSecond,
+        instructions_per_second = usage.instructionsPerSecond,
+        cycles_per_second = usage.cyclesPerSecond,
+        energy_watts = usage.energyWatts,
+        faults_per_second = usage.faultsPerSecond,
+        copy_on_write_faults_per_second = usage.copyOnWriteFaultsPerSecond,
+        system_calls_per_second = usage.systemCallsPerSecond,
+        context_switches_per_second = usage.contextSwitchesPerSecond,
+        thread_count = usage.threadCount.toLong(),
+        running_thread_count = usage.runningThreadCount.toLong(),
+        billed_energy_per_second = usage.billedEnergyPerSecond,
+        battery_impact_score = usage.batteryImpactScore,
+    )
+}
+
+/**
+ * `pid` to `application.id` for the processes that belong to a stored application, given the lookup
+ * ids of the applications of this sample keyed by [ApplicationUsage.id].
+ *
+ * [ApplicationUsage.processIds] is the only link between a process and its group, so inverting it
+ * once per sample puts the membership in `process_sample` — "which Chrome helpers were busy at 3am"
+ * is then one join, and the list itself never has to be stored.
+ *
+ * A group with no bundle path is skipped, and a process in one is meant to end up with
+ * `application_id = NULL`: `ApplicationGrouper` gives every process outside an `.app` its own
+ * singleton group, and those groups are not written at all.
+ */
+fun applicationIdsByPid(
+    applications: List<ApplicationUsage>,
+    applicationIds: Map<String, Long>,
+): Map<Int, Long> = buildMap {
+    for (application in applications) {
+        if (application.bundlePath == null) continue
+        val applicationId = applicationIds[application.id] ?: continue
+        for (pid in application.processIds) {
+            put(pid, applicationId)
+        }
+    }
 }
 
 /**

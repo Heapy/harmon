@@ -1,0 +1,121 @@
+-- The process lookup, keyed by identity rather than by pid alone: pids are recycled within minutes
+-- on a busy machine, and started_at is the only thing separating one tenant of a pid from the next.
+--
+-- name, executable_path, uid and parent_pid are frozen at first sighting, because the insert is
+-- ON CONFLICT DO NOTHING. A process that renames itself later keeps the name it was first seen
+-- under; correcting that would cost an UPDATE per process per sample — ~222 000 writes a day — to
+-- fix something that almost never changes.
+CREATE TABLE process (
+  id              INTEGER PRIMARY KEY AUTOINCREMENT,
+  pid             INTEGER NOT NULL,
+  started_at      INTEGER NOT NULL,
+  name            TEXT NOT NULL,
+  executable_path TEXT,
+  uid             INTEGER,
+  parent_pid      INTEGER NOT NULL,
+  UNIQUE (pid, started_at)
+);
+
+-- One row per process per sample, ~222 000 a day. Everything repeatable about a process lives in the
+-- lookup above so that only ids and numbers repeat here.
+--
+-- application_id stays null for every process ApplicationGrouper could not tie to an .app bundle:
+-- such a process becomes its own singleton group, and singleton groups are deliberately not stored.
+-- Null therefore means "runs outside a bundle", never "not resolved yet". Its REFERENCES clause
+-- arrives with the application table in Applications.sq — SQLDelight resolves a foreign key target
+-- while generating, so the clause cannot be written before the table it points at exists.
+CREATE TABLE process_sample (
+  sample_id                             INTEGER NOT NULL REFERENCES sample(id) ON DELETE CASCADE,
+  process_id                            INTEGER NOT NULL REFERENCES process(id),
+  application_id                        INTEGER,
+
+  cpu_percent                           REAL NOT NULL,
+  user_cpu_percent                      REAL NOT NULL,
+  system_cpu_percent                    REAL NOT NULL,
+
+  physical_footprint_bytes              INTEGER NOT NULL,
+  resident_bytes                        INTEGER NOT NULL,
+  wired_bytes                           INTEGER NOT NULL,
+  lifetime_max_physical_footprint_bytes INTEGER NOT NULL,
+  -- Null when the kernel refused the compressed-memory attribution for this process, and null rather
+  -- than 0 is the point: 0 bytes compressed is a reading.
+  compressed_or_paged_out_bytes         INTEGER,
+  virtual_memory_region_count           INTEGER,
+
+  wakeups_per_second                    REAL NOT NULL,
+  page_ins_per_second                   REAL NOT NULL,
+  disk_read_bytes_per_second            REAL NOT NULL,
+  disk_write_bytes_per_second           REAL NOT NULL,
+  logical_write_bytes_per_second        REAL NOT NULL,
+  instructions_per_second               REAL NOT NULL,
+  cycles_per_second                     REAL NOT NULL,
+  energy_watts                          REAL NOT NULL,
+  faults_per_second                     REAL NOT NULL,
+  copy_on_write_faults_per_second       REAL NOT NULL,
+  system_calls_per_second               REAL NOT NULL,
+  context_switches_per_second           REAL NOT NULL,
+  thread_count                          INTEGER NOT NULL,
+  running_thread_count                  INTEGER NOT NULL,
+  billed_energy_per_second              REAL NOT NULL,
+  battery_impact_score                  REAL NOT NULL
+);
+
+-- Reading one moment back and dropping one window both start from sample_id; without this index
+-- either walks a week of rows. The mirror image, (process_id, sample_id) for "this process over
+-- time", is deliberately absent: another ~222 000 index entries a day to speed up a question that a
+-- full scan of the window answers in a couple of seconds.
+CREATE INDEX process_sample_sample_id ON process_sample(sample_id);
+
+insertProcess:
+INSERT INTO process(pid, started_at, name, executable_path, uid, parent_pid)
+VALUES (?, ?, ?, ?, ?, ?)
+ON CONFLICT DO NOTHING;
+
+-- The id is read back instead of taken from last_insert_rowid(): on the second sighting of a process
+-- the insert above does nothing, and last_insert_rowid() still points at whatever row was written
+-- before it — in a sample transaction, another process entirely.
+selectProcessId:
+SELECT id
+FROM process
+WHERE pid = ? AND started_at = ?;
+
+selectProcesses:
+SELECT *
+FROM process
+ORDER BY id;
+
+insertProcessSample:
+INSERT INTO process_sample(
+  sample_id, process_id, application_id,
+  cpu_percent, user_cpu_percent, system_cpu_percent,
+  physical_footprint_bytes, resident_bytes, wired_bytes,
+  lifetime_max_physical_footprint_bytes, compressed_or_paged_out_bytes,
+  virtual_memory_region_count,
+  wakeups_per_second, page_ins_per_second,
+  disk_read_bytes_per_second, disk_write_bytes_per_second, logical_write_bytes_per_second,
+  instructions_per_second, cycles_per_second, energy_watts,
+  faults_per_second, copy_on_write_faults_per_second,
+  system_calls_per_second, context_switches_per_second,
+  thread_count, running_thread_count,
+  billed_energy_per_second, battery_impact_score
+)
+VALUES (
+  ?, ?, ?,
+  ?, ?, ?,
+  ?, ?, ?,
+  ?, ?,
+  ?,
+  ?, ?,
+  ?, ?, ?,
+  ?, ?, ?,
+  ?, ?,
+  ?, ?,
+  ?, ?,
+  ?, ?
+);
+
+selectProcessSamples:
+SELECT *
+FROM process_sample
+WHERE sample_id = ?
+ORDER BY process_id;
