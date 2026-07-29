@@ -5,6 +5,10 @@ onceSampleSeconds=2
 topProcessCount=8
 maxAlertsPerCategory=3
 
+# Days of samples kept in ~/Library/Application Support/Harmon/history.db,
+# roughly 350 MB at seven days. A zero keeps no history and creates no database.
+historyRetentionDays=7
+
 # Bundle names, without `.app`, whose descendants outside the bundle are not
 # charged to it. Replaces the built-in list; an empty value disables the rule.
 terminalApplications=terminal,iterm2,iterm,alacritty,wezterm,kitty,ghostty,warp,hyper,tabby,agterm

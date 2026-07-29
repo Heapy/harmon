@@ -68,6 +68,14 @@ data class HarmonConfig(
     val onceSampleSeconds: Long = 2,
     val topProcessCount: Int = 8,
     val maxAlertsPerCategory: Int = 3,
+    /**
+     * Days of samples kept in the history database, or null for no history at all.
+     *
+     * Null rather than zero because the two answers are different actions and not two values of
+     * one: a retention of zero days would be a database opened and emptied on every pass, while
+     * what the key means at zero is that the file is never created.
+     */
+    val historyRetentionDays: Long? = 7,
     val terminalApplications: Set<String> = DEFAULT_TERMINAL_APPLICATIONS,
     val thresholds: AlertThresholds = AlertThresholds(),
     val notifications: NotificationConfig = NotificationConfig(),
@@ -78,6 +86,7 @@ data class HarmonConfig(
         appendLine("onceSampleSeconds=$onceSampleSeconds")
         appendLine("topProcessCount=$topProcessCount")
         appendLine("maxAlertsPerCategory=$maxAlertsPerCategory")
+        appendLine("historyRetentionDays=${historyRetentionDays ?: 0}")
         appendLine("terminalApplications=${terminalApplications.joinToString(",")}")
         appendLine("applicationCpuAlertPercent=${thresholds.applicationCpuPercent ?: 0}")
         appendLine("applicationMemoryAlertMiB=${thresholds.applicationMemoryMiB ?: 0}")
@@ -142,6 +151,7 @@ object ConfigLoader {
         "onceSampleSeconds",
         "topProcessCount",
         "maxAlertsPerCategory",
+        "historyRetentionDays",
         "terminalApplications",
         "applicationCpuAlertPercent",
         "applicationMemoryAlertMiB",
@@ -236,6 +246,10 @@ object ConfigLoader {
             maxAlertsPerCategory = values.positiveInt(
                 "maxAlertsPerCategory",
                 defaults.maxAlertsPerCategory,
+            ),
+            historyRetentionDays = values.optionalPositiveLong(
+                "historyRetentionDays",
+                defaults.historyRetentionDays,
             ),
             terminalApplications = values.lowercaseNameSet(
                 "terminalApplications",

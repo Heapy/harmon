@@ -8,7 +8,7 @@ root access out of Notification Center, Telegram, webhooks, and future UI code.
 | Component | launchd domain | Effective user | Responsibilities |
 |---|---|---:|---|
 | Collector | system LaunchDaemon | root | Read process, VM, swap, CPU, storage, and power counters; serve snapshots |
-| Agent | Aqua LaunchAgent | login user | Schedule samples, calculate deltas, group applications, evaluate rules, log, and notify |
+| Agent | Aqua LaunchAgent | login user | Schedule samples, calculate deltas, group applications, evaluate rules, log, notify, and store history |
 | CLI | interactive user process | caller | Run one-shot reports, diagnostics, config checks, and notification tests |
 
 The release currently contains all roles in one Kotlin/Native executable.
@@ -69,6 +69,35 @@ Notification is edge-triggered, not scheduled. The agent keeps the set of alert
 keys that were firing on the previous sample and the set whose delivery was
 confirmed; a push is built from the keys missing from the latter. The attached
 report and the JSON payload still describe the whole sample.
+
+## Sample history
+
+The SQLite database lives on the agent side, at
+`~/Library/Application Support/Harmon/history.db`. It is the agent that keeps
+it because the collector is the root half of the split, and a component running
+as root gains nothing here that would justify giving it the ability to write to
+a user file. The collector serves snapshots and remains request-driven.
+
+The directory, not the file, carries the `0700` mode: sqlite recreates
+`history.db-wal` and `history.db-shm` beside the database on every open, both
+carry the same telemetry, and a mode set on them would not survive. The
+connection runs in WAL with `synchronous=NORMAL`, which trades the last sample
+in a kernel panic for not fsyncing on a 300-second interval, and with
+`auto_vacuum=INCREMENTAL`, which is what lets retention return space to the
+file system without a full `VACUUM`.
+
+Each sample is one transaction: the system row, every process, every
+application group that has a bundle, the alerts, the delivery results, and the
+alert state the next sample starts from. Groups without a bundle are left out
+on purpose — `ApplicationGrouper` gives every such process a group of its own,
+and writing it would duplicate the process row it already wrote, line for line,
+several hundred times a sample.
+
+History is an addition to monitoring rather than a precondition for it. A
+database that cannot be opened costs the run its history and is reported once;
+a sample that cannot be written is rolled back whole and reported once until a
+write succeeds again, because sqliter prints a stack trace of its own before it
+throws and a full disk would otherwise fill the launchd log once per interval.
 
 ## IPC protocol
 
@@ -155,8 +184,9 @@ intended only for a socket under `/tmp` and does not improve process access.
   Notification Center reports counts either way and keeps the alert pushable. A
   still-firing alert is never dropped; after three consecutive failed deliveries
   its retries widen from two samples up to thirty-two, and any confirmed
-  delivery clears that backoff. Alert state is in-memory and resets with the
-  agent.
+  delivery clears that backoff. Alert state is written to history with each
+  sample and resumed on restart, unless it is older than two sampling intervals
+  or history is turned off, in which case the agent starts from an empty state.
 - Reports carry at most `maxAlertsPerCategory` alerts per rule and name every
   key the cap left out in `suppressedAlertKeys`, so a dropped alert is
   distinguishable from a cleared one and the count is the whole overflow. The

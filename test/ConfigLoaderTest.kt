@@ -1,13 +1,18 @@
 import dev.yoda.harmon.config.ConfigException
 import dev.yoda.harmon.config.ConfigLoader
 import dev.yoda.harmon.config.DEFAULT_TERMINAL_APPLICATIONS
+import dev.yoda.harmon.config.HarmonConfig
 import dev.yoda.harmon.config.SAMPLE_SECONDS_RANGE
+import dev.yoda.harmon.history.HistoryStore
+import platform.Foundation.NSFileManager
 import kotlin.test.Test
 import kotlin.test.assertContains
 import kotlin.test.assertEquals
 import kotlin.test.assertFailsWith
+import kotlin.test.assertFalse
 import kotlin.test.assertNotNull
 import kotlin.test.assertNull
+import kotlin.test.assertTrue
 
 class ConfigLoaderTest {
     @Test
@@ -202,4 +207,74 @@ class ConfigLoaderTest {
             config.notifications.webhookUrl,
         )
     }
+
+    @Test
+    fun readsTheHistoryRetentionAndTakesZeroAsNoHistoryAtAll() {
+        assertEquals(7L, parseConfig().historyRetentionDays)
+        assertEquals(30L, parseConfig("historyRetentionDays=30").historyRetentionDays)
+        assertNull(
+            parseConfig("historyRetentionDays=0").historyRetentionDays,
+            "zero is how every optional key here spells 'off', and off means no database",
+        )
+    }
+
+    @Test
+    fun rejectsAHistoryRetentionThatIsNotAWholeNumberOfDays() {
+        listOf("historyRetentionDays=-1", "historyRetentionDays=week").forEach { line ->
+            val failure = assertFailsWith<ConfigException>(line) { parseConfig(line) }
+
+            assertContains(
+                assertNotNull(failure.message),
+                "historyRetentionDays must be a non-negative integer",
+            )
+        }
+    }
+
+    /** `check-config` is where a user finds out history is off, so the key has to appear disabled. */
+    @Test
+    fun reportsTheHistoryRetentionEvenWhenItIsDisabled() {
+        assertContains(parseConfig().redactedDescription(), "historyRetentionDays=7")
+        assertContains(
+            parseConfig("historyRetentionDays=0").redactedDescription(),
+            "historyRetentionDays=0",
+        )
+    }
+
+    /**
+     * The `Cli.kt` side of this cannot be reached from a test — `Command.Run` disappears into
+     * `runForever()` — but everything it rests on can: a retention of null is a store that is never
+     * opened, and only an opened store ever creates the file. The second half is the control;
+     * without it the first would pass just as well against a path Harmon never writes to.
+     */
+    @Test
+    fun aDisabledHistoryLeavesNoDatabaseFileBehind() = withScratchHome { home ->
+        assertNull(historyFor(parseConfig("historyRetentionDays=0"), home))
+        assertFalse(
+            NSFileManager.defaultManager.fileExistsAtPath(databasePath(home)),
+            "history off must not so much as create the file",
+        )
+
+        val store = assertNotNull(historyFor(parseConfig("historyRetentionDays=1"), home))
+        /* sqliter connects on first use, so the file appears with the first sample, not on open. */
+        store.record(rankingReport())
+        store.close()
+
+        assertTrue(NSFileManager.defaultManager.fileExistsAtPath(databasePath(home)))
+    }
 }
+
+private fun parseConfig(vararg lines: String): HarmonConfig =
+    ConfigLoader.parse(lines = lines.asSequence(), environment = emptyMap())
+
+/** What `harmon run` does with the key, over a scratch home instead of the user's own. */
+private fun historyFor(config: HarmonConfig, home: String): HistoryStore? =
+    config.historyRetentionDays?.let { retentionDays ->
+        HistoryStore.openOrNull(
+            retentionDays = retentionDays,
+            intervalSeconds = config.intervalSeconds,
+            homeDirectory = home,
+        )
+    }
+
+private fun databasePath(home: String): String =
+    "$home/Library/Application Support/Harmon/history.db"

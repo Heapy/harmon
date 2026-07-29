@@ -2,7 +2,9 @@ package dev.yoda.harmon.cli
 
 import dev.yoda.harmon.config.ConfigException
 import dev.yoda.harmon.config.ConfigLoader
+import dev.yoda.harmon.config.HarmonConfig
 import dev.yoda.harmon.config.SAMPLE_SECONDS_RANGE
+import dev.yoda.harmon.history.HistoryStore
 import dev.yoda.harmon.ipc.CollectorServer
 import dev.yoda.harmon.report.ReportFormatter
 import dev.yoda.harmon.runtime.HarmonService
@@ -27,7 +29,7 @@ object HarmonApplication {
             Command.Version -> println("harmon 0.3.0")
             is Command.Collector -> runCollector(command)
             is Command.Run -> withConfig(command.configPath) { config ->
-                HarmonService(config).runForever()
+                HarmonService(config, history = openHistory(config)).runForever()
             }
             is Command.Once -> withConfig(command.configPath) { config ->
                 val service = HarmonService(config)
@@ -66,6 +68,22 @@ object HarmonApplication {
         }
     }
 
+    /**
+     * The history the agent loop writes to, or null when the configuration asks for none.
+     *
+     * Called from `run` alone. Every other command samples a two-second window against the loop's
+     * three hundred, or takes no sample at all, so their numbers would sit in one series with the
+     * loop's while meaning something else entirely — hence the store stays on its `null` default
+     * there rather than being opened and written to selectively.
+     */
+    private fun openHistory(config: HarmonConfig): HistoryStore? =
+        config.historyRetentionDays?.let { retentionDays ->
+            HistoryStore.openOrNull(
+                retentionDays = retentionDays,
+                intervalSeconds = config.intervalSeconds,
+            )
+        }
+
     @OptIn(ExperimentalForeignApi::class)
     private fun runCollector(command: Command.Collector) {
         if (geteuid() != 0u && !command.allowUnprivileged) {
@@ -89,7 +107,7 @@ object HarmonApplication {
         }
     }
 
-    private fun withConfig(path: String?, block: (dev.yoda.harmon.config.HarmonConfig) -> Unit) {
+    private fun withConfig(path: String?, block: (HarmonConfig) -> Unit) {
         try {
             val effectivePath = path ?: ConfigLoader.defaultPath()
             val config = if (path != null) {

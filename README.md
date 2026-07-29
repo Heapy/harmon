@@ -226,6 +226,7 @@ Important defaults:
 ```properties
 collectorSocket=/var/run/harmon.collector.sock
 intervalSeconds=300
+historyRetentionDays=7
 applicationCpuAlertPercent=150
 applicationMemoryAlertMiB=2048
 applicationDiskWriteAlertMiBPerSecond=50
@@ -297,8 +298,12 @@ the next sample instead of being silently dropped. An alert whose condition
 still holds is never given up on, but after three consecutive failed deliveries
 its retries widen from two samples up to thirty-two, so a permanently broken
 channel cannot turn Notification Center into an endless banner loop. Any
-confirmed delivery clears that backoff at once. Alert state lives in the agent
-process and resets when it restarts.
+confirmed delivery clears that backoff at once. Alert state is stored in the
+history database and resumed on restart, so an alert that never stopped firing
+is not pushed a second time and a failing channel keeps the backoff it earned.
+A stored state older than two sampling intervals is dropped rather than
+resumed: it describes a machine that has since moved on. With history turned
+off the agent starts from an empty state every time, as it did before.
 
 The push text names only the alerts that fired on this sample. The attached HTML
 report and the JSON webhook payload both carry the sample's whole reported alert
@@ -328,6 +333,27 @@ notification opens that complete report in the default browser. No scripts or
 remote resources are embedded in the HTML, and Script Editor is not involved.
 The launchd agent uses the compatible Notification Center path because current
 macOS releases reject the modern UserNotifications API from a launchd job.
+
+## History
+
+A report describes the sample it was built from and nothing else, so `harmon
+run` also writes every sample to a SQLite database at
+`~/Library/Application Support/Harmon/history.db`: the system counters, every
+process, every application that has a bundle, the alerts, and what each channel
+did with them. That is what makes "what was eating the machine at three in the
+morning" a question with an answer.
+
+`historyRetentionDays` is how far back the answer goes. At the default of seven
+days and a 300-second interval the file settles at roughly 350 MB; a `0` keeps
+no history at all and creates no database file. The agent prunes the window
+about once an hour and hands the freed space back to the file system as it
+goes.
+
+Only `harmon run` writes. `once` and `diagnose` measure a two-second window
+instead of the sampling interval, so their numbers would mean something
+different inside the same series. Harmon itself reads the database only for the
+alert state it resumes after a restart; everything else is a `sqlite3` query
+against a schema that is meant to be queried by hand.
 
 ## Install with launchd
 
@@ -375,9 +401,12 @@ src/
   monitor/     privileged macOS collection and interval calculations
   analysis/    application grouping, alert rules, and alert state
   config/      user-agent configuration
+  history/     the SQLite sample history and its retention
   report/      text, local HTML, and kotlinx.serialization JSON reporting
   notify/      Notification Center, webhook, and Telegram delivery
   runtime/     user-agent monitoring loop
+sqldelight/    history schema and the queries generated from it
+plugins/       the SQLDelight code generator, as an Amper plugin
 nativebridge/  libproc, Mach, sysctl, IOKit, sockets, and libcurl bridge
 selftest/      binding checks that run the bridge from Kotlin
 test/          unit tests, plus the C test harness in test/native
