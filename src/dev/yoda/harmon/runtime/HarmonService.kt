@@ -4,6 +4,7 @@ import dev.yoda.harmon.analysis.AlertAnalyzer
 import dev.yoda.harmon.analysis.AlertState
 import dev.yoda.harmon.config.HarmonConfig
 import dev.yoda.harmon.config.SAMPLE_SECONDS_RANGE
+import dev.yoda.harmon.history.HistoryStore
 import dev.yoda.harmon.ipc.CollectorClient
 import dev.yoda.harmon.model.Alert
 import dev.yoda.harmon.model.DeliveryResult
@@ -79,8 +80,23 @@ class HarmonService(
         lazy { NotificationDispatcher.from(config.notifications) },
     private val log: (String) -> Unit = ::println,
     private val logError: (String) -> Unit = ::printError,
+    private val history: HistoryStore? = null,
 ) {
-    private val alertState = AlertState()
+    /**
+     * Resumed from whatever the last run of the agent left in [history], so that a restart neither
+     * pushes an alert that never stopped firing a second time nor hands a channel that has been
+     * failing all night a fresh retry budget. Whether what is stored is still recent enough to
+     * resume is the store's judgement, since the interval it is judged in is already its own.
+     */
+    private val alertState = AlertState(restored = history?.restorableAlertState())
+
+    /**
+     * Whether the write of the previous sample failed, so that a database that keeps failing is
+     * reported once instead of once per sample. sqliter prints the whole stack trace before it
+     * throws, and a disk that filled up overnight would otherwise paint the launchd log red every
+     * interval until somebody noticed.
+     */
+    private var historyWriteFailing = false
 
     fun runForever(): Nothing {
         log("${Clock.System.now()} Harmon started; interval=${config.intervalSeconds}s")
@@ -121,6 +137,10 @@ class HarmonService(
      * The commit sits in a `finally` because it has to happen for every report that could be
      * built, deliveries and renders that throw included: a key that stopped firing has to leave
      * the settled set, or its next appearance is mistaken for a repeat and never pushed.
+     *
+     * The history write joins it there, after the commit rather than before it, so that the state
+     * stored beside the sample is the one the sample after it starts from — a snapshot taken
+     * earlier would restore a restarted agent to the moment before its last sample.
      */
     fun handleSample(previous: RawSystemSnapshot, current: RawSystemSnapshot) {
         val sampled = createSample(previous, current)
@@ -138,6 +158,7 @@ class HarmonService(
                             "retrying it in $delaySamples samples",
                     )
                 }
+            recordSafely(sampled.report, outcome.results)
         }
     }
 
@@ -214,6 +235,30 @@ class HarmonService(
         }
 
     /**
+     * Files the sample away, and swallows whatever the write throws — this is a daemon, and a
+     * database on a full disk must not cost it the monitoring it exists for.
+     *
+     * No store at all is the ordinary case rather than an error: `once` and `diagnose` measure a
+     * two-second window against the agent's five minutes, and their numbers would distort a series
+     * built from it, so they are left on the null default.
+     *
+     * The snapshot is read here, which is to say after the commit in [handleSample]. A write that
+     * keeps failing is reported once; see [historyWriteFailing].
+     */
+    private fun recordSafely(report: MonitoringReport, deliveries: List<DeliveryResult>) {
+        val store = history ?: return
+        try {
+            store.record(report, deliveries, alertState.snapshot())
+            historyWriteFailing = false
+        } catch (failure: Throwable) {
+            if (!historyWriteFailing) {
+                logFailure("history write failed", failure)
+                historyWriteFailing = true
+            }
+        }
+    }
+
+    /**
      * Pushes what [pushPlan] decided this sample is worth pushing and reports which keys were
      * carried and whether the push was confirmed.
      *
@@ -243,11 +288,13 @@ class HarmonService(
             )
         }
         val pushed = plan.highlighted.mapTo(mutableSetOf()) { it.key }
-        return when {
+        val outcome = when {
             summary.decisiveSuccess -> DeliveryOutcome(delivered = pushed, failed = emptySet())
             plan.recordsFailures -> DeliveryOutcome(delivered = emptySet(), failed = pushed)
             else -> DeliveryOutcome.NONE
         }
+        /* Every branch journals what each channel reported, including the one that defers nothing. */
+        return outcome.copy(results = summary.results)
     }
 
     /**
@@ -320,10 +367,18 @@ class HarmonService(
         val recordsFailures: Boolean,
     )
 
-    /** What a single sample's push achieved: the keys it carried, and whether they landed. */
+    /**
+     * What a single sample's push achieved: the keys it carried, whether they landed, and what
+     * every channel reported on the way.
+     *
+     * [results] is carried for the history alone. The alert state is only interested in the verdict
+     * the two key sets already hold, while the journal wants the account each channel gave of
+     * itself — a webhook answering 500 all night is visible in no other record of the sample.
+     */
     private data class DeliveryOutcome(
         val delivered: Set<String>,
         val failed: Set<String>,
+        val results: List<DeliveryResult> = emptyList(),
     ) {
         companion object {
             val NONE = DeliveryOutcome(delivered = emptySet(), failed = emptySet())
