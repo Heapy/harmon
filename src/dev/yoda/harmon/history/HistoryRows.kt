@@ -1,5 +1,7 @@
 package dev.yoda.harmon.history
 
+import dev.yoda.harmon.analysis.AlertKeyState
+import dev.yoda.harmon.analysis.AlertStateSnapshot
 import dev.yoda.harmon.db.AlertsQueries
 import dev.yoda.harmon.db.ApplicationsQueries
 import dev.yoda.harmon.db.ProcessesQueries
@@ -309,6 +311,39 @@ fun AlertsQueries.insertDeliveryResult(sampleId: Long, result: DeliveryResult) {
         detail = result.detail,
     )
 }
+
+/**
+ * Puts [snapshot] in `alert_state` in place of whatever was there.
+ *
+ * Wholesale rather than as a diff, because a key that stopped firing has to leave the table and a
+ * snapshot has no way to say so — it is the firing keys, not a change to them. At the handful of rows
+ * an alerting machine holds, working that out would cost more than rewriting them.
+ *
+ * The counter the [AlertKeyState.retryAtSample] of these rows is measured against does not live here;
+ * `agent_state` carries it, and both are written inside one sample transaction so they cannot drift.
+ */
+fun AlertsQueries.replaceAlertState(snapshot: AlertStateSnapshot) {
+    deleteAlertState()
+
+    for ((key, state) in snapshot.keys) {
+        insertAlertState(
+            key = key,
+            settled = state.settled.toSqlLong(),
+            failures = state.failures.toLong(),
+            retry_at_sample = state.retryAtSample,
+        )
+    }
+}
+
+/** The per-key half of a stored snapshot, as [replaceAlertState] left it. */
+fun AlertsQueries.selectAlertKeyStates(): Map<String, AlertKeyState> =
+    selectAlertState().executeAsList().associate { row ->
+        row.key to AlertKeyState(
+            settled = row.settled != 0L,
+            failures = row.failures.toInt(),
+            retryAtSample = row.retry_at_sample,
+        )
+    }
 
 /**
  * SQLite has no boolean type and SQLDelight's `INTEGER AS Boolean` would demand a

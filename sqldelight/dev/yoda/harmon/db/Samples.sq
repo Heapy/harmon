@@ -81,7 +81,9 @@ CREATE INDEX sample_captured_at ON sample(captured_at);
 -- Agent state rather than history, so retention never touches it. sample_counter is AlertState's
 -- absolute sample number, which the restore path needs alongside the per-key state: retry_at_sample
 -- is absolute too, and restoring keys against a counter reset to zero would defer them forever.
--- Written from task 9 onwards; the table exists now so the schema is created in one place.
+--
+-- last_sample_at is the captured_at of the sample the state was written with, and it is what decides
+-- whether the state is still worth restoring; see dev.yoda.harmon.analysis.isSnapshotFresh.
 CREATE TABLE agent_state (
   singleton      INTEGER NOT NULL PRIMARY KEY CHECK (singleton = 1),
   sample_counter INTEGER NOT NULL,
@@ -138,3 +140,15 @@ ORDER BY captured_at;
 deleteOlderThan:
 DELETE FROM sample
 WHERE captured_at < ?;
+
+-- One row, rewritten every sample. OR REPLACE rather than an upsert clause because the CHECK pins
+-- the key to 1: there is nothing to merge, only a previous value to overwrite, and no foreign key
+-- points here for the delete-and-insert to disturb.
+upsertAgentState:
+INSERT OR REPLACE INTO agent_state(singleton, sample_counter, last_sample_at)
+VALUES (1, ?, ?);
+
+selectAgentState:
+SELECT *
+FROM agent_state
+WHERE singleton = 1;

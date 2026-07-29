@@ -47,7 +47,7 @@ CREATE INDEX alert_delivery_sample_id ON alert_delivery(sample_id);
 -- absolute sample number retry_at_sample counts against lives in agent_state.
 --
 -- There is deliberately no `firing` column: only firing keys enter a snapshot, so it would be 1 on
--- every row. Written from task 9 onwards; the table exists now so the schema is created in one place.
+-- every row.
 CREATE TABLE alert_state (
   key             TEXT NOT NULL PRIMARY KEY,
   settled         INTEGER NOT NULL,
@@ -76,3 +76,18 @@ SELECT *
 FROM alert_delivery
 WHERE sample_id = ?
 ORDER BY channel;
+
+-- The snapshot replaces the table rather than being merged into it: a key that stopped firing has to
+-- disappear, and at a handful of rows a diff would cost more to read than the two statements do to
+-- run. Both live in the sample transaction, so the state is never half a sample behind the history.
+deleteAlertState:
+DELETE FROM alert_state;
+
+insertAlertState:
+INSERT INTO alert_state(key, settled, failures, retry_at_sample)
+VALUES (?, ?, ?, ?);
+
+selectAlertState:
+SELECT *
+FROM alert_state
+ORDER BY key;

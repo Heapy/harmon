@@ -3,6 +3,8 @@ package dev.yoda.harmon.history
 import app.cash.sqldelight.db.SqlDriver
 import app.cash.sqldelight.driver.native.NativeSqliteDriver
 import co.touchlab.sqliter.SynchronousFlag
+import dev.yoda.harmon.analysis.AlertStateSnapshot
+import dev.yoda.harmon.analysis.isSnapshotFresh
 import dev.yoda.harmon.db.HarmonDatabase
 import dev.yoda.harmon.model.DeliveryResult
 import dev.yoda.harmon.model.MonitoringReport
@@ -18,6 +20,7 @@ import platform.posix.getenv
 import platform.posix.mkdir
 import platform.posix.strerror
 import kotlin.time.Clock
+import kotlin.time.Instant
 
 /** Where the database lives, next to the HTML reports under the home directory. */
 private const val HISTORY_DIRECTORY = "Library/Application Support/Harmon"
@@ -73,11 +76,21 @@ class HistoryStore(
      * lookup, so the row it names has to exist first. Groups without a bundle resolve to no id at all
      * and their processes to `application_id = NULL`; see [upsertApplication].
      *
+     * [alertState] is the agent's own state rather than part of the sample, and it rides along in the
+     * same transaction so that the two can never disagree about which sample they belong to. It is
+     * taken after `AlertState.commit`, so what lands is the state the next sample starts from. Left
+     * out, the tables holding it keep whatever a previous run wrote — the callers with no alert state
+     * to speak of, `once` and `diagnose`, are also the ones that must not overwrite it.
+     *
      * This is also where retention runs from, on roughly every twelfth sample; see `pruneIfDue`.
      * Hanging it off the write path is deliberate — a retention nothing calls is a database that
      * grows forever behind a green test suite.
      */
-    fun record(report: MonitoringReport, deliveries: List<DeliveryResult> = emptyList()) {
+    fun record(
+        report: MonitoringReport,
+        deliveries: List<DeliveryResult> = emptyList(),
+        alertState: AlertStateSnapshot? = null,
+    ) {
         pruneIfDue()
 
         val usage = report.usage
@@ -114,7 +127,36 @@ class HistoryStore(
             report.alerts.forEach { alerts.insertReportedAlert(sampleId, it) }
             report.suppressedAlertKeys.forEach { alerts.insertSuppressedAlert(sampleId, it) }
             deliveries.forEach { alerts.insertDeliveryResult(sampleId, it) }
+
+            alertState?.let { snapshot ->
+                alerts.replaceAlertState(snapshot)
+                samples.upsertAgentState(
+                    sample_counter = snapshot.sampleCounter,
+                    last_sample_at = usage.capturedAt.toSqlTimestamp(),
+                )
+            }
         }
+    }
+
+    /**
+     * The alert state a previous run left behind, or null when there is none or it is too old to
+     * apply — see [isSnapshotFresh], which this measures against the sample it was written with.
+     *
+     * The age is judged here rather than by the caller because the sampling interval it is judged in
+     * is already this store's. A stale snapshot is dropped whole rather than trimmed: the sample
+     * counter and the keys are only meaningful together, and half of yesterday's state is not a
+     * smaller restore but a wrong one.
+     */
+    fun restorableAlertState(now: Instant = Clock.System.now()): AlertStateSnapshot? {
+        val agent = database.samplesQueries.selectAgentState().executeAsOneOrNull() ?: return null
+        if (!isSnapshotFresh(Instant.parse(agent.last_sample_at), now, intervalSeconds)) {
+            return null
+        }
+
+        return AlertStateSnapshot(
+            sampleCounter = agent.sample_counter,
+            keys = database.alertsQueries.selectAlertKeyStates(),
+        )
     }
 
     /**

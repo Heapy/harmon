@@ -1,4 +1,6 @@
+import dev.yoda.harmon.analysis.AlertKeyState
 import dev.yoda.harmon.analysis.AlertState
+import dev.yoda.harmon.analysis.AlertStateSnapshot
 import dev.yoda.harmon.analysis.DELIVERY_RETRY_THRESHOLD
 import dev.yoda.harmon.analysis.MAX_DELIVERY_RETRY_SAMPLES
 import dev.yoda.harmon.analysis.deliveryRetryDelaySamples
@@ -223,6 +225,75 @@ class AlertStateTest {
             deliveryRetryDelaySamples(DELIVERY_RETRY_THRESHOLD + 9),
         )
         assertEquals(MAX_DELIVERY_RETRY_SAMPLES, deliveryRetryDelaySamples(Int.MAX_VALUE))
+    }
+
+    /**
+     * The snapshot is the firing keys and nothing else, which is what makes it small enough to
+     * rewrite every sample: a key that cleared is gone from the state, so it is gone from here too
+     * without a tombstone of any kind.
+     */
+    @Test
+    fun snapshotHoldsEveryFiringKeyWithTheCounterItsRetryIsMeasuredAgainst() {
+        val state = AlertState()
+        val firing = setOf("cpu:firefox", "memory:chrome")
+
+        state.commit(firing + "disk:transient", setOf("memory:chrome", "disk:transient"))
+        repeat(DELIVERY_RETRY_THRESHOLD) {
+            state.commit(firing, emptySet(), failedKeys = setOf("cpu:firefox"))
+        }
+
+        val samples = 1L + DELIVERY_RETRY_THRESHOLD
+        assertEquals(
+            AlertStateSnapshot(
+                sampleCounter = samples,
+                keys = mapOf(
+                    "cpu:firefox" to AlertKeyState(
+                        settled = false,
+                        failures = DELIVERY_RETRY_THRESHOLD,
+                        retryAtSample = samples + deliveryRetryDelaySamples(DELIVERY_RETRY_THRESHOLD),
+                    ),
+                    "memory:chrome" to AlertKeyState(
+                        settled = true,
+                        failures = 0,
+                        retryAtSample = 0L,
+                    ),
+                ),
+            ),
+            state.snapshot(),
+            "a key that stopped firing has no place in the state the next run resumes",
+        )
+    }
+
+    /**
+     * Restoring has to reproduce the state, not approximate it: the failure count decides the next
+     * backoff step, so a key that had failed twice must earn the deferral on its next failure rather
+     * than start counting again.
+     */
+    @Test
+    fun aRestoredStateAnswersLikeTheOneItWasTakenFrom() {
+        val alerts = listOf(alert("cpu:firefox"), alert("memory:chrome"))
+        val firing = setOf("cpu:firefox", "memory:chrome")
+        val original = AlertState()
+
+        original.commit(firing, setOf("memory:chrome"), failedKeys = setOf("cpu:firefox"))
+        original.commit(firing, emptySet(), failedKeys = setOf("cpu:firefox"))
+        val restored = AlertState(restored = original.snapshot())
+
+        assertEquals(original.activeKeys, restored.activeKeys)
+        assertEquals(
+            original.unsettled(alerts).map { it.key },
+            restored.unsettled(alerts).map { it.key },
+        )
+        assertEquals(
+            original.newlyActive(alerts).map { it.key },
+            restored.newlyActive(alerts).map { it.key },
+        )
+        assertEquals(
+            original.commit(firing, emptySet(), failedKeys = setOf("cpu:firefox")),
+            restored.commit(firing, emptySet(), failedKeys = setOf("cpu:firefox")),
+            "the third failure in a row defers the retry, whether or not a restart intervened",
+        )
+        assertEquals(original.snapshot(), restored.snapshot())
     }
 
     @Test

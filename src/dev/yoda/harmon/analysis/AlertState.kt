@@ -1,6 +1,8 @@
 package dev.yoda.harmon.analysis
 
 import dev.yoda.harmon.model.Alert
+import kotlin.time.Duration.Companion.seconds
+import kotlin.time.Instant
 
 /**
  * The consecutive-failure count at which a key's retries start backing off: every failure below it
@@ -33,6 +35,53 @@ fun deliveryRetryDelaySamples(consecutiveFailures: Int): Long {
 
 private const val MAX_RETRY_EXPONENT = 16
 
+/** How many sampling intervals a stored snapshot stays worth restoring; see [isSnapshotFresh]. */
+private const val SNAPSHOT_FRESH_INTERVALS = 2
+
+/**
+ * Whether a snapshot saved at [savedAt] still describes the machine [now], at a sampling interval of
+ * [intervalSeconds].
+ *
+ * Two intervals is a launchd restart with slack, not a return after a day. Restoring is not free: the
+ * keys it brings back feed the hysteresis in `AlertAnalyzer`, which applies a lowered clear threshold
+ * to whatever was firing — and applying it to a state from yesterday morning would hold an alert open
+ * against a machine that has since been rebooted twice.
+ *
+ * A [now] before [savedAt] is not fresh either. The clock moving backwards — a time-zone database
+ * update, an NTP step after a flat battery — makes the age of the snapshot unknowable, and the safe
+ * reading of an unknown age is "too old".
+ */
+fun isSnapshotFresh(savedAt: Instant, now: Instant, intervalSeconds: Long): Boolean {
+    val age = now - savedAt
+    return !age.isNegative() && age <= (intervalSeconds * SNAPSHOT_FRESH_INTERVALS).seconds
+}
+
+/**
+ * What one alert key carries across a restart: whether its delivery was ever confirmed, and how far
+ * the backoff of a failing one has run.
+ *
+ * There is no `firing` flag because there could be no other value. Only firing keys reach a snapshot:
+ * `AlertState.commit` prunes every map and set it keeps down to the keys of the current sample.
+ */
+data class AlertKeyState(
+    val settled: Boolean,
+    val failures: Int,
+    val retryAtSample: Long,
+)
+
+/**
+ * The whole of an [AlertState] as it stood after a commit, in a form that survives the process.
+ *
+ * [sampleCounter] is not bookkeeping. [AlertKeyState.retryAtSample] is an absolute sample number, so
+ * restoring the keys against a counter that starts at zero would leave every deferred key waiting for
+ * a sample thousands of intervals away — an alert with an earned backoff would stop being pushed
+ * altogether, which is a worse failure than the repeated push restoring exists to prevent.
+ */
+data class AlertStateSnapshot(
+    val sampleCounter: Long,
+    val keys: Map<String, AlertKeyState>,
+)
+
 /**
  * Edge detection for alerts: a push goes out when an alert key appears that was not confirmed as
  * delivered before, not on a timer.
@@ -45,14 +94,41 @@ private const val MAX_RETRY_EXPONENT = 16
  *
  * Every map and set is pruned to the keys firing in the current sample, so none can grow without
  * limit.
+ *
+ * [restored] resumes the state a previous run of the agent left behind, so that a restart neither
+ * pushes an alert that never stopped firing a second time nor hands a broken channel a fresh retry
+ * budget. It seeds the sample counter along with the keys, for the reason [AlertStateSnapshot] gives.
  */
-class AlertState {
-    private var firing: Set<String> = emptySet()
-    private var settled: Set<String> = emptySet()
-    private var retries: Map<String, RetryState> = emptyMap()
-    private var sample: Long = 0
+class AlertState(restored: AlertStateSnapshot? = null) {
+    private var firing: Set<String> = restored?.keys?.keys.orEmpty()
+    private var settled: Set<String> = restored?.keys.orEmpty()
+        .filterValues { it.settled }
+        .keys
+    private var retries: Map<String, RetryState> = restored?.keys.orEmpty()
+        /* A key that never failed has no retry state to restore; `failures` starts at one. */
+        .filterValues { it.failures > 0 }
+        .mapValues { (_, state) -> RetryState(state.failures, state.retryAtSample) }
+    private var sample: Long = restored?.sampleCounter ?: 0
 
     val activeKeys: Set<String> get() = firing
+
+    /**
+     * The state as it stands now, for a caller that will hand it back through [restored].
+     *
+     * Taken after [commit], which is what makes it a plain list of the firing keys: every key still
+     * held is one of them, so a key that stopped firing is absent rather than marked as cleared.
+     */
+    fun snapshot(): AlertStateSnapshot = AlertStateSnapshot(
+        sampleCounter = sample,
+        keys = firing.associateWith { key ->
+            val retry = retries[key]
+            AlertKeyState(
+                settled = key in settled,
+                failures = retry?.failures ?: 0,
+                retryAtSample = retry?.retryAtSample ?: 0L,
+            )
+        },
+    )
 
     /**
      * The alerts whose key has never been confirmed as delivered while it kept firing.
