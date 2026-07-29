@@ -98,14 +98,24 @@ assertion survives a transposed pair of fields; an anchor does not. Where an
 anchor cannot separate two fields, the gap is listed below rather than left to
 the comment.
 
-Two shapes of anchor are in use. Against a value that only grows the test reads
-the source before *and* after the bridge does and requires the bridge's answer to
-lie between the two, which needs no tolerance at all and cannot drift on a busy
-machine; that is how the process sample, the load averages and the compressed
-bytes are checked. A tolerance is used only where a source is served from a cache
-the kernel refreshes on its own schedule — the tick counters and the virtual
-memory statistics — and each such number is documented with what it was measured
-at.
+Two shapes of anchor are in use, and neither is exact everywhere. Against a value
+that only grows the test reads the source before *and* after the bridge does and
+requires the bridge's answer to lie between the two: for a counter that needs no
+tolerance at all and cannot drift on a busy machine, and it is how most of the
+process sample, the load averages and the compressed bytes are checked. Three
+fields of that sample both rise and fall — wired, resident and footprint bytes —
+so their bracket carries 4 MiB of slack (`HM_OWN_RESIDENCY_SLACK`), and the slack
+rather than the bracket is what decided `wired_bytes`: an ordinary process reports
+0 there, which was inside it. The harness therefore locks 16 MiB before the
+readings and asserts that the lock took, the same way it writes 4 MiB and reads
+1 MiB back past the cache so that the two disk directions are two different
+non-zero numbers. Where the source is read twice in a row instead of around the
+call there is a tolerance from the start: the tick counters, the virtual memory
+statistics, storage, swap and the battery estimate all carry one, and each is
+documented at its constant with what it was measured at. A tolerance wider than
+the value it is applied to checks nothing — the virtual memory one was 64 MiB
+against 56 MB of purgeable memory, and is 8 MiB now, measured against a worst
+observed drift of 2 MB under four processes churning memory.
 
 Neither harness is meant to run as root: `processes.samples-are-well-formed`
 holds because an ordinary user cannot read the rusage of pid 0, and
@@ -116,14 +126,20 @@ it covers only fires once the 64-slot sample array is full — an ordinary sessi
 is far past that (566 here), a stripped service account might not be.
 `processes.issue-metadata-matches-a-fresh-read` needs 32 of those issues to still
 be readable moments later (174 to 177 here), and
-`processes.rusage-issue-path-matches-a-fresh-read` needs 16 processes of *other*
-users, which is what the rusage branch of the listing reports (275 here). Each of
-the three fails naming what it counted rather than passing vacuously.
+`processes.rusage-issue-path-matches-a-fresh-read` and
+`processes.rusage-issue-uid-is-unknown` need 16 processes of *other* users, which
+is what the rusage branch of the listing reports (256 to 276 here). Each of them
+fails naming what it counted rather than passing vacuously.
 `processes.own-sample-matches-a-fresh-rusage` makes its conditions instead of
-asking for them: it writes and flushes 4 MiB and parks a second thread before
-taking the listing, because a harness that touched no disk and ran one thread
-reports `disk_bytes_read` equal to `disk_bytes_written` and `thread_count` equal
-to `running_thread_count`, and a transposed pair of equal numbers is invisible.
+asking for them: before taking the listing it writes and flushes 4 MiB, reads
+1 MiB of it back with the cache turned off, parks a second thread and locks
+16 MiB of memory — because a harness that touched no disk, ran one thread and
+wired nothing reports `disk_bytes_read` equal to `disk_bytes_written`,
+`thread_count` equal to `running_thread_count` and `wired_bytes` at 0, and
+neither a transposed pair of equal numbers nor a hard-coded zero is visible then.
+It asserts that each of those took effect, which is the only way a machine that
+refuses `mlock` or serves the read from cache says so instead of leaving the
+fields unchecked.
 No check depends on how many processes the account has started recently: an
 earlier `attribution.bytes-match-an-independent-walk` gave up after 24 of them and
 failed for a whole build running alongside it, or for a second copy of the
@@ -135,6 +151,31 @@ from the `.def` (`sed '1,/^---$/d'` into `build/native-test/`), compiles every
 plus the `.def`'s own `linkerOpts` frameworks, and runs it. The `.def` stays the
 single source of truth — cinterop cannot be pointed at a separate header, so no
 checked-in `.h` exists — and the generated copy lives for one run.
+
+**The sanitized pass.** `./kotlin test` runs the C harness twice: once as above,
+once with `--sanitize`, which builds the same sources with
+`-fsanitize=address,undefined -fno-sanitize-recover=all` into a binary of its own.
+That pass is not about any check — all of them pass either way — but about what no
+assertion over return values can see: a write past an allocation, a use after
+free, a signed overflow. `malloc((size_t)length)` in place of
+`malloc((size_t)length + 1U)` in `hm_receive_json_frame`, a one-byte heap
+overflow, leaves the ordinary pass green at exit 0 and stops the sanitized one
+with `heap-buffer-overflow harmon_native.h:494`, which the bridge reports as a
+death on signal 6. It costs about 1.2 s over the ordinary pass.
+
+Leaks are **not** part of it: LeakSanitizer refuses to start on macOS
+("detect_leaks is not supported on this platform"), so the two `free` calls whose
+absence would matter are measured by checks that ask the allocator how much it
+holds — `framing.receive-frees-rejected-frame` and
+`processes.listing-frees-its-pid-list`. Five checks know they are in a sanitized
+build, each for a property of the sanitizer rather than of the bridge, and each
+says so where it branches: `attribution.self-walk-completes` gets a larger region
+budget (the shadow map turns this process into 163966 regions against 54),
+`framing.receive-terminates-the-payload` cannot ask for a freed block back
+(quarantine), both leak checks read the sanitizer's allocator accounting instead
+of `malloc_zone_statistics`, and `processes.own-sample-matches-a-fresh-rusage`
+cannot lock memory (`mlock` is intercepted into a no-op — it returns 0 and
+`ri_wired_size` stays 0).
 
 Both harnesses speak the same protocol, and this paragraph is the description of
 it — the harnesses and the bridge point here rather than restating it. Output is
@@ -153,10 +194,13 @@ nothing prints `ok harness.no-checks-selected`. Both harnesses arm a
 60-second `alarm` before their first check, so a walk or a socket that hung
 inside the kernel dies on SIGALRM instead of hanging `./kotlin test`; the bridge
 reports that as "died on signal 14". A child the C harness forks re-arms that
-alarm and closes stdout: `fork` clears the parent's alarm, and a child that
-outlived a parent killed by one used to hold the harness's stdout open, so the
-reader in `NativeHarness.kt` waited for an EOF that never came — measured at
-ten minutes and counting, against the three seconds the parent took to die.
+alarm and closes **both** standard descriptors: `fork` clears the parent's alarm,
+and a child that outlives a parent killed by one holds the harness's output pipe
+open, so the reader in `NativeHarness.kt` waits for an EOF that never comes.
+Both descriptors, because the bridge runs every command with `2>&1` and 1 and 2
+are then the same pipe — measured with a parent that exits while the child pauses:
+closing neither gives no EOF in ten seconds, closing stdout alone gives no EOF
+either, closing both gives EOF in 0.02 s.
 
 `test/NativeHarness.kt` drives them through `popen`, turns the first `fail` into
 an assertion naming it and the rest, requires a normal exit with status 0,
@@ -174,6 +218,7 @@ check that falls out of a harness cannot disappear quietly. That list is
 scripts/test-native.sh                 # every C check
 scripts/test-native.sh socket.         # one suite, by name prefix
 scripts/test-native.sh --self-check    # exit 1, proves the fail branch runs
+scripts/test-native.sh --sanitize      # the same checks under ASan and UBSan
 build/tasks/_selftest_linkMacosArm64Debug/selftest.kexe binding.
 ```
 
@@ -230,13 +275,33 @@ to cover everything:
 - `nice_ticks` in `hm_read_processor` — the counter reads 0 on this machine and a
   300 ms burn at nice 19 does not move it, so the anchor agrees with a bridge that
   hard-coded the field to zero. The other three tick counters are anchored;
+- `package_idle_wakeups` in the process sample, for the same reason and with the
+  same shape: `ri_pkg_idle_wkups` reads 0 for a process as short-lived as the
+  harness, so its bracket is 0..0 and a hard-coded zero is inside it. The counter
+  itself is live — 354 of the 631 processes this account can read carry a non-zero
+  one, up to 2955467 — but they accumulated it over hours of the package actually
+  going idle, and neither 200 wakeups at 2 ms nor 20 at 50 ms move it inside a
+  one-second run. Closing it would mean bracketing the sample of *another*
+  process, one this harness does not otherwise need. The two disk figures and
+  `wired_bytes`, which had the same 0..0 problem, are made non-zero instead;
+- any virtual memory figure below the 8 MiB tolerance of
+  `snapshot.virtual-memory-matches-a-fresh-read`, which cannot be told from a
+  hard-coded zero. It is the small fields that are exposed: `purgeable_bytes` is
+  25 to 56 MB here and separated, but a machine holding less than 8 MB of it is
+  not, and neither is `compressed_bytes` on a runner with no memory pressure at
+  all;
 - `root_filesystem_available_bytes` from `f_bfree` instead of `f_bavail` — the two
   are equal on the APFS root here, so the anchor cannot tell them apart. It would
   on a filesystem that reserves blocks for root. `hm_read_storage` also hard-codes
   `/`, so no check can tell it from another mount point;
 - the summation across devices in `hm_add_storage_statistic` — it adds the
   statistics of every `IOBlockStorageDriver` in the registry, and a machine with
-  one internal drive cannot distinguish adding them from overwriting;
+  one internal drive cannot distinguish adding them from overwriting. The filter
+  that decides which drivers are summed is anchored: `hm_read_storage_anchor` used
+  to call the bridge's own `hm_storage_driver_is_internal` and moved with it, and
+  now decides for itself, so a bridge accepting every driver reports five devices
+  against the anchor's one. On a machine whose registry holds a single driver even
+  that is indistinguishable;
 - what the swap sample cannot separate on a given machine: with no swap file all
   three figures are zero and a transposed `xsu_used`/`xsu_avail` is invisible, and
   with unencrypted swap the `encrypted` flag cannot be told from a hard-coded 0.
@@ -264,9 +329,19 @@ to cover everything:
   the sample and the anchor, a battery that is not charging cannot distinguish the
   charging flag from a hard-coded 0, and a machine without a battery exercises
   none of it;
-- `DarwinSystemCollector` as a consumer of the bridge — `selftest` cannot depend
-  on an application module, so it checks the bridge, not how the collector uses
-  it. The collector's own arguments are covered by `DarwinCollectorLimitsTest`.
+- `DarwinSystemCollector.capture()`, which is the largest hole on this list.
+  `capture()` (`DarwinSystemCollector.kt:156-325`) re-performs by hand every field
+  mapping the C harness spends 2500 lines pinning — some thirty
+  `field = sample.field` assignments — and nothing executes it: the only test that
+  names `DarwinSystemCollector` is `DarwinCollectorLimitsTest`, which covers the
+  constructor arguments and never calls `capture()`. A `userTimeNs =
+  sample.system_time_ns` written there produces exactly the report
+  `processes.own-sample-matches-a-fresh-rusage` exists to prevent, and not one
+  check turns red. It stays that way because the test compilation cannot reach
+  cinterop at all (KTC-5573) and `selftest` cannot depend on an application
+  module; moving the collector into `nativebridge` would drag `model/` along with
+  it. What covers it today is `harmon diagnose` on a real machine, read by a
+  human.
 
 End-to-end verification is still `harmon diagnose` on a real machine. The
 recipe, without installing launchd services: start a local unprivileged

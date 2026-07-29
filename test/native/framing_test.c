@@ -1,6 +1,5 @@
 #include "harmon_native.h"
 
-#include <malloc/malloc.h>
 #include <pthread.h>
 #include <signal.h>
 
@@ -363,12 +362,6 @@ static void hm_check_receive_rejects_embedded_nul(void) {
     free(trailing.json);
 }
 
-static size_t hm_heap_bytes_in_use(void) {
-    malloc_statistics_t statistics;
-    malloc_zone_statistics(malloc_default_zone(), &statistics);
-    return statistics.size_in_use;
-}
-
 /*
  * Rejects the same frame `HM_TEST_LEAK_ITERATIONS` times, so that the heap
  * measurement around it sees the same allocation made and dropped that many
@@ -449,16 +442,16 @@ static void hm_check_receive_frees_rejected_frame(void) {
 
     int embedded_nul_failure = 0;
     int truncated_failure = 0;
-    const size_t before = hm_heap_bytes_in_use();
+    const size_t before = hm_test_heap_bytes_in_use();
     const int embedded_nul_rejected =
         hm_reject_repeatedly(frame, size, EILSEQ, &embedded_nul_failure);
-    const size_t midpoint = hm_heap_bytes_in_use();
+    const size_t midpoint = hm_test_heap_bytes_in_use();
     const int truncated_rejected =
         hm_reject_repeatedly(frame, truncated_size, ECONNRESET, &truncated_failure);
     const long long embedded_nul_growth =
         (long long)midpoint - (long long)before;
     const long long truncated_growth =
-        (long long)hm_heap_bytes_in_use() - (long long)midpoint;
+        (long long)hm_test_heap_bytes_in_use() - (long long)midpoint;
 
     CHECK(
         "framing.receive-frees-rejected-frame",
@@ -497,6 +490,16 @@ static void hm_check_receive_frees_rejected_frame(void) {
  * over 40 runs of the harness including 18 under full CPU load. Without the reuse
  * the assertion would be about zeroed memory, so it is asserted rather than hoped
  * for.
+ *
+ * The sanitized build cannot ask for the reuse: a freed block goes to the
+ * quarantine of AddressSanitizer and the next allocation is a fresh one behind a
+ * redzone. It does not need to — the missing terminator is a one-byte write past
+ * the end of that allocation, which is the sanitizer's own subject, and it
+ * reports `heap-buffer-overflow harmon_native.h:494 in hm_receive_json_frame`
+ * before this check gets a chance to look at anything. So the reuse is required
+ * of the plain build only, and the two builds together cover the line from both
+ * sides: the dirt says the byte was written, the redzone says it was written
+ * inside the allocation.
  */
 static void hm_check_receive_terminates_payload(void) {
     const size_t payload_bytes = HM_TEST_LEAK_PAYLOAD_BYTES;
@@ -546,7 +549,7 @@ static void hm_check_receive_terminates_payload(void) {
         "framing.receive-terminates-the-payload",
         sent == 0 &&
             received != NULL &&
-            reused &&
+            (reused || HM_TEST_SANITIZED) &&
             received_size == (uint32_t)payload_bytes &&
             received[payload_bytes] == '\0' &&
             length == payload_bytes,

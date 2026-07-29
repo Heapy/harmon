@@ -80,13 +80,27 @@ static int hm_attribution_rejects(
     return result == -1 && errno == EINVAL;
 }
 
+/*
+ * The budget the walk of this process is given. It is the production limit in the
+ * ordinary build, and the check is then also the statement that a real address
+ * space fits inside it. The sanitized build needs a larger one: its shadow map
+ * turns the same process into 163966 regions against the 54 of the plain binary
+ * (measured), so under the production limit the walk would report an undercount
+ * of the sanitizer rather than anything about the bridge.
+ */
+#if HM_TEST_SANITIZED
+#define HM_SELF_WALK_LIMIT (1 << 22)
+#else
+#define HM_SELF_WALK_LIMIT HM_ATTRIBUTION_REGION_LIMIT
+#endif
+
 static void hm_check_attribution_self_walk(void) {
     uint64_t bytes = 0;
     int32_t regions = 0;
     int consumed = 0;
     const int status = hm_read_compressed_or_paged_out(
         getpid(),
-        HM_ATTRIBUTION_REGION_LIMIT,
+        HM_SELF_WALK_LIMIT,
         &bytes,
         &regions,
         &consumed
@@ -108,11 +122,11 @@ static void hm_check_attribution_self_walk(void) {
     CHECK(
         "attribution.consumed-is-reported",
         consumed > 0 &&
-            consumed <= HM_ATTRIBUTION_REGION_LIMIT &&
+            consumed <= HM_SELF_WALK_LIMIT &&
             consumed >= (int)regions,
         "expected %d < consumed <= %d for %d regions, got %d",
         0,
-        HM_ATTRIBUTION_REGION_LIMIT,
+        HM_SELF_WALK_LIMIT,
         (int)regions,
         consumed
     );
@@ -191,17 +205,25 @@ static void hm_spin_microseconds(uint64_t microseconds) {
  * Never returns. Maps enough regions to make a walk of this child take
  * milliseconds.
  *
- * The two lines before that are what keeps a hung run from hanging `./kotlin
+ * The three lines before that are what keeps a hung run from hanging `./kotlin
  * test` instead of the harness. The child waits to be killed, and `fork` cleared
  * the alarm `main` armed, so a parent that dies on SIGALRM before reaching the
- * `kill` below leaves it running forever — holding the write end of the stdout
- * pipe, which is the descriptor `NativeHarness.kt` reads until EOF. Closing
- * stdout here makes that EOF arrive with the parent's death, and the re-armed
- * alarm keeps the orphan itself bounded by the same timeout.
+ * `kill` below leaves it running forever — holding a write end of the pipe
+ * `NativeHarness.kt` reads until EOF.
+ *
+ * *Both* standard descriptors have to go, and only measuring says so: the bridge
+ * builds every command with `2>&1`, so descriptors 1 and 2 are the same pipe and
+ * closing one releases nothing. Measured with this exact shape — a parent that
+ * exits while the child pauses, read through `popen` with `2>&1`: closing
+ * neither gives no EOF in 10 s, closing stdout alone gives no EOF in 10 s
+ * either, closing both gives EOF in 0.02 s. The re-armed alarm keeps the orphan
+ * itself bounded by the same timeout, and it is what bounded the hang while the
+ * `close` was doing nothing.
  */
 static void hm_run_vanishing_child(int ready_descriptor) {
     alarm(HM_TEST_TIMEOUT_SECONDS);
     close(STDOUT_FILENO);
+    close(STDERR_FILENO);
     const size_t page = (size_t)getpagesize();
     for (int index = 0; index < HM_VANISHING_REGIONS; index++) {
         void *mapped = mmap(
@@ -1168,11 +1190,14 @@ static uint64_t hm_below(uint64_t value, uint64_t slack) {
  * `pti_numrunning`, a `started_at` of zero, `pageins` from `ri_interrupt_wkups`.
  * All eight fields reach the report through `DarwinSystemCollector`.
  *
- * Two fields would not separate on an untouched harness — it neither reads nor
- * writes a disk, and it runs one thread — so `hm_check_own_listing` gives it 4 MiB
- * of flushed writes and a parked thread before taking the readings, which is what
- * makes `disk_bytes_read` differ from `disk_bytes_written` and `thread_count`
- * from `running_thread_count`.
+ * An untouched harness leaves four of the fields unable to say anything: it
+ * neither reads nor writes a disk, it runs one thread, and it wires no memory, so
+ * `disk_bytes_read` equals `disk_bytes_written` at zero, `thread_count` equals
+ * `running_thread_count`, and `wired_bytes` sits at a zero the bracket cannot
+ * tell from a hard-coded one. `hm_check_own_listing` therefore gives it 4 MiB of
+ * flushed writes, 1 MiB read back past the cache, a parked thread and 16 MiB of
+ * locked memory before taking the readings, and the check below asserts that each
+ * of those took effect.
  *
  * The two time fields are converted with the bridge's own `hm_mach_time_to_ns`
  * and the four 32-bit counters widened with its own `hm_uint32_counter`, so this
@@ -1347,20 +1372,38 @@ static void hm_check_own_fields(
      * that a green result means the comparison could have separated them: the two
      * CPU times, the two disk directions, the two thread counts and the two
      * residency figures.
+     *
+     * Two fields need more than that, because a bracket whose low end is zero
+     * accepts a field that is always zero: `disk_bytes_read` unless the read back
+     * before the listing reached the device, and `wired_bytes` unless the lock
+     * before it holds more than the residency slack. Both preparations are
+     * asserted rather than assumed — a machine that refuses `mlock`, or serves the
+     * read from cache, says so here instead of quietly leaving two fields
+     * unchecked.
+     *
+     * The sanitized build is the one machine that cannot lock: AddressSanitizer
+     * intercepts `mlock` and makes it a no-op — measured, it returns 0 while
+     * `ri_wired_size` stays at 0 — so the demand is the ordinary pass's, which is
+     * where `wired_bytes` is pinned. The read back works under both.
      */
     const int separated = last->ri_user_time != last->ri_system_time &&
         last->ri_diskio_bytesread != last->ri_diskio_byteswritten &&
         last_task->pti_threadnum != last_task->pti_numrunning &&
         last->ri_resident_size != last->ri_phys_footprint;
+    const int lifted = first->ri_diskio_bytesread > 0 &&
+        (HM_TEST_SANITIZED ||
+            hm_lowest(first->ri_wired_size, last->ri_wired_size) > HM_OWN_RESIDENCY_SLACK);
 
     CHECK(
         "processes.own-sample-matches-a-fresh-rusage",
-        mismatch == NULL && separated,
+        mismatch == NULL && separated && lifted,
         "expected every field of pid %d's sample within the pair of readings taken "
             "around the listing, got %s reporting %llu against %llu..%llu; the "
             "readings themselves separate user from system time by %llu ticks, read "
             "from written bytes by %llu, threads from running threads by %d and "
-            "resident bytes from the footprint by %llu, and each has to be non-zero",
+            "resident bytes from the footprint by %llu, and each has to be non-zero; "
+            "the read back before the listing has to have reached the device (%llu "
+            "bytes) and the wired figure to exceed the %llu bytes of slack (%llu)",
         (int)getpid(),
         mismatch == NULL ? "no mismatch" : mismatch,
         (unsigned long long)reported,
@@ -1372,7 +1415,10 @@ static void hm_check_own_fields(
             hm_lowest(last->ri_diskio_bytesread, last->ri_diskio_byteswritten)),
         last_task->pti_threadnum - last_task->pti_numrunning,
         (unsigned long long)(hm_highest(last->ri_resident_size, last->ri_phys_footprint) -
-            hm_lowest(last->ri_resident_size, last->ri_phys_footprint))
+            hm_lowest(last->ri_resident_size, last->ri_phys_footprint)),
+        (unsigned long long)first->ri_diskio_bytesread,
+        (unsigned long long)HM_OWN_RESIDENCY_SLACK,
+        (unsigned long long)hm_lowest(first->ri_wired_size, last->ri_wired_size)
     );
 }
 
@@ -1447,12 +1493,110 @@ static void hm_check_rusage_issue_paths(const HMProcessIssue *issues, int writte
 }
 
 /*
- * Writes and flushes enough to separate `disk_bytes_read` from
- * `disk_bytes_written`, which are both zero in a harness that has touched no
- * disk. `F_FULLFSYNC` rather than `fsync`, because only that reaches the device;
- * measured, 4 MiB arrive as 4194304 written bytes against 0 or 8192 read.
+ * The uid of an issue the rusage branch produced, against a fresh
+ * `PROC_PIDTBSDINFO`, in both directions: a process whose metadata the caller
+ * cannot read has to be reported as unknown, and one whose metadata it can read
+ * has to be reported with that uid.
+ *
+ * `UINT32_MAX` is the only way the bridge has of saying "unknown" —
+ * `DarwinSystemCollector.toNullableUid()` maps exactly that value to null, and
+ * the report prints "unknown" for it. Nothing else in either harness reads the
+ * uid of a rusage issue: the metadata check next door needs `PROC_PIDTBSDINFO` to
+ * build its anchor and skips every issue of this branch for that very reason, and
+ * the path check compares only the path. So `*uid = 0` in
+ * `hm_read_process_metadata` used to leave every other check green while turning
+ * every process the collector could not read into root's — 276 of 276 issues on
+ * this machine.
+ *
+ * A refusal is told from a process that has since exited by `kill(pid, 0)`,
+ * whose ESRCH is the one thing that says "gone" rather than "not yours". The
+ * mismatch allowance is the sibling check's, and for the same reason: a pid
+ * reused between the listing and this loop would otherwise be a failure about the
+ * machine. The sentinel mutation moves every issue at once and clears it by two
+ * orders of magnitude.
+ */
+#define HM_ISSUE_UID_MINIMUM 16
+#define HM_ISSUE_UID_MISMATCH_DIVISOR 16
+
+static void hm_check_rusage_issue_uids(const HMProcessIssue *issues, int written_issues) {
+    int refused = 0;
+    int readable = 0;
+    int mismatched = 0;
+    int first = -1;
+    for (int index = 0; index < written_issues; ++index) {
+        const HMProcessIssue *issue = &issues[index];
+        if (issue->reason != HM_PROCESS_ISSUE_RUSAGE) {
+            continue;
+        }
+        struct proc_bsdinfo info;
+        memset(&info, 0, sizeof(info));
+        const int size = proc_pidinfo(
+            issue->pid,
+            PROC_PIDTBSDINFO,
+            0,
+            &info,
+            (int)sizeof(info)
+        );
+        int expected_unknown = 0;
+        if (size == (int)sizeof(info)) {
+            ++readable;
+        } else {
+            errno = 0;
+            if (kill(issue->pid, 0) != 0 && errno == ESRCH) {
+                continue;
+            }
+            ++refused;
+            expected_unknown = 1;
+        }
+        const uint32_t expected = expected_unknown ? UINT32_MAX : info.pbi_uid;
+        if (issue->uid != expected) {
+            ++mismatched;
+            if (first < 0) {
+                first = index;
+            }
+        }
+    }
+
+    const int compared = refused + readable;
+    CHECK(
+        "processes.rusage-issue-uid-is-unknown",
+        refused >= HM_ISSUE_UID_MINIMUM &&
+            mismatched * HM_ISSUE_UID_MISMATCH_DIVISOR <= compared,
+        "expected at least %d rusage issues whose metadata a fresh read is refused, "
+            "all of them reporting uid %u, and every readable one reporting the uid "
+            "of that read; got %d refused and %d readable of %d issues with %d "
+            "disagreeing (first at %d, pid %d, reporting uid %u)",
+        HM_ISSUE_UID_MINIMUM,
+        UINT32_MAX,
+        refused,
+        readable,
+        written_issues,
+        mismatched,
+        first,
+        first >= 0 ? (int)issues[first].pid : 0,
+        first >= 0 ? issues[first].uid : 0
+    );
+}
+
+/*
+ * Moves both disk figures of this process off zero before the readings are taken,
+ * which is what lets the bracket separate `disk_bytes_read` from
+ * `disk_bytes_written` — and each of them from a hard-coded zero. A harness that
+ * has touched no disk reports both as 0, and a bracket that starts at 0 accepts a
+ * field that is always 0.
+ *
+ * `F_FULLFSYNC` rather than `fsync`, because only that reaches the device.
+ * `F_NOCACHE` on the same descriptor before the write is what makes the read
+ * back count: without it the pages are still in the unified buffer cache and the
+ * read is served from memory — measured, `ri_diskio_bytesread` stayed at 0 with
+ * the flush alone. Measured with it, five runs out of five: 4194304 bytes written
+ * and exactly 1048576 read, and the two stay different numbers as the
+ * transposition guard needs them to be. Reading a file this process did not just
+ * write is not an alternative — `/usr/lib/dyld` gave 413696 bytes on one run and
+ * 0 on the next, depending on what the cache already held.
  */
 #define HM_OWN_DISK_BYTES (4 * 1024 * 1024)
+#define HM_OWN_DISK_READ_BYTES (1024 * 1024)
 
 static void hm_write_to_disk(void) {
     char path[] = "/tmp/harmon-native-test-io.XXXXXX";
@@ -1461,15 +1605,70 @@ static void hm_write_to_disk(void) {
         return;
     }
     unlink(path);
-    char *block = (char *)calloc(1, HM_OWN_DISK_BYTES);
+    fcntl(descriptor, F_NOCACHE, 1);
+    char *block = (char *)valloc(HM_OWN_DISK_BYTES);
     if (block != NULL) {
         memset(block, 'w', HM_OWN_DISK_BYTES);
         if (write(descriptor, block, HM_OWN_DISK_BYTES) == (ssize_t)HM_OWN_DISK_BYTES) {
             fcntl(descriptor, F_FULLFSYNC);
+            if (lseek(descriptor, 0, SEEK_SET) == 0) {
+                ssize_t read_bytes = read(descriptor, block, HM_OWN_DISK_READ_BYTES);
+                (void)read_bytes;
+            }
         }
         free(block);
     }
     close(descriptor);
+}
+
+/*
+ * Wires memory so that `ri_wired_size` is a number this process chose rather than
+ * the 0 every ordinary process reports. Without it the bracket around
+ * `wired_bytes` runs from 0 to the 4 MiB of residency slack, and everything below
+ * 4 MiB passes — a hard-coded zero, and `ri_resident_size / 4` with it. Wiring
+ * 16 MiB puts the low end of the bracket at 12 MiB, which both of those fail.
+ *
+ * Measured here: `mlock` of 16 MiB succeeds for an ordinary user and moves
+ * `ri_wired_size` from 0 to exactly 16777216. A machine that refuses the lock
+ * leaves the field where it was, and the check says so through the bracket it
+ * prints rather than by skipping.
+ */
+#define HM_OWN_WIRED_BYTES (16 * 1024 * 1024)
+
+typedef struct {
+    void *region;
+    int locked;
+} HMWiredMemory;
+
+static HMWiredMemory hm_wire_memory(void) {
+    HMWiredMemory wired = {NULL, 0};
+    void *region = mmap(
+        NULL,
+        HM_OWN_WIRED_BYTES,
+        PROT_READ | PROT_WRITE,
+        MAP_PRIVATE | MAP_ANON,
+        -1,
+        0
+    );
+    if (region == MAP_FAILED) {
+        return wired;
+    }
+    memset(region, 'w', HM_OWN_WIRED_BYTES);
+    wired.region = region;
+    wired.locked = mlock(region, HM_OWN_WIRED_BYTES) == 0;
+    return wired;
+}
+
+static void hm_release_wired_memory(HMWiredMemory *wired) {
+    if (wired->region == NULL) {
+        return;
+    }
+    if (wired->locked) {
+        munlock(wired->region, HM_OWN_WIRED_BYTES);
+    }
+    munmap(wired->region, HM_OWN_WIRED_BYTES);
+    wired->region = NULL;
+    wired->locked = 0;
 }
 
 /*
@@ -1549,10 +1748,12 @@ static void hm_check_own_listing(void) {
         );
         CHECK("processes.own-sample-matches-a-fresh-rusage", 0, "no listing to take");
         CHECK("processes.rusage-issue-path-matches-a-fresh-read", 0, "no listing to take");
+        CHECK("processes.rusage-issue-uid-is-unknown", 0, "no listing to take");
         return;
     }
 
     hm_write_to_disk();
+    HMWiredMemory wired = hm_wire_memory();
     HMParkedThread parked = {{-1, -1}, 0};
     pthread_t thread;
     if (pipe(parked.wake) == 0) {
@@ -1588,6 +1789,7 @@ static void hm_check_own_listing(void) {
     hm_check_own_metadata(own, written, own_path);
     hm_check_own_fields(own, &before, &after);
     hm_check_rusage_issue_paths(issues, written_issues);
+    hm_check_rusage_issue_uids(issues, written_issues);
 
     if (parked.parked) {
         const char wake = 'w';
@@ -1599,6 +1801,7 @@ static void hm_check_own_listing(void) {
         close(parked.wake[0]);
         close(parked.wake[1]);
     }
+    hm_release_wired_memory(&wired);
     free(samples);
     free(issues);
 }
@@ -1624,6 +1827,83 @@ static int hm_listing_rejects(
         NULL
     );
     return result == -1 && errno == EINVAL;
+}
+
+/*
+ * The PID list `hm_list_processes` allocates for itself, and the `free` at the
+ * end of it. Nothing in the return value says whether that call is there, and the
+ * caller is a root daemon that samples for as long as the machine is up: deleting
+ * it leaks the list on every sample, about 4 KB each here, for as long as harmon
+ * runs. AddressSanitizer does not cover it either — LeakSanitizer refuses to start
+ * on macOS — so it is measured the way the framing suite measures its own leak,
+ * by asking the allocator what it holds.
+ *
+ * Measured over 16 listings of this machine's 917 processes: 0 bytes of growth
+ * with the `free` in place, 81920 without it, three runs each. The tolerance is a
+ * fifth of that, and the round count is what keeps the check at 11 ms.
+ */
+#define HM_LEAK_LISTING_ROUNDS 16
+#define HM_LEAK_LISTING_TOLERANCE_BYTES (16 * 1024)
+#define HM_LEAK_LISTING_CAPACITY 64
+
+static int hm_take_narrow_listing(
+    HMProcessSample *samples,
+    HMProcessIssue *issues,
+    int *written_issues
+) {
+    return hm_list_processes(
+        samples,
+        HM_LEAK_LISTING_CAPACITY,
+        issues,
+        HM_LEAK_LISTING_CAPACITY,
+        0,
+        0,
+        NULL,
+        NULL,
+        written_issues
+    );
+}
+
+static void hm_check_listing_frees_its_pid_list(void) {
+    HMProcessSample *samples = (HMProcessSample *)calloc(
+        HM_LEAK_LISTING_CAPACITY,
+        sizeof(HMProcessSample)
+    );
+    HMProcessIssue *issues = (HMProcessIssue *)calloc(
+        HM_LEAK_LISTING_CAPACITY,
+        sizeof(HMProcessIssue)
+    );
+    if (samples == NULL || issues == NULL) {
+        free(samples);
+        free(issues);
+        CHECK("processes.listing-frees-its-pid-list", 0, "out of memory");
+        return;
+    }
+
+    int written_issues = 0;
+    /* One listing first, so that first-touch allocations stay out of the window. */
+    int written = hm_take_narrow_listing(samples, issues, &written_issues);
+    const size_t before = hm_test_heap_bytes_in_use();
+    for (int round = 0; round < HM_LEAK_LISTING_ROUNDS; ++round) {
+        written = hm_take_narrow_listing(samples, issues, &written_issues);
+    }
+    const long long growth =
+        (long long)hm_test_heap_bytes_in_use() - (long long)before;
+
+    CHECK(
+        "processes.listing-frees-its-pid-list",
+        written > 0 && growth < HM_LEAK_LISTING_TOLERANCE_BYTES,
+        "expected the heap to grow by less than %d bytes over %d listings, grew by "
+            "%lld while writing %d samples of %d processes",
+        HM_LEAK_LISTING_TOLERANCE_BYTES,
+        HM_LEAK_LISTING_ROUNDS,
+        growth,
+        written,
+        hm_count_processes()
+    );
+
+    free(samples);
+    free(issues);
 }
 
 /*
@@ -1974,13 +2254,22 @@ static void hm_check_swap_and_virtual_memory(void) {
  * mirrored rather than checked; the swap check covers a page size that is zero or
  * not a power of two, which is the failure that arithmetic has.
  *
- * The tolerances are for a cache refresh between the two reads, like the tick
- * ones: measured here, 500 back-to-back pairs never differed at all in any of the
- * seven fields probed — free, compressed, pageins, pageouts, faults, compressions
- * and swapouts. They stay far below the distances between the fields they
- * separate: 394M pageins against 11M pageouts, 63M swapins against 70M swapouts.
+ * The tolerances are for movement between the two reads. The byte one used to be
+ * 64 MiB, which was larger than some of the fields it was applied to: at 56 MB of
+ * purgeable memory here, a bridge reporting a hard zero was inside the tolerance
+ * and the field was not checked at all — and on a CI runner with little memory
+ * pressure the same arithmetic would unpin `compressed_bytes`, the headline
+ * number of this monitor. It is 8 MiB now, from measurement rather than caution:
+ * 3000 back-to-back pairs never differed by a page in any of the eight page
+ * counts, and 2000 pairs spread over ten seconds under four processes churning
+ * 64 MiB blocks moved at most 130 pages — 2.03 MB of free memory — with only five
+ * pairs in the whole run differing at all. The allowance is four times that worst
+ * case, and every field above it is separated from zero.
+ *
+ * The event counters keep their own tolerance, which is not in the same trouble:
+ * they are 394M pageins against 11M pageouts, 63M swapins against 70M swapouts.
  */
-#define HM_MEMORY_DRIFT_BYTES (64ULL * 1024ULL * 1024ULL)
+#define HM_MEMORY_DRIFT_BYTES (8ULL * 1024ULL * 1024ULL)
 #define HM_MEMORY_DRIFT_EVENTS 1000000ULL
 
 static void hm_check_virtual_memory_fields(void) {
@@ -2119,11 +2408,16 @@ static void hm_check_storage_and_battery(void) {
  * service times — are unconstrained by it, and a read time filled from the write
  * time is exactly the kind of transposition it cannot see.
  *
- * The anchor walks the registry a second time and reads the keys out explicitly.
- * The device filter is the bridge's own `hm_storage_driver_is_internal`, because
- * the mapping under test is key-to-field and not which device counts; sharing the
- * filter also keeps the two walks over the same set of devices when an external
- * disk is attached.
+ * The anchor walks the registry a second time, decides for itself which drivers
+ * count and reads the keys out explicitly. It used to ask the bridge —
+ * `hm_storage_driver_is_internal` — which moved the anchor with any mutation of
+ * the filter: a bridge accepting every driver was green, while on a machine with
+ * an external or a removable disk it folds that disk's I/O into the figures the
+ * collector reports for the internal one. This machine carries five
+ * `IOBlockStorageDriver` instances of which one is internal, so the two walks
+ * disagree on the device count the moment the predicate moves; a machine with a
+ * single driver cannot tell the filter from "accept everything", and CLAUDE.md
+ * records that.
  *
  * The tolerances are for a machine that is doing I/O while the check runs, which
  * it is: measured over 50 back-to-back pairs, at most 61 KiB read, 16 KiB
@@ -2156,6 +2450,48 @@ static uint64_t hm_storage_statistic(CFDictionaryRef statistics, CFStringRef key
     return value;
 }
 
+/* A boolean property, with the answer to give when the registry has none. */
+static int hm_registry_flag(io_registry_entry_t entry, CFStringRef key, int fallback) {
+    CFTypeRef value = IORegistryEntryCreateCFProperty(entry, key, kCFAllocatorDefault, 0);
+    int flag = fallback;
+    if (value != NULL) {
+        if (CFGetTypeID(value) == CFBooleanGetTypeID()) {
+            flag = CFBooleanGetValue((CFBooleanRef)value) ? 1 : 0;
+        }
+        CFRelease(value);
+    }
+    return flag;
+}
+
+/*
+ * The whole media of a fixed disk: not a partition, not removable, not ejectable.
+ * A property the registry does not carry counts against the media, which is the
+ * conservative direction — an unnamed disk is not assumed to be built in.
+ */
+static int hm_media_is_internal(io_registry_entry_t media) {
+    return hm_registry_flag(media, CFSTR(kIOMediaWholeKey), 0) &&
+        !hm_registry_flag(media, CFSTR(kIOMediaRemovableKey), 1) &&
+        !hm_registry_flag(media, CFSTR(kIOMediaEjectableKey), 1);
+}
+
+static int hm_driver_is_internal(io_registry_entry_t driver) {
+    io_iterator_t children = IO_OBJECT_NULL;
+    if (IORegistryEntryGetChildIterator(driver, kIOServicePlane, &children) !=
+        KERN_SUCCESS) {
+        return 0;
+    }
+    int internal = 0;
+    io_registry_entry_t child;
+    while (!internal && (child = IOIteratorNext(children)) != IO_OBJECT_NULL) {
+        if (IOObjectConformsTo(child, kIOMediaClass)) {
+            internal = hm_media_is_internal(child);
+        }
+        IOObjectRelease(child);
+    }
+    IOObjectRelease(children);
+    return internal;
+}
+
 static HMStorageAnchor hm_read_storage_anchor(void) {
     HMStorageAnchor anchor;
     memset(&anchor, 0, sizeof(anchor));
@@ -2172,7 +2508,7 @@ static HMStorageAnchor hm_read_storage_anchor(void) {
 
     io_registry_entry_t driver;
     while ((driver = IOIteratorNext(iterator)) != IO_OBJECT_NULL) {
-        if (hm_storage_driver_is_internal(driver)) {
+        if (hm_driver_is_internal(driver)) {
             CFTypeRef value = IORegistryEntryCreateCFProperty(
                 driver,
                 CFSTR(kIOBlockStorageDriverStatisticsKey),
@@ -2413,6 +2749,7 @@ void hm_run_kernel_tests(void) {
     hm_check_attribution_invalid_arguments();
     hm_check_process_listing();
     hm_check_own_listing();
+    hm_check_listing_frees_its_pid_list();
     hm_check_process_listing_invalid_arguments();
     hm_check_memory_and_load();
     hm_check_memory_and_load_fields();

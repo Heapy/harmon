@@ -10,6 +10,7 @@ import kotlin.test.assertEquals
  * its name here, or the run fails as `unexpected`.
  */
 private val C_HARNESS_CHECKS = setOf(
+    "pure.constants-are-pinned",
     "pure.saturating-add-zero",
     "pure.saturating-add-adds",
     "pure.saturating-add-reaches-max",
@@ -51,6 +52,8 @@ private val C_HARNESS_CHECKS = setOf(
     "processes.own-sample-carries-metadata",
     "processes.own-sample-matches-a-fresh-rusage",
     "processes.rusage-issue-path-matches-a-fresh-read",
+    "processes.rusage-issue-uid-is-unknown",
+    "processes.listing-frees-its-pid-list",
     "processes.rejects-invalid-arguments",
     "snapshot.memory-and-load-are-plausible",
     "snapshot.memory-and-load-match-a-fresh-read",
@@ -92,6 +95,25 @@ class NativeCTest {
     @Test
     fun runsTheCHarness() {
         assertHarnessSucceeded(runNativeHarness(cTestHarness()), C_HARNESS_CHECKS)
+    }
+
+    /**
+     * The same checks over the same bridge, compiled under AddressSanitizer and
+     * UndefinedBehaviorSanitizer.
+     *
+     * It is not the checks this pass is about — they pass either way — but everything they cannot
+     * see: an overflow past an allocation, a use after free, a signed overflow. A `malloc` one byte
+     * short of the terminator in `hm_receive_json_frame` leaves every check of the ordinary pass
+     * green and stops this one with `heap-buffer-overflow harmon_native.h:494`, reported here as a
+     * death on signal 6. Leaks are not part of it: LeakSanitizer does not run on macOS, so the two
+     * that matter are measured by checks of their own.
+     */
+    @Test
+    fun runsTheCHarnessUnderSanitizers() {
+        assertHarnessSucceeded(
+            runNativeHarness(cTestHarness(), listOf("--sanitize")),
+            C_HARNESS_CHECKS,
+        )
     }
 
     @Test

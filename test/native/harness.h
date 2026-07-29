@@ -20,15 +20,56 @@
  */
 
 #include <stdarg.h>
+#include <stddef.h>
 #include <stdio.h>
 #include <string.h>
+
+/*
+ * Whether this build is the sanitized one `scripts/test-native.sh --sanitize`
+ * produces. Five checks need to know, and each says why where it branches: the
+ * shadow map of AddressSanitizer turns the address space into six figures of
+ * regions, and its allocator replaces the one `malloc_zone_statistics` reports on
+ * and never hands a freed block straight back.
+ */
+#if defined(__has_feature)
+#  if __has_feature(address_sanitizer)
+#    define HM_TEST_SANITIZED 1
+#  endif
+#endif
+#ifndef HM_TEST_SANITIZED
+#  define HM_TEST_SANITIZED 0
+#endif
+
+#if HM_TEST_SANITIZED
+#include <sanitizer/allocator_interface.h>
+#else
+#include <malloc/malloc.h>
+#endif
+
+/*
+ * Bytes held in live heap allocations, which is how both leak checks measure a
+ * `free` that is not there. Each allocator is asked with its own accounting call;
+ * measured, both report growth 0 over 64 allocations of 64 KiB that are released
+ * and the full 4 MiB over 64 that are not.
+ */
+static inline size_t hm_test_heap_bytes_in_use(void) {
+#if HM_TEST_SANITIZED
+    return __sanitizer_get_current_allocated_bytes();
+#else
+    malloc_statistics_t statistics;
+    malloc_zone_statistics(malloc_default_zone(), &statistics);
+    return statistics.size_in_use;
+#endif
+}
 
 /*
  * How long a whole run may take before `main` dies on SIGALRM. It lives here
  * rather than in `main.c` because every child the suites fork has to bound
  * itself by the same number: `fork` clears the parent's alarm, so a child that
- * outlives a parent killed by one would hold the harness's stdout open and hang
- * the reader in `NativeHarness.kt` instead of hanging the harness.
+ * outlives a parent killed by one would hold the harness's output pipe open and
+ * hang the reader in `NativeHarness.kt` instead of hanging the harness. Such a
+ * child closes stdout *and* stderr, which are the same pipe under the `2>&1` the
+ * bridge runs the harness with.
  */
 #define HM_TEST_TIMEOUT_SECONDS 60
 
