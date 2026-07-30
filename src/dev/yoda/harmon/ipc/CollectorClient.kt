@@ -25,7 +25,21 @@ class CollectorClient(
     }
 
     @OptIn(ExperimentalForeignApi::class)
-    override fun capture(): RawSystemSnapshot = memScoped {
+    override fun capture(): RawSystemSnapshot =
+        CollectorProtocol.decode(receivePayload())
+
+    fun probeProtocolVersion(): Int {
+        val payload = receivePayload()
+        val version = CollectorProtocol.reportedVersion(payload)
+            ?: throw CollectorProtocolException("Collector did not return a protocol version")
+        if (version == CollectorProtocol.VERSION) {
+            CollectorProtocol.decode(payload)
+        }
+        return version
+    }
+
+    @OptIn(ExperimentalForeignApi::class)
+    private fun receivePayload(): String = memScoped {
         val descriptor = hm_unix_connect(socketPath)
         if (descriptor < 0) {
             throw nativeCollectionFailure("Unable to connect to collector at $socketPath")
@@ -38,7 +52,7 @@ class CollectorClient(
                 size.ptr,
             ) ?: throw nativeCollectionFailure("Unable to receive collector snapshot")
             try {
-                CollectorProtocol.decode(payload.toKString())
+                payload.toKString()
             } finally {
                 hm_free(payload)
             }

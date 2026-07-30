@@ -58,14 +58,24 @@ object CollectorProtocol {
         return envelope.snapshot
     }
 
-    /** The protocol error a failed decode really stands for, or null when the version is fine. */
-    private fun versionMismatch(payload: String): CollectorProtocolException? {
+    /**
+     * Reads only the advertised protocol version for diagnostics.
+     *
+     * Status needs to report a newer peer's version even when the strict snapshot decoder cannot
+     * understand the rest of that peer's envelope.
+     */
+    fun reportedVersion(payload: String): Int? {
         val element = try {
             json.parseToJsonElement(payload)
         } catch (_: SerializationException) {
             return null
         }
-        val version = protocolVersionOf(element) ?: return null
+        return protocolVersionOf(element)
+    }
+
+    /** The protocol error a failed decode really stands for, or null when the version is fine. */
+    private fun versionMismatch(payload: String): CollectorProtocolException? {
+        val version = reportedVersion(payload) ?: return null
         return if (version == VERSION) {
             null
         } else {

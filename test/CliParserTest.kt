@@ -100,4 +100,15 @@ class CliParserTest {
             )
         }
     }
+
+    @Test
+    fun parsesStatusAndRejectsEveryOption() {
+        assertEquals(Command.Status, CliParser.parse(arrayOf("status")))
+        assertFailsWith<CliException> {
+            CliParser.parse(arrayOf("status", "--config", "/tmp/config"))
+        }
+        assertFailsWith<CliException> {
+            CliParser.parse(arrayOf("status", "--notify"))
+        }
+    }
 }

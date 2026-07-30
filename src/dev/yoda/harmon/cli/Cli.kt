@@ -19,6 +19,7 @@ object HarmonApplication {
         serviceFactory: (HarmonConfig, History?) -> HarmonService,
         historyFactory: (HarmonConfig) -> History?,
         setup: (SetupRequest) -> Unit,
+        status: () -> Int,
     ) {
         val command = try {
             CliParser.parse(arguments)
@@ -80,6 +81,17 @@ object HarmonApplication {
                     )
                 } catch (failure: Throwable) {
                     printError("setup error: ${failureDescription(failure)}")
+                    exitProcess(1)
+                }
+            }
+            Command.Status -> {
+                try {
+                    val exitCode = status()
+                    if (exitCode != 0) {
+                        exitProcess(exitCode)
+                    }
+                } catch (failure: Throwable) {
+                    printError("status error: ${failureDescription(failure)}")
                     exitProcess(1)
                 }
             }
@@ -147,6 +159,8 @@ sealed interface Command {
         val userId: UInt?,
         val groupId: UInt?,
     ) : Command
+
+    data object Status : Command
 }
 
 class CliException(message: String) : IllegalArgumentException(message)
@@ -216,6 +230,13 @@ object CliParser {
                 rejectSampleOptions(sampleSeconds, notify)
                 Command.TestNotifications(configPath)
             }
+            "status" -> {
+                rejectSampleOptions(sampleSeconds, notify)
+                if (configPath != null) {
+                    throw CliException("--config is not available for 'status'")
+                }
+                Command.Status
+            }
             else -> throw CliException("unknown command '$commandName'")
         }
     }
@@ -231,6 +252,7 @@ object CliParser {
           harmon test-notifications [--config PATH]
           harmon setup
           harmon setup --system --uid UID --gid GID
+          harmon status
           harmon --help
           harmon --version
 
@@ -247,6 +269,9 @@ object CliParser {
         setup creates the user-owned application, config, and LaunchAgent, then
         requests sudo once for the root-owned collector and LaunchDaemon.
         The --system form is public for MDM and other automation.
+
+        status is read-only and exits non-zero when the installed copies,
+        collector protocol, socket, or launchd jobs need setup.
     """.trimIndent()
 
     private fun parseSetup(arguments: List<String>): Command.Setup {

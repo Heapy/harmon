@@ -5,9 +5,11 @@ import dev.yoda.harmon.notify.NotificationDispatcher
 import dev.yoda.harmon.notify.from
 import dev.yoda.harmon.runtime.HarmonService
 import dev.yoda.harmon.setup.HarmonSetup
+import dev.yoda.harmon.setup.HarmonStatus
 
 fun main(arguments: Array<String>) {
     val setup = HarmonSetup()
+    val status = HarmonStatus()
     HarmonApplication.run(
         arguments = arguments,
         serviceFactory = { config, history ->
@@ -27,5 +29,6 @@ fun main(arguments: Array<String>) {
             }
         },
         setup = setup::run,
+        status = status::run,
     )
 }

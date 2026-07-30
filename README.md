@@ -398,6 +398,18 @@ so it cannot shadow an upgraded Homebrew binary. An unrelated file or symlink at
 that path is left alone. The former agent Label, plist, and helper path are
 cleaned up during the same migration.
 
+After setup, and after every binary upgrade, run:
+
+```shell
+harmon status
+```
+
+It is read-only and needs no sudo. The report shows the running CLI and paired
+source collector versions, the copies in `Harmon.app` and
+`/Library/PrivilegedHelperTools`, expected and live protocol versions, socket
+health, and both launchd jobs with their PID and executable path. Any stale,
+mixed, unloaded, or failed state exits 1 and says to run `harmon setup`.
+
 Inspect services and logs:
 
 ```shell

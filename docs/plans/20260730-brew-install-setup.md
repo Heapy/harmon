@@ -452,11 +452,11 @@ app bundle подписывается заново на машине польз�
 - Modify: root CLI/help
 - Create: `test/StatusTest.kt`
 
-- [ ] собрать версии source и installed copies
-- [ ] проверить expected/live protocol и socket
-- [ ] разобрать состояния двух launchd jobs без sudo
-- [ ] вернуть 0 только для полностью согласованной running pair
-- [ ] назвать upgrade gap и `harmon setup` в каждом actionable failure
+- [x] собрать версии source и installed copies
+- [x] проверить expected/live protocol и socket
+- [x] разобрать состояния двух launchd jobs без sudo
+- [x] вернуть 0 только для полностью согласованной running pair
+- [x] назвать upgrade gap и `harmon setup` в каждом actionable failure
 
 ### Task 8: Release artifact
 

@@ -58,6 +58,16 @@ Both launchd plists are encoded from typed `LaunchdJob` values, linted by
 `plutil` while still temporary siblings of their targets, permissioned, and
 atomically renamed. No text template or XML substitution remains.
 
+`harmon status` is the read-only side of the upgrade contract. It compares the
+running CLI and adjacent source collector with the copies in `Harmon.app` and
+`/Library/PrivilegedHelperTools`, probes the socket's advertised protocol, and
+parses `launchctl print` for both jobs, including PID and executable path. A
+Homebrew/source version newer than either installed copy, a mixed installed
+pair, an old live protocol, a wrong program path, or an unloaded/non-running
+job produces exit 1 and the explicit action `Run 'harmon setup'`. Healthy
+versions, protocol, socket, and jobs produce exit 0. Status never invokes sudo
+or mutates a service.
+
 The icon shown next to a notification is the bundle's own icon: `Info.plist`
 names `Harmon.icns` through `CFBundleIconFile`, and the installer copies that
 resource in before signing, since a resource added to a signed bundle

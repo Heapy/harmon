@@ -10,6 +10,16 @@ private val CURRENT_VERSION_FIELD = "\"protocolVersion\":${CollectorProtocol.VER
 
 class CollectorProtocolTest {
     @Test
+    fun reportsANewerVersionWithoutDecodingItsUnknownPayload() {
+        assertEquals(
+            CollectorProtocol.VERSION + 1,
+            CollectorProtocol.reportedVersion(
+                """{"protocolVersion":${CollectorProtocol.VERSION + 1},"future":true}""",
+            ),
+        )
+    }
+
+    @Test
     fun roundTripsRawSnapshotAsJson() {
         val original = rawSnapshot(
             monotonicNs = 3_000_000_000u,
