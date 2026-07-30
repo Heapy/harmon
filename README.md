@@ -422,6 +422,8 @@ harmon-collector/
                collector app, IPC server, Darwin probes, and collector tests
 src/           harmon CLI, IPC client, notifications, and app composition root
 bridge-ipc/    Unix sockets and JSON framing cinterop
+bridge-install/
+               executable-path discovery used by setup and status
 bridge-probe/  libproc, Mach, sysctl, and IOKit cinterop
 bridge-http/   libcurl cinterop
 plugins/       the SQLDelight code generator, as a Toolchain plugin

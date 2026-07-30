@@ -1,0 +1,7 @@
+# Darwin executable-path discovery used only by the user-facing install commands.
+
+product:
+  type: kmp/lib
+  platforms: [macosArm64]
+
+apply: [../harmon.module-template.yaml]

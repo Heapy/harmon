@@ -1,5 +1,6 @@
 package dev.yoda.harmon.cli
 
+import dev.yoda.harmon.BuildInfo
 import dev.yoda.harmon.config.ConfigException
 import dev.yoda.harmon.config.ConfigLoader
 import dev.yoda.harmon.config.HarmonConfig
@@ -27,7 +28,7 @@ object HarmonApplication {
 
         when (command) {
             Command.Help -> println(CliParser.help())
-            Command.Version -> println("harmon 0.4.0")
+            Command.Version -> println("harmon ${BuildInfo.VERSION}")
             is Command.Run -> withConfig(command.configPath) { config ->
                 serviceFactory(config, historyFactory(config)).runForever()
             }

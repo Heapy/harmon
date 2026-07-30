@@ -1,0 +1,3 @@
+headers = mach-o/dyld.h
+headerFilter = mach-o/dyld.h
+package = dev.yoda.harmon.nativebridge.install

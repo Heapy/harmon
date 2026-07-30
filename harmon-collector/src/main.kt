@@ -1,3 +1,4 @@
+import dev.yoda.harmon.BuildInfo
 import dev.yoda.harmon.collector.CollectorCliException
 import dev.yoda.harmon.collector.CollectorCliParser
 import dev.yoda.harmon.collector.CollectorCommand
@@ -21,7 +22,7 @@ fun main(arguments: Array<String>) {
 
     when (command) {
         CollectorCommand.Help -> println(CollectorCliParser.help())
-        CollectorCommand.Version -> println("harmon-collector 0.4.0")
+        CollectorCommand.Version -> println("harmon-collector ${BuildInfo.VERSION}")
         is CollectorCommand.Run -> {
             if (geteuid() != 0u && !command.allowUnprivileged) {
                 printError(

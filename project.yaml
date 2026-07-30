@@ -2,6 +2,7 @@
 # listed here.
 modules:
   - ./bridge-http
+  - ./bridge-install
   - ./bridge-ipc
   - ./bridge-probe
   - ./core

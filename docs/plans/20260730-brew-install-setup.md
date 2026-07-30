@@ -372,9 +372,9 @@ app bundle подписывается заново на машине польз�
 - Modify: `launchd/Harmon.Info.plist` или release staging generation
 - Create/Modify: version tests
 
-- [ ] убрать hard-coded `0.4.0` из CLI
-- [ ] добавить `harmon-collector --version`
-- [ ] связать version, protocol version и minimum macOS с одним typed source
+- [x] убрать hard-coded `0.4.0` из CLI
+- [x] добавить `harmon-collector --version`
+- [x] связать version, protocol version и minimum macOS с одним typed source
 - [ ] проверять release tag против `BuildInfo.VERSION`
 
 ### Task 2: ResourceLocator для brew и build tree
@@ -384,11 +384,11 @@ app bundle подписывается заново на машине польз�
 - Create: `src/dev/yoda/harmon/setup/InstallResources.kt`
 - Create: `test/ResourceLocatorTest.kt`
 
-- [ ] реализовать `_NSGetExecutablePath` с resize loop и `realpath`
-- [ ] реализовать Cellar sibling layout без знания prefix
-- [ ] реализовать debug/release build-tree layout
+- [x] реализовать `_NSGetExecutablePath` с resize loop и `realpath`
+- [x] реализовать Cellar sibling layout без знания prefix
+- [x] реализовать debug/release build-tree layout
 - [ ] валидировать regular/executable/readable paths и парность версий
-- [ ] покрыть symlink, spaces, отсутствующий collector/resource и смешанные variants
+- [x] покрыть symlink, spaces, отсутствующий collector/resource и смешанные variants
 
 ### Task 3: Typed plist model и atomic writer
 

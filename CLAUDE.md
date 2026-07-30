@@ -230,6 +230,8 @@ test/         root-only CLI, notification factory, and external harness tests
   native/     the C harness: one binary from every *.c, no main outside main.c,
               one suite per file named after the prefix it reports under
 bridge-ipc/   socket/framing cinterop, no linker options
+bridge-install/
+              root-app-only _NSGetExecutablePath cinterop, no linker options
 bridge-probe/ libproc/Mach/sysctl/IOKit cinterop, collector-only
 bridge-http/  libcurl cinterop, harmon-only
 selftest/     macos/app depending only on bridge-probe; the binding checks

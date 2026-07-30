@@ -23,7 +23,8 @@ agent.
 This is a final-link boundary, not command dispatch inside one image:
 
 - `harmon-collector` links `core`, `bridge-ipc`, and `bridge-probe`;
-- `harmon` links `core`, `history-sqlite`, `bridge-ipc`, and `bridge-http`;
+- `harmon` links `core`, `history-sqlite`, `bridge-ipc`, `bridge-http`, and
+  the root-app-only `bridge-install` used to resolve its own executable;
 - the collector image has no AppKit, libcurl, libsqlite3, notification code,
   history schema, SQLDelight runtime, CLI parser, or user configuration parser;
 - Foundation remains in the collector because Kotlin/Native executables link
@@ -34,6 +35,14 @@ This is a final-link boundary, not command dispatch inside one image:
 `otool -L` is the acceptance check for that boundary. The expected collector
 frameworks are Foundation, CoreFoundation, and IOKit; AppKit, libcurl, and
 libsqlite3 must be absent.
+
+Application version, collector protocol version, and the minimum supported
+macOS release come from `BuildInfo`. Both executable version commands read that
+same object. Install-resource discovery reads `_NSGetExecutablePath`, resolves
+the result through `realpath`, and then looks only beside that resolved binary:
+`libexec/harmon-collector` and `share/harmon/` in an installed archive, or the
+matching Debug/Release collector and source resources when running from
+`build/tasks`. It contains no Homebrew prefix.
 
 The icon shown next to a notification is the bundle's own icon: `Info.plist`
 names `Harmon.icns` through `CFBundleIconFile`, and the installer copies that

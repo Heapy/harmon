@@ -9,6 +9,7 @@ dependencies:
   - ./history-sqlite
   - ./bridge-ipc
   - ./bridge-http
+  - ./bridge-install
 
 settings:
   kotlin:
