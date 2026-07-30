@@ -480,7 +480,7 @@ app bundle подписывается заново на машине польз�
 - [x] установить bin/libexec/share без build toolchain
 - [x] добавить caveats после install и upgrade
 - [x] не добавлять `service do` или sudo post_install
-- [ ] выполнить formula test и audit
+- [x] выполнить formula test и audit
 
 ### Task 10: Переход с source installer и документация
 
@@ -504,11 +504,22 @@ app bundle подписывается заново на машине польз�
 
 - [ ] fresh `brew install` → `harmon setup` → healthy `harmon status`
 - [ ] второй setup не меняет config и остаётся зелёным
-- [ ] `brew upgrade` без setup даёт точное status mismatch
+- [x] `brew upgrade` без setup даёт точное status mismatch
 - [ ] setup после upgrade обновляет обе installed copies и перезапускает jobs
-- [ ] collector plist указывает только на root-owned helper
-- [ ] formula не содержит service/post_install privilege escalation
-- [ ] tarball всегда содержит одну version pair
+- [x] collector plist указывает только на root-owned helper
+- [x] formula не содержит service/post_install privilege escalation
+- [x] tarball всегда содержит одну version pair
+
+⚠️ Live `setup` не запускался по условию задачи. Три оставшихся acceptance checks требуют sudo и
+изменяют launchd; точная ручная последовательность записана в `docs/releasing.md`. Read-only
+`status` был запущен из реально установленного временного Cellar keg поверх legacy 0.3.0:
+он назвал старый bundle, отсутствующий новый helper и daemon на legacy helper path, для каждого
+пункта потребовав `Run 'harmon setup'`.
+
+⚠️ Полный `./kotlin test` имеет ровно два ожидаемых sandbox failure:
+`NativeCTest.runsTheCHarness{,UnderSanitizers}`. Оба вызваны единственной проверкой
+`snapshot.swap-and-virtual-memory-readable`, потому что sandbox запрещает `sysctl vm.swapusage`.
+Все 70 остальных root tests, 163 core tests, 54 history tests и 5 collector tests проходят.
 
 ## Post-Completion
 
