@@ -18,7 +18,7 @@ class Harmon < Formula
 
   def caveats
     <<~EOS
-      Run `harmon setup` after installation and after every Harmon upgrade.
+      Run `harmon setup` after installation and after every `brew upgrade harmon`.
       Then run `harmon status` to verify the installed agent and collector.
     EOS
   end

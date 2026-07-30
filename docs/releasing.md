@@ -51,11 +51,11 @@ repository:
 
 ```shell
 cp dist/Formula/harmon.rb /path/to/homebrew-tap/Formula/harmon.rb
-cd /path/to/homebrew-tap
-brew style Formula/harmon.rb
-brew audit --strict --formula Formula/harmon.rb
-brew install --build-from-source ./Formula/harmon.rb
-brew test harmon
+brew tap OWNER/TAP /path/to/homebrew-tap
+brew style OWNER/TAP/harmon
+brew audit --strict --formula OWNER/TAP/harmon
+brew install --build-from-source OWNER/TAP/harmon
+brew test OWNER/TAP/harmon
 ```
 
 Commit and publish that tap change only after these checks pass. The checked-in
