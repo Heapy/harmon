@@ -7,7 +7,6 @@ import dev.yoda.harmon.nativebridge.http.HMHttpResult
 import dev.yoda.harmon.nativebridge.http.hm_http_global_init
 import dev.yoda.harmon.nativebridge.http.hm_http_post_json
 import dev.yoda.harmon.report.ReportJson
-import dev.yoda.harmon.util.failureDescription
 import kotlinx.cinterop.ExperimentalForeignApi
 import kotlinx.cinterop.ObjCSignatureOverride
 import kotlinx.cinterop.alloc
@@ -48,92 +47,33 @@ private const val DELIVERY_FLUSH_SECONDS = 0.5
  */
 const val SYSTEM_CHANNEL_BEST_EFFORT = true
 
-interface NotificationChannel {
-    val name: String
-
-    /**
-     * A channel that cannot confirm delivery synchronously. Its result never decides whether the
-     * sample was delivered, so a failure elsewhere is not masked by its optimistic success.
-     */
-    val bestEffort: Boolean get() = false
-
-    fun deliver(payload: NotificationPayload): DeliveryResult
-}
-
-/** What one dispatch achieved: what each channel reported, and whether the sample was delivered. */
-data class DeliverySummary(
-    val results: List<DeliveryResult>,
-    val decisiveSuccess: Boolean,
-)
-
-class NotificationDispatcher(
-    private val channels: List<NotificationChannel>,
-) {
-    /**
-     * Delivers [payload] through every channel, deciding on the way whether the sample counts as
-     * delivered — each result is judged next to the channel that produced it.
-     *
-     * Only the *optimistic* success of a best-effort channel is discounted. One that reported an
-     * outright failure — the system channel cannot write its HTML report on a full disk —
-     * observed something, and with Notification Center as the only channel that failure has to
-     * keep the alert pushable. With every channel silent the delivery counts as successful,
-     * because nothing contradicts it.
-     */
-    fun deliver(payload: NotificationPayload): DeliverySummary {
-        val delivered = channels.map { channel -> channel to channel.resultFor(payload) }
-        val observed = delivered
-            .filter { (channel, result) -> !channel.bestEffort || !result.successful }
-            .map { (_, result) -> result }
-        return DeliverySummary(
-            results = delivered.map { (_, result) -> result },
-            decisiveSuccess = observed.isEmpty() || observed.any { it.successful },
-        )
-    }
-
-    private fun NotificationChannel.resultFor(payload: NotificationPayload): DeliveryResult =
-        try {
-            deliver(payload)
-        } catch (failure: Throwable) {
-            DeliveryResult(
-                channel = name,
-                successful = false,
-                detail = failureDescription(failure),
+fun NotificationDispatcher.Companion.from(config: NotificationConfig): NotificationDispatcher {
+    val channels = buildList {
+        if (config.systemEnabled) {
+            add(SystemNotificationChannel())
+        }
+        config.webhookUrl?.let { url ->
+            add(
+                WebhookNotificationChannel(
+                    url = url,
+                    bearerToken = config.webhookBearerToken,
+                    timeoutSeconds = config.timeoutSeconds,
+                ),
             )
         }
-
-    val isEmpty: Boolean
-        get() = channels.isEmpty()
-
-    companion object {
-        fun from(config: NotificationConfig): NotificationDispatcher {
-            val channels = buildList {
-                if (config.systemEnabled) {
-                    add(SystemNotificationChannel())
-                }
-                config.webhookUrl?.let { url ->
-                    add(
-                        WebhookNotificationChannel(
-                            url = url,
-                            bearerToken = config.webhookBearerToken,
-                            timeoutSeconds = config.timeoutSeconds,
-                        ),
-                    )
-                }
-                val telegramToken = config.telegramBotToken
-                val telegramChatId = config.telegramChatId
-                if (telegramToken != null && telegramChatId != null) {
-                    add(
-                        TelegramNotificationChannel(
-                            botToken = telegramToken,
-                            chatId = telegramChatId,
-                            timeoutSeconds = config.timeoutSeconds,
-                        ),
-                    )
-                }
-            }
-            return NotificationDispatcher(channels)
+        val telegramToken = config.telegramBotToken
+        val telegramChatId = config.telegramChatId
+        if (telegramToken != null && telegramChatId != null) {
+            add(
+                TelegramNotificationChannel(
+                    botToken = telegramToken,
+                    chatId = telegramChatId,
+                    timeoutSeconds = config.timeoutSeconds,
+                ),
+            )
         }
     }
+    return NotificationDispatcher(channels)
 }
 
 @OptIn(ExperimentalForeignApi::class)

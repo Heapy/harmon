@@ -1,0 +1,10 @@
+product:
+  type: macos/app
+  platforms: [macosArm64]
+
+apply: [../harmon.module-template.yaml]
+
+dependencies:
+  - ../core
+  - ../bridge-ipc
+  - ../bridge-probe

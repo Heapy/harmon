@@ -5,8 +5,7 @@ import dev.yoda.harmon.analysis.AlertState
 import dev.yoda.harmon.analysis.AlertStateSnapshot
 import dev.yoda.harmon.config.HarmonConfig
 import dev.yoda.harmon.config.SAMPLE_SECONDS_RANGE
-import dev.yoda.harmon.history.HistoryStore
-import dev.yoda.harmon.ipc.CollectorClient
+import dev.yoda.harmon.history.History
 import dev.yoda.harmon.model.Alert
 import dev.yoda.harmon.model.DeliveryResult
 import dev.yoda.harmon.model.MonitoringReport
@@ -74,14 +73,13 @@ fun spendSleepSlice(sliceMs: ULong, systemNotifications: Boolean) {
 
 class HarmonService(
     private val config: HarmonConfig,
-    private val collector: SystemCollector = CollectorClient(config.collectorSocket),
+    private val collector: SystemCollector,
+    private val notifications: Lazy<NotificationDispatcher>,
     private val calculator: UsageCalculator = UsageCalculator(config.terminalApplications),
     private val analyzer: AlertAnalyzer = AlertAnalyzer(),
-    private val notifications: Lazy<NotificationDispatcher> =
-        lazy { NotificationDispatcher.from(config.notifications) },
     private val log: (String) -> Unit = ::println,
     private val logError: (String) -> Unit = ::printError,
-    private val history: HistoryStore? = null,
+    private val history: History? = null,
 ) {
     /**
      * Resumed from whatever the last run of the agent left in [history], so that a restart neither
@@ -238,7 +236,7 @@ class HarmonService(
     /**
      * The state a previous run stored, or nothing at all if reading it throws.
      *
-     * The one failure `HistoryStore.openOrNull` cannot stand in for. A file that opened cleanly can
+     * The one failure a history factory cannot stand in for. A file that opened cleanly can
      * still refuse the first read — a page lost to the panic `synchronousFlag = NORMAL`
      * deliberately accepts, a table an older build never created — and this read happens while the
      * agent is being constructed. Unguarded that is not a run without history but a process that

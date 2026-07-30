@@ -1,6 +1,7 @@
 import dev.yoda.harmon.config.NotificationConfig
 import dev.yoda.harmon.model.NotificationPayload
 import dev.yoda.harmon.notify.NotificationDispatcher
+import dev.yoda.harmon.notify.from
 import dev.yoda.harmon.notify.SYSTEM_CHANNEL_BEST_EFFORT
 import kotlin.test.Test
 import kotlin.test.assertEquals

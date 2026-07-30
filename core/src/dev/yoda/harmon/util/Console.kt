@@ -34,4 +34,3 @@ fun systemErrorText(): String {
     val code = errno
     return strerror(code)?.toKString() ?: "error $code"
 }
-

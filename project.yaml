@@ -4,6 +4,9 @@ modules:
   - ./bridge-http
   - ./bridge-ipc
   - ./bridge-probe
+  - ./core
+  - ./harmon-collector
+  - ./history-sqlite
   # The build-time codegen plugin is also a normal module and must be listed here.
   - ./plugins/sqldelight-gen
   - ./selftest

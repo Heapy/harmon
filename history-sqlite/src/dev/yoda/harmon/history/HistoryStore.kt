@@ -66,7 +66,7 @@ class HistoryStore(
     private val retentionDays: Long,
     private val intervalSeconds: Long,
     private val logError: (String) -> Unit = ::printError,
-) {
+) : History {
     val database: HarmonDatabase = HarmonDatabase(driver)
 
     /** Samples handed to [record] in this run, which is the only clock the retention pass has. */
@@ -100,10 +100,10 @@ class HistoryStore(
      * Hanging it off the write path is deliberate — a retention nothing calls is a database that
      * grows forever behind a green test suite.
      */
-    fun record(
+    override fun record(
         report: MonitoringReport,
-        deliveries: List<DeliveryResult> = emptyList(),
-        alertState: AlertStateSnapshot? = null,
+        deliveries: List<DeliveryResult>,
+        alertState: AlertStateSnapshot?,
     ) {
         pruneIfDue()
 
@@ -165,7 +165,7 @@ class HistoryStore(
      * counter and the keys are only meaningful together, and half of yesterday's state is not a
      * smaller restore but a wrong one.
      */
-    fun restorableAlertState(now: Instant = Clock.System.now()): AlertStateSnapshot? {
+    override fun restorableAlertState(now: Instant): AlertStateSnapshot? {
         val agent = database.samplesQueries.selectAgentState().executeAsOneOrNull() ?: return null
         if (!isSnapshotFresh(Instant.parse(agent.last_sample_at), now, intervalSeconds)) {
             return null

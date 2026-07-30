@@ -47,38 +47,6 @@ import platform.posix.EPERM
 import platform.posix.ESRCH
 import kotlin.time.Clock
 
-const val MIN_PROCESS_CAPACITY = 512
-const val PROCESS_CAPACITY_HEADROOM = 256
-
-/**
- * Number of slots to reserve for [count] processes, never more than [capacity]. Both per-process
- * arrays of a collection are sized with it — the samples and the collection issues — each
- * against its own [capacity].
- *
- * [PROCESS_CAPACITY_HEADROOM] covers the processes that start between the kernel's PID count and
- * the listing call, and [MIN_PROCESS_CAPACITY] keeps a small machine from tracking its PID count
- * so tightly that an ordinary burst of short-lived processes exhausts it. A non-positive [count]
- * means the kernel refused to answer, so the full [capacity] is reserved as before.
- *
- * `hm_list_processes` sizes its own intermediate PID list from the larger of a fresh count and
- * the capacity returned here, so that list is never the narrower of the two: processes beyond
- * what these arrays hold are reported as capacity issues rather than vanishing from a truncated
- * listing. The invariant holds structurally, so the headroom above needs no counterpart in C.
- */
-fun processCapacityFor(count: Int, capacity: Int): Int {
-    if (count <= 0) {
-        return capacity
-    }
-    val requested = maxOf(count.toLong() + PROCESS_CAPACITY_HEADROOM, MIN_PROCESS_CAPACITY.toLong())
-    return minOf(requested, capacity.toLong()).toInt()
-}
-
-interface SystemCollector {
-    fun capture(): RawSystemSnapshot
-}
-
-class CollectionException(message: String) : IllegalStateException(message)
-
 class DarwinSystemCollector(
     private val processCapacity: Int = DEFAULT_PROCESS_CAPACITY,
     private val issueCapacity: Int = DEFAULT_ISSUE_CAPACITY,

@@ -1,0 +1,9 @@
+product:
+  type: kmp/lib
+  platforms: [macosArm64]
+
+apply: [../harmon.module-template.yaml]
+
+settings:
+  kotlin:
+    serialization: json

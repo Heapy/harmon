@@ -4,17 +4,18 @@ import dev.yoda.harmon.config.ConfigException
 import dev.yoda.harmon.config.ConfigLoader
 import dev.yoda.harmon.config.HarmonConfig
 import dev.yoda.harmon.config.SAMPLE_SECONDS_RANGE
-import dev.yoda.harmon.history.HistoryStore
-import dev.yoda.harmon.ipc.CollectorServer
+import dev.yoda.harmon.history.History
 import dev.yoda.harmon.report.ReportFormatter
 import dev.yoda.harmon.runtime.HarmonService
 import dev.yoda.harmon.util.printError
-import kotlinx.cinterop.ExperimentalForeignApi
-import platform.posix.geteuid
 import kotlin.system.exitProcess
 
 object HarmonApplication {
-    fun run(arguments: Array<String>) {
+    fun run(
+        arguments: Array<String>,
+        serviceFactory: (HarmonConfig, History?) -> HarmonService,
+        historyFactory: (HarmonConfig) -> History?,
+    ) {
         val command = try {
             CliParser.parse(arguments)
         } catch (failure: CliException) {
@@ -27,12 +28,11 @@ object HarmonApplication {
         when (command) {
             Command.Help -> println(CliParser.help())
             Command.Version -> println("harmon 0.4.0")
-            is Command.Collector -> runCollector(command)
             is Command.Run -> withConfig(command.configPath) { config ->
-                HarmonService(config, history = openHistory(config)).runForever()
+                serviceFactory(config, historyFactory(config)).runForever()
             }
             is Command.Once -> withConfig(command.configPath) { config ->
-                val service = HarmonService(config)
+                val service = serviceFactory(config, null)
                 val report = service.sampleOnce(command.sampleSeconds ?: config.onceSampleSeconds)
                 val reportText = ReportFormatter.text(report)
                 println(reportText)
@@ -45,7 +45,7 @@ object HarmonApplication {
                 }
             }
             is Command.Diagnose -> withConfig(command.configPath) { config ->
-                val report = HarmonService(config).sampleOnce(
+                val report = serviceFactory(config, null).sampleOnce(
                     command.sampleSeconds ?: config.onceSampleSeconds,
                 )
                 println(ReportFormatter.diagnostics(report))
@@ -55,7 +55,7 @@ object HarmonApplication {
                 println(config.redactedDescription())
             }
             is Command.TestNotifications -> withConfig(command.configPath) { config ->
-                val results = HarmonService(config).testNotifications()
+                val results = serviceFactory(config, null).testNotifications()
                 if (results.isEmpty()) {
                     println("No notification channels are enabled.")
                 } else {
@@ -65,45 +65,6 @@ object HarmonApplication {
                     }
                 }
             }
-        }
-    }
-
-    /**
-     * The history the agent loop writes to, or null when the configuration asks for none.
-     *
-     * Called from `run` alone. Every other command samples a two-second window against the loop's
-     * three hundred, or takes no sample at all, so their numbers would sit in one series with the
-     * loop's while meaning something else entirely — hence the store stays on its `null` default
-     * there rather than being opened and written to selectively.
-     */
-    private fun openHistory(config: HarmonConfig): HistoryStore? =
-        config.historyRetentionDays?.let { retentionDays ->
-            HistoryStore.openOrNull(
-                retentionDays = retentionDays,
-                intervalSeconds = config.intervalSeconds,
-            )
-        }
-
-    @OptIn(ExperimentalForeignApi::class)
-    private fun runCollector(command: Command.Collector) {
-        if (geteuid() != 0u && !command.allowUnprivileged) {
-            printError(
-                "error: the collector must run as root; " +
-                    "--allow-unprivileged is for local development only",
-            )
-            exitProcess(77)
-        }
-        try {
-            CollectorServer(
-                socketPath = command.socketPath,
-                allowedUserId = command.allowedUserId,
-                socketGroupId = command.socketGroupId,
-            ).runForever()
-        } catch (failure: Throwable) {
-            printError(
-                "collector error: ${failure.message ?: failure::class.simpleName}",
-            )
-            exitProcess(1)
         }
     }
 
@@ -139,13 +100,6 @@ sealed interface Command {
     data object Help : Command
 
     data object Version : Command
-
-    data class Collector(
-        val socketPath: String,
-        val allowedUserId: UInt,
-        val socketGroupId: UInt,
-        val allowUnprivileged: Boolean,
-    ) : Command
 
     data class Run(
         val configPath: String?,
@@ -184,10 +138,6 @@ object CliParser {
                 "-v", "--version", "version" -> return Command.Version
             }
         }
-        if (arguments.firstOrNull() == "collector") {
-            return parseCollector(arguments.drop(1))
-        }
-
         val commandName = arguments.first().takeUnless { it.startsWith('-') } ?: "run"
         val optionStart = if (commandName == "run" && arguments.first().startsWith('-')) 0 else 1
         var configPath: String? = null
@@ -247,7 +197,6 @@ object CliParser {
         Harmon — lightweight macOS process and battery monitor
 
         Usage:
-          harmon collector --allowed-uid UID --allowed-gid GID [--socket PATH]
           harmon run [--config PATH]
           harmon once [--config PATH] [--sample-seconds N] [--notify]
           harmon diagnose [--config PATH] [--sample-seconds N]
@@ -259,8 +208,8 @@ object CliParser {
         --sample-seconds N is the window a single sample measures over, and
         takes ${SAMPLE_SECONDS_RANGE.first} to ${SAMPLE_SECONDS_RANGE.last} seconds.
 
-        launchd runs `collector` as root and `run` as the logged-in user. With
-        no command, Harmon starts the user agent. If --config is omitted and
+        launchd runs `harmon run` as the logged-in user. With no command,
+        Harmon starts the user agent. If --config is omitted and
         ~/.config/harmon/config does not exist, safe defaults are used.
 
         Secret settings can be supplied via HARMON_WEBHOOK_BEARER_TOKEN,
@@ -280,54 +229,4 @@ object CliParser {
         }
     }
 
-    private fun parseCollector(arguments: List<String>): Command.Collector {
-        var socketPath = DEFAULT_COLLECTOR_SOCKET
-        var allowedUserId: UInt? = null
-        var socketGroupId: UInt? = null
-        var allowUnprivileged = false
-
-        var index = 0
-        while (index < arguments.size) {
-            when (val option = arguments[index]) {
-                "--socket" -> {
-                    socketPath = arguments.valueAfter(index, option)
-                    index += 2
-                }
-                "--allowed-uid" -> {
-                    allowedUserId = arguments.unsignedValueAfter(index, option)
-                    index += 2
-                }
-                "--allowed-gid" -> {
-                    socketGroupId = arguments.unsignedValueAfter(index, option)
-                    index += 2
-                }
-                "--allow-unprivileged" -> {
-                    allowUnprivileged = true
-                    index += 1
-                }
-                else -> throw CliException("unknown collector option '$option'")
-            }
-        }
-        if (!socketPath.startsWith('/') || socketPath.length > 100) {
-            throw CliException("--socket must be an absolute path up to 100 characters")
-        }
-        return Command.Collector(
-            socketPath = socketPath,
-            allowedUserId = allowedUserId
-                ?: throw CliException("collector requires --allowed-uid"),
-            socketGroupId = socketGroupId
-                ?: throw CliException("collector requires --allowed-gid"),
-            allowUnprivileged = allowUnprivileged,
-        )
-    }
-
-    private fun List<String>.valueAfter(index: Int, option: String): String =
-        getOrNull(index + 1)?.takeUnless { it.startsWith('-') }
-            ?: throw CliException("$option requires a value")
-
-    private fun List<String>.unsignedValueAfter(index: Int, option: String): UInt =
-        valueAfter(index, option).toUIntOrNull()
-            ?: throw CliException("$option must be an unsigned integer")
-
-    private const val DEFAULT_COLLECTOR_SOCKET = "/var/run/harmon.collector.sock"
 }

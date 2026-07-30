@@ -1,0 +1,20 @@
+product:
+  type: kmp/lib
+  platforms: [macosArm64]
+
+apply: [../harmon.module-template.yaml]
+
+plugins:
+  # Generates the database API owned by this module from sqldelight/*.sq.
+  sqldelight-gen: enabled
+
+dependencies:
+  - ../core
+  - $libs.sqldelight.native.driver
+
+settings:
+  kotlin:
+    # The bridge spike proved that linkerOpts declared by a .def cross module boundaries.
+    # This is different: freeCompilerArgs is a per-module compiler setting. Keep it here for
+    # this module's test executable; harmon repeats it for its own final application link.
+    freeCompilerArgs: [-linker-option, -lsqlite3]
