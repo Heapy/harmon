@@ -1,7 +1,9 @@
 # The root module `harmon` is included implicitly; only the extra modules are
 # listed here.
 modules:
-  - ./nativebridge
+  - ./bridge-http
+  - ./bridge-ipc
+  - ./bridge-probe
   # The build-time codegen plugin is also a normal module and must be listed here.
   - ./plugins/sqldelight-gen
   - ./selftest

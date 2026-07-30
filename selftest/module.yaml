@@ -2,7 +2,7 @@
 #
 # KTC-5573 keeps the cinterop klib out of any test compilation, so the only way
 # to call the bridge from Kotlin under assertions is a separate application that
-# depends on `nativebridge` through an ordinary main compilation. It exists to
+# depends on `bridge-probe` through an ordinary main compilation. It exists to
 # check the binding — struct layout and type mapping — and nothing that plain C
 # can check on its own; those checks live in `test/native` instead.
 #
@@ -16,4 +16,4 @@ product:
 apply: [../harmon.module-template.yaml]
 
 dependencies:
-  - ../nativebridge
+  - ../bridge-probe

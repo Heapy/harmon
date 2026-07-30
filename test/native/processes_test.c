@@ -1,4 +1,4 @@
-#include "harmon_native.h"
+#include "harmon_probe.h"
 
 #include <fcntl.h>
 #include <pthread.h>

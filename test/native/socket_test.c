@@ -1,4 +1,4 @@
-#include "harmon_native.h"
+#include "harmon_ipc.h"
 
 #include <dirent.h>
 #include <limits.h>

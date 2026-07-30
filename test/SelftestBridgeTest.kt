@@ -18,7 +18,7 @@ private val SELFTEST_CHECKS = setOf(
  * Everything the selftest binary is built from: its own sources, the bridge it links, and the
  * three files that decide what "built" means.
  *
- * The module files earn their place: dropping the `nativebridge` dependency, moving to another
+ * The module files earn their place: dropping the `bridge-probe` dependency, moving to another
  * Kotlin version or turning off `allWarningsAsErrors` all change what gets linked without touching
  * a line of Kotlin, and a guard that watched sources alone would stay green over a binary produced
  * by the previous configuration.
@@ -28,8 +28,8 @@ private val SELFTEST_CHECKS = setOf(
 val SELFTEST_SOURCES: List<String> = listOf(
     "selftest/src",
     "selftest/module.yaml",
-    "nativebridge/cinterop/harmon_native.def",
-    "nativebridge/module.yaml",
+    "bridge-probe/cinterop/harmon_probe.def",
+    "bridge-probe/module.yaml",
     "harmon.module-template.yaml",
 )
 

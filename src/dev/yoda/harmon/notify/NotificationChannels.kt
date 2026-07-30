@@ -3,9 +3,9 @@ package dev.yoda.harmon.notify
 import dev.yoda.harmon.config.NotificationConfig
 import dev.yoda.harmon.model.DeliveryResult
 import dev.yoda.harmon.model.NotificationPayload
-import dev.yoda.harmon.nativebridge.HMHttpResult
-import dev.yoda.harmon.nativebridge.hm_http_global_init
-import dev.yoda.harmon.nativebridge.hm_http_post_json
+import dev.yoda.harmon.nativebridge.http.HMHttpResult
+import dev.yoda.harmon.nativebridge.http.hm_http_global_init
+import dev.yoda.harmon.nativebridge.http.hm_http_post_json
 import dev.yoda.harmon.report.ReportJson
 import dev.yoda.harmon.util.failureDescription
 import kotlinx.cinterop.ExperimentalForeignApi

@@ -2,10 +2,10 @@
 
 # Compiles and runs the C test harness over the native bridge.
 #
-# The bridge lives entirely inside `nativebridge/cinterop/harmon_native.def`;
-# cinterop cannot be pointed at a separate header (CLAUDE.md, "How the native
-# layer is tested"), so the header the tests include is generated from the `.def`
-# on every run. Its lifetime is one run and it lives under `build/`, which is
+# The three bridges live entirely inside their own `.def` files; cinterop cannot
+# be pointed at a portable checked-in header (CLAUDE.md, "How the native layer is
+# tested"), so the headers the tests include are generated from the definitions
+# on every run. Their lifetime is one run and they live under `build/`, which is
 # already ignored by git, so the copies cannot drift.
 #
 # `--sanitize` builds the same sources under AddressSanitizer and
@@ -43,10 +43,14 @@ while [ "$REMAINING" -gt 0 ]; do
     REMAINING=$((REMAINING - 1))
 done
 
-DEF_FILE="$PROJECT_DIR/nativebridge/cinterop/harmon_native.def"
+IPC_DEF_FILE="$PROJECT_DIR/bridge-ipc/cinterop/harmon_ipc.def"
+PROBE_DEF_FILE="$PROJECT_DIR/bridge-probe/cinterop/harmon_probe.def"
+HTTP_DEF_FILE="$PROJECT_DIR/bridge-http/cinterop/harmon_http.def"
 SOURCE_DIR="$PROJECT_DIR/test/native"
 OUTPUT_DIR="$PROJECT_DIR/build/native-test"
-HEADER_FILE="$OUTPUT_DIR/harmon_native.h"
+IPC_HEADER_FILE="$OUTPUT_DIR/harmon_ipc.h"
+PROBE_HEADER_FILE="$OUTPUT_DIR/harmon_probe.h"
+HTTP_HEADER_FILE="$OUTPUT_DIR/harmon_http.h"
 if [ "$SANITIZE" -eq 1 ]; then
     BINARY_FILE="$OUTPUT_DIR/harmon-native-test-sanitized"
     SANITIZER_OPTS="-fsanitize=address,undefined -fno-sanitize-recover=all -g"
@@ -55,10 +59,12 @@ else
     SANITIZER_OPTS=""
 fi
 
-if [ ! -f "$DEF_FILE" ]; then
-    echo "native bridge definition not found at $DEF_FILE" >&2
-    exit 2
-fi
+for DEF_FILE in "$IPC_DEF_FILE" "$PROBE_DEF_FILE" "$HTTP_DEF_FILE"; do
+    if [ ! -f "$DEF_FILE" ]; then
+        echo "native bridge definition not found at $DEF_FILE" >&2
+        exit 2
+    fi
+done
 
 if [ ! -d "$SOURCE_DIR" ]; then
     echo "C test sources not found at $SOURCE_DIR" >&2
@@ -67,15 +73,19 @@ fi
 
 mkdir -p "$OUTPUT_DIR"
 
-# Everything after the `---` separator is the C body of the bridge.
-sed '1,/^---$/d' "$DEF_FILE" > "$HEADER_FILE"
+# Everything after the `---` separator is the C body of its bridge.
+sed '1,/^---$/d' "$IPC_DEF_FILE" > "$IPC_HEADER_FILE"
+sed '1,/^---$/d' "$PROBE_DEF_FILE" > "$PROBE_HEADER_FILE"
+sed '1,/^---$/d' "$HTTP_DEF_FILE" > "$HTTP_HEADER_FILE"
 
-# The libraries come from the `.def` itself rather than from a copy kept in step
-# by hand: a framework added there has to reach this link too, and a hand-written
-# copy would only report the omission as an undefined symbol.
-LINKER_OPTS=$(sed -n 's/^linkerOpts *= *//p' "$DEF_FILE")
+# The libraries come from the `.def` files themselves rather than from a copy
+# kept in step by hand: a framework added there has to reach this link too, and
+# a hand-written copy would only report the omission as an undefined symbol.
+# IPC deliberately has no linkerOpts, so only the two non-empty definitions are
+# required to contribute a line.
+LINKER_OPTS=$(sed -n 's/^linkerOpts *= *//p' "$PROBE_DEF_FILE" "$HTTP_DEF_FILE")
 if [ -z "$LINKER_OPTS" ]; then
-    echo "no linkerOpts line in $DEF_FILE" >&2
+    echo "no linkerOpts found in probe or HTTP bridge definitions" >&2
     exit 2
 fi
 

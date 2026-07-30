@@ -1,4 +1,4 @@
-#include "harmon_native.h"
+#include "harmon_probe.h"
 
 #include <pthread.h>
 #include <sys/mman.h>

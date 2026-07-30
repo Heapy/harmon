@@ -11,8 +11,9 @@
  *     under exactly one name prefix, and has no `main` of its own;
  *   - `anchors.h` carries what more than one suite needs to compare a sample
  *     against a second reading of the same source;
- *   - `scripts/test-native.sh` regenerates `harmon_native.h` from the `.def` and
- *     compiles every C source under `test/native` into one binary on every run.
+ *   - `scripts/test-native.sh` regenerates the three bridge headers from their
+ *     `.def` files and compiles every C source under `test/native` into one
+ *     binary on every run.
  *
  * The output protocol this harness shares with `selftest` is described once, in
  * the "How the native layer is tested" section of CLAUDE.md. In short:
@@ -108,6 +109,7 @@ extern int hm_test_reported;
 extern const char *hm_test_filter;
 
 void hm_run_pure_tests(void);
+void hm_run_http_tests(void);
 void hm_run_attribution_tests(void);
 void hm_run_processes_tests(void);
 void hm_run_snapshot_tests(void);

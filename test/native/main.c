@@ -31,6 +31,7 @@ typedef struct {
 
 static const HMTestSuite hm_test_suites[] = {
     {hm_run_pure_tests, "pure."},
+    {hm_run_http_tests, "http."},
     {hm_run_attribution_tests, "attribution."},
     {hm_run_processes_tests, "processes."},
     {hm_run_snapshot_tests, "snapshot."},

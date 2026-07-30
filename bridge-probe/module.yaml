@@ -1,0 +1,7 @@
+# Privileged Darwin process and machine probes used only by harmon-collector.
+
+product:
+  type: kmp/lib
+  platforms: [macosArm64]
+
+apply: [../harmon.module-template.yaml]

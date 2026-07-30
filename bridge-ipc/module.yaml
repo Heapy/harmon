@@ -1,0 +1,7 @@
+# Unix-domain sockets and JSON framing shared by the agent and collector.
+
+product:
+  type: kmp/lib
+  platforms: [macosArm64]
+
+apply: [../harmon.module-template.yaml]

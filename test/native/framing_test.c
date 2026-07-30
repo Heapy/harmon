@@ -1,4 +1,4 @@
-#include "harmon_native.h"
+#include "harmon_ipc.h"
 
 #include <pthread.h>
 #include <signal.h>
@@ -1060,7 +1060,22 @@ static void hm_check_send_completes_partial_write(void) {
     hm_release_partial_write(&state);
 }
 
+/*
+ * Every framing size check builds its boundary from the bridge constant, so a
+ * smaller value moves both sides and stays green. Pin the wire contract once,
+ * next to the bridge that owns it.
+ */
+static void hm_check_maximum_frame_size(void) {
+    CHECK(
+        "framing.maximum-size-is-pinned",
+        HM_MAX_JSON_FRAME_SIZE == 32U * 1024U * 1024U,
+        "expected 33554432, got %u",
+        HM_MAX_JSON_FRAME_SIZE
+    );
+}
+
 void hm_run_framing_tests(void) {
+    hm_check_maximum_frame_size();
     hm_check_send_rejects_bad_payload();
     hm_check_round_trip();
     hm_check_receive_rejects_lengths();

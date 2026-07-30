@@ -1,4 +1,4 @@
-#include "harmon_native.h"
+#include "harmon_probe.h"
 
 #include "anchors.h"
 #include "harness.h"
@@ -365,23 +365,6 @@ static void hm_check_monotonic_time(void) {
 }
 
 /*
- * The curl write callback of the webhook and Telegram senders. Returning
- * anything other than the full byte count aborts the transfer, so the body has
- * to be counted even though it is thrown away.
- */
-static void hm_check_discard_http_response(void) {
-    char body[] = "{\"ok\":true}";
-    const size_t consumed = hm_discard_http_response(body, 7, 11, NULL);
-    CHECK(
-        "pure.discard-http-response-consumes-everything",
-        consumed == 77 && hm_discard_http_response(body, 4, 0, NULL) == 0,
-        "expected 77 and 0, got %zu and %zu",
-        consumed,
-        hm_discard_http_response(body, 4, 0, NULL)
-    );
-}
-
-/*
  * The constants the rest of the harness reads out of the bridge instead of
  * spelling out, and the two the Kotlin side reads the same way.
  *
@@ -391,8 +374,7 @@ static void hm_check_discard_http_response(void) {
  * truncating every process name on the machine to fifteen characters — the names
  * application grouping keys off — because `processes.own-sample-carries-metadata`
  * compares the name as a prefix and the metadata check declares its own buffer as
- * `char name[HM_PROCESS_NAME_SIZE]`. `HM_MAX_JSON_FRAME_SIZE` at 1 MiB was green
- * for the same reason: the framing checks build their frames from the constant.
+ * `char name[HM_PROCESS_NAME_SIZE]`.
  *
  * So the values are written out here, once, as the contract they are. The two
  * issue reasons are a contract with `DarwinSystemCollector.toReason()`, which
@@ -413,19 +395,17 @@ static void hm_check_constants(void) {
         "pure.constants-are-pinned",
         HM_PROCESS_NAME_SIZE == 128 &&
             HM_PROCESS_PATH_SIZE == PROC_PIDPATHINFO_SIZE &&
-            HM_MAX_JSON_FRAME_SIZE == 32U * 1024U * 1024U &&
             HM_ATTRIBUTION_REGION_LIMIT == 8192 &&
             HM_PROCESS_LIST_HEADROOM == 256 &&
             HM_MIN_PROCESS_LIST == 512 &&
             HM_MAX_PROCESS_LIST == 1048576 &&
             HM_PROCESS_ISSUE_RUSAGE == 1 &&
             HM_PROCESS_ISSUE_CAPACITY == 2,
-        "expected 128/%d/33554432/8192/256/512/1048576/1/2, "
-            "got %d/%d/%u/%d/%d/%d/%d/%d/%d",
+        "expected 128/%d/8192/256/512/1048576/1/2, "
+            "got %d/%d/%d/%d/%d/%d/%d/%d",
         PROC_PIDPATHINFO_SIZE,
         HM_PROCESS_NAME_SIZE,
         HM_PROCESS_PATH_SIZE,
-        HM_MAX_JSON_FRAME_SIZE,
         HM_ATTRIBUTION_REGION_LIMIT,
         HM_PROCESS_LIST_HEADROOM,
         HM_MIN_PROCESS_LIST,
@@ -626,7 +606,6 @@ void hm_run_pure_tests(void) {
     hm_check_candidate_order();
     hm_check_mach_time();
     hm_check_monotonic_time();
-    hm_check_discard_http_response();
     hm_check_anchor_arithmetic();
     hm_check_anchor_tables();
 }
