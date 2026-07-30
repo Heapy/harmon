@@ -61,9 +61,7 @@ brew test OWNER/TAP/harmon
 Commit and publish that tap change only after these checks pass. The checked-in
 `packaging/homebrew/Formula/harmon.rb.in` is the version-independent source;
 `scripts/render-homebrew-formula.sh` replaces its version and SHA-256 tokens
-after the tarball exists. The explicit Formula `version` is required because
-automatic URL parsing otherwise reads the final `64` in `macos-arm64` as the
-package version.
+after the tarball exists.
 
 The formula installs only:
 
