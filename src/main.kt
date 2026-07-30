@@ -6,10 +6,12 @@ import dev.yoda.harmon.notify.from
 import dev.yoda.harmon.runtime.HarmonService
 import dev.yoda.harmon.setup.HarmonSetup
 import dev.yoda.harmon.setup.HarmonStatus
+import dev.yoda.harmon.setup.HarmonUninstall
 
 fun main(arguments: Array<String>) {
     val setup = HarmonSetup()
     val status = HarmonStatus()
+    val uninstall = HarmonUninstall()
     HarmonApplication.run(
         arguments = arguments,
         serviceFactory = { config, history ->
@@ -30,5 +32,6 @@ fun main(arguments: Array<String>) {
         },
         setup = setup::run,
         status = status::run,
+        uninstall = uninstall::run,
     )
 }

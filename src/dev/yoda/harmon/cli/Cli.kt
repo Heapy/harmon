@@ -9,6 +9,7 @@ import dev.yoda.harmon.history.History
 import dev.yoda.harmon.report.ReportFormatter
 import dev.yoda.harmon.runtime.HarmonService
 import dev.yoda.harmon.setup.SetupRequest
+import dev.yoda.harmon.setup.UninstallRequest
 import dev.yoda.harmon.util.failureDescription
 import dev.yoda.harmon.util.printError
 import kotlin.system.exitProcess
@@ -20,6 +21,7 @@ object HarmonApplication {
         historyFactory: (HarmonConfig) -> History?,
         setup: (SetupRequest) -> Unit,
         status: () -> Int,
+        uninstall: (UninstallRequest) -> Unit,
     ) {
         val command = try {
             CliParser.parse(arguments)
@@ -95,6 +97,19 @@ object HarmonApplication {
                     exitProcess(1)
                 }
             }
+            is Command.Uninstall -> {
+                try {
+                    uninstall(
+                        UninstallRequest(
+                            system = command.system,
+                            userId = command.userId,
+                        ),
+                    )
+                } catch (failure: Throwable) {
+                    printError("uninstall error: ${failureDescription(failure)}")
+                    exitProcess(1)
+                }
+            }
         }
     }
 
@@ -161,6 +176,11 @@ sealed interface Command {
     ) : Command
 
     data object Status : Command
+
+    data class Uninstall(
+        val system: Boolean,
+        val userId: UInt?,
+    ) : Command
 }
 
 class CliException(message: String) : IllegalArgumentException(message)
@@ -180,6 +200,9 @@ object CliParser {
         val optionStart = if (commandName == "run" && arguments.first().startsWith('-')) 0 else 1
         if (commandName == "setup") {
             return parseSetup(arguments.drop(1))
+        }
+        if (commandName == "uninstall") {
+            return parseUninstall(arguments.drop(1))
         }
         var configPath: String? = null
         var sampleSeconds: Long? = null
@@ -253,6 +276,8 @@ object CliParser {
           harmon setup
           harmon setup --system --uid UID --gid GID
           harmon status
+          harmon uninstall
+          harmon uninstall --system --uid UID
           harmon --help
           harmon --version
 
@@ -272,6 +297,10 @@ object CliParser {
 
         status is read-only and exits non-zero when the installed copies,
         collector protocol, socket, or launchd jobs need setup.
+
+        uninstall removes both services and deployed binaries while preserving
+        configuration, logs, reports, and sample history. Its --system form is
+        public for automation.
     """.trimIndent()
 
     private fun parseSetup(arguments: List<String>): Command.Setup {
@@ -312,6 +341,38 @@ object CliParser {
             throw CliException("--system requires both --uid and --gid")
         }
         return Command.Setup(system, userId, groupId)
+    }
+
+    private fun parseUninstall(arguments: List<String>): Command.Uninstall {
+        var system = false
+        var userId: UInt? = null
+        var index = 0
+        while (index < arguments.size) {
+            when (val option = arguments[index]) {
+                "--system" -> {
+                    if (system) {
+                        throw CliException("--system may be specified only once")
+                    }
+                    system = true
+                    index += 1
+                }
+                "--uid" -> {
+                    if (userId != null) {
+                        throw CliException("--uid may be specified only once")
+                    }
+                    userId = arguments.unsignedValueAfter(index, option)
+                    index += 2
+                }
+                else -> throw CliException("unknown uninstall option '$option'")
+            }
+        }
+        if (!system && userId != null) {
+            throw CliException("--uid requires --system")
+        }
+        if (system && userId == null) {
+            throw CliException("--system requires --uid")
+        }
+        return Command.Uninstall(system, userId)
     }
 
     private fun Array<String>.valueAfter(index: Int, option: String): String =

@@ -111,4 +111,26 @@ class CliParserTest {
             CliParser.parse(arrayOf("status", "--notify"))
         }
     }
+
+    @Test
+    fun parsesUserAndPublicSystemUninstallForms() {
+        assertEquals(
+            Command.Uninstall(system = false, userId = null),
+            CliParser.parse(arrayOf("uninstall")),
+        )
+        assertEquals(
+            Command.Uninstall(system = true, userId = 501u),
+            CliParser.parse(arrayOf("uninstall", "--system", "--uid", "501")),
+        )
+
+        assertFailsWith<CliException> {
+            CliParser.parse(arrayOf("uninstall", "--uid", "501"))
+        }
+        assertFailsWith<CliException> {
+            CliParser.parse(arrayOf("uninstall", "--system"))
+        }
+        assertFailsWith<CliException> {
+            CliParser.parse(arrayOf("uninstall", "--system", "--gid", "20"))
+        }
+    }
 }

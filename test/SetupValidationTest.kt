@@ -1,6 +1,7 @@
 import dev.yoda.harmon.setup.MacOsVersion
 import dev.yoda.harmon.setup.SetupException
 import dev.yoda.harmon.setup.SetupValidation
+import dev.yoda.harmon.setup.UninstallValidation
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFailsWith
@@ -59,5 +60,26 @@ class SetupValidationTest {
         }
 
         assertTrue(failure.message.orEmpty().contains("one release"))
+    }
+
+    @Test
+    fun validatesBothUninstallPrivilegePhases() {
+        UninstallValidation.validateUserPhase(501u, null)
+        assertFailsWith<SetupException> {
+            UninstallValidation.validateUserPhase(0u, null)
+        }
+        assertFailsWith<SetupException> {
+            UninstallValidation.validateUserPhase(501u, 501u)
+        }
+        assertEquals(
+            501u,
+            UninstallValidation.validateSystemPhase(0u, 501u),
+        )
+        assertFailsWith<SetupException> {
+            UninstallValidation.validateSystemPhase(501u, 501u)
+        }
+        assertFailsWith<SetupException> {
+            UninstallValidation.validateSystemPhase(0u, 0u)
+        }
     }
 }

@@ -2,39 +2,34 @@
 
 set -eu
 
-USER_ID=$(/usr/bin/id -u)
-if [ "$USER_ID" -eq 0 ]; then
-    echo "Run this uninstaller as the login user; it will request sudo when needed." >&2
+SCRIPT_DIR=$(CDPATH='' cd -- "$(dirname -- "$0")" && pwd -P)
+PROJECT_DIR=$(CDPATH='' cd -- "$SCRIPT_DIR/.." && pwd -P)
+
+if [ "$(/usr/bin/id -u)" -eq 0 ]; then
+    echo "Run this uninstaller as the login user; harmon uninstall requests sudo once." >&2
     exit 1
 fi
 
-HARMON_AGENT_SERVICE="gui/$USER_ID/dev.yoda.harmon.agent"
-HARMON_AGENT_PLIST="$HOME/Library/LaunchAgents/dev.yoda.harmon.agent.plist"
-HARMON_COLLECTOR_SERVICE="system/dev.yoda.harmon.collector"
-HARMON_COLLECTOR_PLIST="/Library/LaunchDaemons/dev.yoda.harmon.collector.plist"
-HARMON_COLLECTOR_BINARY="/Library/PrivilegedHelperTools/harmon-collector"
-LEGACY_COLLECTOR_BINARY="/Library/PrivilegedHelperTools/dev.yoda.harmon"
-HARMON_SOCKET="/var/run/harmon.collector.sock"
-LEGACY_SERVICE="gui/$USER_ID/dev.yoda.harmon"
-LEGACY_PLIST="$HOME/Library/LaunchAgents/dev.yoda.harmon.plist"
-HARMON_BINARY="$HOME/.local/bin/harmon"
-HARMON_APP="$HOME/Library/Application Support/Harmon/Harmon.app"
+if [ -x "$PROJECT_DIR/kotlin" ]; then
+    TOOLCHAIN="$PROJECT_DIR/kotlin"
+elif command -v kotlin >/dev/null 2>&1; then
+    TOOLCHAIN=$(command -v kotlin)
+else
+    echo "Kotlin Toolchain is not installed and the project wrapper is missing." >&2
+    exit 1
+fi
 
-/bin/launchctl bootout "$HARMON_AGENT_SERVICE" >/dev/null 2>&1 || true
-/bin/launchctl bootout "$LEGACY_SERVICE" >/dev/null 2>&1 || true
-/usr/bin/sudo /bin/launchctl bootout "$HARMON_COLLECTOR_SERVICE" \
-    >/dev/null 2>&1 || true
-/bin/rm -f "$HARMON_AGENT_PLIST" "$LEGACY_PLIST" "$HARMON_BINARY"
-/bin/rm -rf "$HARMON_APP"
-/usr/bin/sudo /bin/rm -f \
-    "$HARMON_COLLECTOR_PLIST" \
-    "$HARMON_COLLECTOR_BINARY" \
-    "$LEGACY_COLLECTOR_BINARY" \
-    "$HARMON_SOCKET"
+echo "Building the paired release binaries..."
+(
+    cd "$PROJECT_DIR"
+    "$TOOLCHAIN" build --variant release
+)
 
-echo "Harmon collector, user agent, and installed binaries were removed."
-echo "User configuration and logs were preserved."
-echo "Generated HTML reports were preserved under ~/Library/Application Support/Harmon."
-echo "The sample history was preserved too, and is the largest of these:"
-echo "  rm -f ~/Library/Application\\ Support/Harmon/history.db*"
-echo "Collector logs were preserved under /Library/Logs/Harmon."
+set -- "$PROJECT_DIR"/build/tasks/*_linkMacosArm64Release/harmon.kexe
+if [ "$#" -ne 1 ] || [ ! -x "$1" ]; then
+    echo "Expected exactly one release harmon.kexe under build/tasks." >&2
+    exit 1
+fi
+
+echo "Delegating removal to harmon uninstall..."
+exec "$1" uninstall

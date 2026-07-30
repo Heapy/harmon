@@ -9,8 +9,10 @@ import dev.yoda.harmon.setup.SetupException
 import dev.yoda.harmon.setup.SetupFileSystem
 import dev.yoda.harmon.setup.SystemSetup
 import dev.yoda.harmon.setup.SystemSetupPaths
+import dev.yoda.harmon.setup.SystemUninstall
 import dev.yoda.harmon.setup.UserSetup
 import dev.yoda.harmon.setup.UserSetupPaths
+import dev.yoda.harmon.setup.UserUninstall
 import dev.yoda.harmon.setup.ValidatedInstallResources
 import dev.yoda.harmon.setup.renderApplicationInfoPlist
 import dev.yoda.harmon.setup.selectSigningIdentity
@@ -229,14 +231,146 @@ class SetupWorkflowTest {
             )
         }
     }
+
+    @Test
+    fun userUninstallRemovesOnlyManagedFilesAndKeepsItsExecutableUntilSudoReturns() {
+        val fileSystem = workflowFileSystem()
+        val runner = WorkflowCommandRunner(fileSystem)
+        val paths = UserSetupPaths.forHome(TEST_HOME)
+        fileSystem.files[paths.agentPlist] = "agent plist"
+        fileSystem.files[paths.legacyAgentPlist] = "legacy plist"
+        fileSystem.files[paths.config] = "custom=true"
+        fileSystem.files["${paths.supportDirectory}/history.db"] = "history"
+        fileSystem.files["${paths.logDirectory}/agent.log"] = "log"
+        fileSystem.directories += paths.appBundle
+        fileSystem.files[paths.installedAgent] = "installed agent"
+        fileSystem.symlinks[paths.legacyCommandLink] = paths.installedAgent
+
+        UserUninstall(
+            executablePath = paths.installedAgent,
+            userId = 501u,
+            home = TEST_HOME,
+            fileSystem = fileSystem,
+            commandRunner = runner,
+        ).run()
+
+        assertFalse(paths.agentPlist in fileSystem.files)
+        assertFalse(paths.legacyAgentPlist in fileSystem.files)
+        assertFalse(paths.legacyCommandLink in fileSystem.symlinks)
+        assertFalse(paths.installedAgent in fileSystem.files)
+        assertEquals("custom=true", fileSystem.files[paths.config])
+        assertEquals("history", fileSystem.files["${paths.supportDirectory}/history.db"])
+        assertEquals("log", fileSystem.files["${paths.logDirectory}/agent.log"])
+
+        val invocations = runner.invocations.map(CommandInvocation::arguments)
+        assertEquals(
+            listOf(
+                listOf(
+                    "/bin/launchctl",
+                    "bootout",
+                    "gui/501/dev.yoda.harmon.agent",
+                ),
+                listOf(
+                    "/bin/launchctl",
+                    "bootout",
+                    "gui/501/dev.yoda.harmon",
+                ),
+                listOf(
+                    "/usr/bin/sudo",
+                    paths.installedAgent,
+                    "uninstall",
+                    "--system",
+                    "--uid",
+                    "501",
+                ),
+            ),
+            invocations,
+        )
+        assertTrue(
+            runner.pathsPresentWhenInvoked
+                .single { it.first == "/usr/bin/sudo" }
+                .second.contains(paths.installedAgent),
+            "the app-hosted executable was deleted before sudo re-exec",
+        )
+    }
+
+    @Test
+    fun userUninstallKeepsAnUnrelatedLegacyCommandSymlink() {
+        val fileSystem = workflowFileSystem()
+        val paths = UserSetupPaths.forHome(TEST_HOME)
+        fileSystem.symlinks[paths.legacyCommandLink] = "/usr/local/bin/unrelated"
+
+        UserUninstall(
+            executablePath = TEST_AGENT_SOURCE,
+            userId = 501u,
+            home = TEST_HOME,
+            fileSystem = fileSystem,
+            commandRunner = WorkflowCommandRunner(),
+        ).run()
+
+        assertEquals("/usr/local/bin/unrelated", fileSystem.symlinks[paths.legacyCommandLink])
+    }
+
+    @Test
+    fun systemUninstallIsIdempotentAndPreservesCollectorLogs() {
+        val fileSystem = workflowFileSystem()
+        val runner = WorkflowCommandRunner()
+        fileSystem.files[SystemSetupPaths.collectorPlist] = "daemon"
+        fileSystem.files[SystemSetupPaths.collectorBinary] = "collector"
+        fileSystem.files[SystemSetupPaths.legacyCollectorBinary] = "legacy collector"
+        fileSystem.files[SystemSetupPaths.socket] = "socket"
+        fileSystem.files["${SystemSetupPaths.logDirectory}/collector.log"] = "log"
+        val uninstall = SystemUninstall(
+            targetUserId = 501u,
+            fileSystem = fileSystem,
+            commandRunner = runner,
+        )
+
+        uninstall.run()
+        uninstall.run()
+
+        assertFalse(SystemSetupPaths.collectorPlist in fileSystem.files)
+        assertFalse(SystemSetupPaths.collectorBinary in fileSystem.files)
+        assertFalse(SystemSetupPaths.legacyCollectorBinary in fileSystem.files)
+        assertFalse(SystemSetupPaths.socket in fileSystem.files)
+        assertEquals(
+            "log",
+            fileSystem.files["${SystemSetupPaths.logDirectory}/collector.log"],
+        )
+        assertEquals(
+            2,
+            runner.invocations.count {
+                it.arguments == listOf(
+                    "/bin/launchctl",
+                    "bootout",
+                    "system/dev.yoda.harmon.collector",
+                )
+            },
+        )
+        assertEquals(
+            2,
+            runner.invocations.count {
+                it.arguments == listOf(
+                    "/bin/launchctl",
+                    "bootout",
+                    "gui/501/dev.yoda.harmon.agent",
+                )
+            },
+        )
+    }
 }
 
-private class WorkflowCommandRunner : CommandRunner {
+private class WorkflowCommandRunner(
+    private val fileSystem: WorkflowFileSystem? = null,
+) : CommandRunner {
     val invocations = mutableListOf<CommandInvocation>()
+    val pathsPresentWhenInvoked = mutableListOf<Pair<String, Set<String>>>()
 
     override fun run(invocation: CommandInvocation): CommandResult {
         invocations += invocation
         val arguments = invocation.arguments
+        pathsPresentWhenInvoked += arguments.first() to
+            (fileSystem?.files?.keys?.toSet() ?: emptySet())
         return when {
             arguments.take(2) == listOf("/usr/bin/security", "find-identity") ->
                 success(

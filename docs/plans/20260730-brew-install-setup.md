@@ -109,8 +109,7 @@ release packaging не реализуется.
   - повторный setup;
   - upgrade одной версии на следующую;
   - намеренно старая bundle/helper pair, которую status обнаруживает;
-  - uninstall/cleanup остаётся отдельной проверкой существующего script до появления
-    `harmon uninstall`.
+  - `harmon uninstall` удаляет обе службы и deployed binaries, сохраняя user data.
 
 ## Progress Tracking
 
@@ -358,8 +357,8 @@ app bundle подписывается заново на машине польз�
 ## What Goes Where
 
 - **Implementation Steps** (`[ ]`): будущая реализация setup/status/release/formula.
-- **Post-Completion** (без чекбоксов): наблюдение за реальными upgrades и решение, нужен ли
-  отдельный uninstall command.
+- **Post-Completion** (без чекбоксов): наблюдение за реальными upgrades и ручная проверка
+  install/uninstall на поддерживаемых версиях macOS.
 
 ## Implementation Steps
 
@@ -492,11 +491,14 @@ app bundle подписывается заново на машине польз�
 - Modify/Delete: `scripts/install.sh`
 - Preserve/Modify: `scripts/uninstall.sh`
 
-- [ ] сделать Homebrew + setup основным documented flow
-- [ ] оставить source-build путь через тот же `harmon setup`
-- [ ] убрать plist templates и sed flow после переключения
-- [ ] описать privilege boundary, helper copy и отсутствие formula service
-- [ ] описать status/upgrade caveat
+- [x] сделать Homebrew + setup основным documented flow
+- [x] оставить source-build путь через тот же `harmon setup`
+- [x] убрать plist templates и sed flow после переключения
+- [x] описать privilege boundary, helper copy и отсутствие formula service
+- [x] описать status/upgrade caveat
+
+➕ `harmon uninstall` заменяет imperative uninstaller тем же двухфазным швом;
+оба старых script entry point сохранены только как thin source-build wrappers.
 
 ### Task 11: Verify acceptance criteria
 
@@ -514,7 +516,6 @@ app bundle подписывается заново на машине польз�
 
 - проверить несколько последовательных Homebrew upgrades на реальных Cellar symlinks;
 - проверить поведение с локальной Developer ID identity и без неё;
-- решить, нужен ли `harmon uninstall` как симметричная typed команда или достаточно сохранить
-  отдельный uninstaller;
+- проверить `harmon uninstall` после fresh и migrated install на живой машине;
 - оценить notarized release channel отдельно, если tarball начнут раздавать браузером, а не только
   через Homebrew.

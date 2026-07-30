@@ -78,6 +78,16 @@ from `packaging/homebrew/Formula/harmon.rb.in` after the paired archive SHA-256
 is known, then transferred to the separate tap repository. See
 [`docs/releasing.md`](releasing.md).
 
+`harmon uninstall` mirrors the privilege boundary without deleting user data.
+The login-user process unloads both current and legacy LaunchAgents, removes
+their plists and the managed legacy `~/.local/bin/harmon` symlink, then makes
+one sudo re-exec for the system LaunchDaemon, current and legacy helpers, and
+socket. It keeps `Harmon.app` until that re-exec returns because the command can
+itself be running from the old bundle; only then is the app removed. Config,
+logs, reports, and `history.db` are preserved. The old install and uninstall
+scripts are thin source-build compatibility entry points and contain no
+installation or removal policy.
+
 The icon shown next to a notification is the bundle's own icon: `Info.plist`
 names `Harmon.icns` through `CFBundleIconFile`, and the installer copies that
 resource in before signing, since a resource added to a signed bundle

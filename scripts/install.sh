@@ -2,8 +2,8 @@
 
 set -eu
 
-SCRIPT_DIR=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd -P)
-PROJECT_DIR=$(CDPATH= cd -- "$SCRIPT_DIR/.." && pwd -P)
+SCRIPT_DIR=$(CDPATH='' cd -- "$(dirname -- "$0")" && pwd -P)
+PROJECT_DIR=$(CDPATH='' cd -- "$SCRIPT_DIR/.." && pwd -P)
 
 if [ "$(/usr/bin/id -u)" -eq 0 ]; then
     echo "Run this installer as the login user; harmon setup requests sudo once." >&2

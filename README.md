@@ -376,7 +376,7 @@ The formula is maintained in a separate tap. Once the generated formula has
 been copied there, the normal installation and upgrade flow is:
 
 ```shell
-brew install <tap>/harmon
+brew install OWNER/TAP/harmon
 harmon setup
 harmon status
 ```
@@ -450,8 +450,16 @@ Remove both services and installed binaries while preserving configuration,
 logs, generated reports and the sample history:
 
 ```shell
-./scripts/uninstall.sh
+harmon uninstall
 ```
+
+The command runs as the login user, removes the LaunchAgents and app bundle,
+then requests sudo once to remove the LaunchDaemon, root helper, legacy helper,
+and socket. A Homebrew install itself remains in the Cellar; run
+`brew uninstall harmon` afterwards if the CLI should be removed too.
+`scripts/uninstall.sh` is retained only as a source-checkout compatibility
+shortcut: like `scripts/install.sh`, it builds the release binary and delegates
+all behavior to the typed CLI command.
 
 The history database is the largest of those and is left behind deliberately —
 it is the record the agent was collecting, and up to a few hundred megabytes of
