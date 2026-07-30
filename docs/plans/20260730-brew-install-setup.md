@@ -398,8 +398,8 @@ app bundle подписывается заново на машине польз�
 - Create: `test/{PlistTest,LaunchdJobsTest}.kt`
 - Delete after switch: `launchd/*.plist.template`
 
-- [ ] реализовать ограниченный typed plist encoder с XML escaping
-- [ ] собрать agent и collector structures со всеми текущими launchd keys
+- [x] реализовать ограниченный typed plist encoder с XML escaping
+- [x] собрать agent и collector structures со всеми текущими launchd keys
 - [ ] писать temp → `plutil -lint` → chmod/chown intent → rename
 - [ ] snapshot-тестами закрепить args, domains, uid/gid, paths и modes
 
