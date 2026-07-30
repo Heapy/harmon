@@ -68,6 +68,16 @@ job produces exit 1 and the explicit action `Run 'harmon setup'`. Healthy
 versions, protocol, socket, and jobs produce exit 0. Status never invokes sudo
 or mutates a service.
 
+The Homebrew formula is a distribution layer, not a service manager. A release
+archive contains exactly `bin/harmon`, `libexec/harmon-collector`, and the three
+resources under `share/harmon/`. Homebrew never builds Kotlin/Native, invokes
+sudo, or declares a `service do` block. The collector in the Cellar is only a
+setup source: the LaunchDaemon always executes the copied, root-owned
+`/Library/PrivilegedHelperTools/harmon-collector`. The formula is generated
+from `packaging/homebrew/Formula/harmon.rb.in` after the paired archive SHA-256
+is known, then transferred to the separate tap repository. See
+[`docs/releasing.md`](releasing.md).
+
 The icon shown next to a notification is the bundle's own icon: `Info.plist`
 names `Harmon.icns` through `CFBundleIconFile`, and the installer copies that
 resource in before signing, since a resource added to a signed bundle

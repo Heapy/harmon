@@ -375,7 +375,7 @@ app bundle подписывается заново на машине польз�
 - [x] убрать hard-coded `0.4.0` из CLI
 - [x] добавить `harmon-collector --version`
 - [x] связать version, protocol version и minimum macOS с одним typed source
-- [ ] проверять release tag против `BuildInfo.VERSION`
+- [x] проверять release tag против `BuildInfo.VERSION`
 
 ### Task 2: ResourceLocator для brew и build tree
 
@@ -465,11 +465,11 @@ app bundle подписывается заново на машине польз�
 - Create: release workflow/configuration
 - Modify: release documentation
 
-- [ ] собирать оба release binaries из одного commit
-- [ ] сверять versions и signatures
-- [ ] создавать точный staging layout и один deterministic tarball
-- [ ] публиковать SHA-256 рядом с GitHub Release
-- [ ] распаковать artifact в test и прогнать smoke checks
+- [x] собирать оба release binaries из одного commit
+- [x] сверять versions и signatures
+- [x] создавать точный staging layout и один deterministic tarball
+- [x] публиковать SHA-256 рядом с GitHub Release
+- [x] распаковать artifact в test и прогнать smoke checks
 
 ### Task 9: Formula
 
@@ -477,10 +477,10 @@ app bundle подписывается заново на машине польз�
 - Create: `Formula/harmon.rb` в выбранном tap
 - Create/Modify: formula update automation
 
-- [ ] поставить `arch: :arm64` и pinned macOS minimum
-- [ ] установить bin/libexec/share без build toolchain
-- [ ] добавить caveats после install и upgrade
-- [ ] не добавлять `service do` или sudo post_install
+- [x] поставить `arch: :arm64` и pinned macOS minimum
+- [x] установить bin/libexec/share без build toolchain
+- [x] добавить caveats после install и upgrade
+- [x] не добавлять `service do` или sudo post_install
 - [ ] выполнить formula test и audit
 
 ### Task 10: Переход с source installer и документация

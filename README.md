@@ -125,16 +125,17 @@ the first time.
 Because the meaning of the CPU counters on the wire changed, the collector
 protocol version is now 2. The collector (root LaunchDaemon) and the agent
 (user LaunchAgent) are a matched pair and have to be reinstalled together with
-`./scripts/install.sh`. A mismatched pair now fails explicitly with
+`harmon setup`. A mismatched pair now fails explicitly with
 `Unsupported collector protocol 1; expected 2` instead of silently reporting
 CPU that is roughly 41 times too low.
 
 ## Requirements
 
-- Apple Silicon Mac;
-- Xcode Command Line Tools or Xcode;
-- Kotlin Toolchain 0.11.1 through the checked-in `./kotlin` wrapper;
-- Kotlin 2.4.10, resolved by the toolchain.
+- Apple Silicon Mac running macOS 12 Monterey or newer.
+
+A source build additionally needs Xcode Command Line Tools or Xcode and Kotlin
+Toolchain 0.11.1 through the checked-in `./kotlin` wrapper. The toolchain
+resolves Kotlin 2.4.10.
 
 ## Build and test
 
@@ -206,6 +207,9 @@ harmon once [--config PATH] [--sample-seconds N] [--notify]
 harmon diagnose [--config PATH] [--sample-seconds N]
 harmon check-config [--config PATH]
 harmon test-notifications [--config PATH]
+harmon setup
+harmon setup --system --uid UID --gid GID
+harmon status
 harmon --help
 harmon --version
 ```
@@ -366,6 +370,29 @@ alert state it resumes after a restart; everything else is a `sqlite3` query
 against a schema that is meant to be queried by hand. That schema, with the
 queries worth starting from, is [the sample history](docs/history.md).
 
+## Install with Homebrew
+
+The formula is maintained in a separate tap. Once the generated formula has
+been copied there, the normal installation and upgrade flow is:
+
+```shell
+brew install <tap>/harmon
+harmon setup
+harmon status
+```
+
+Run `harmon setup` again after every `brew upgrade harmon`, then verify with
+`harmon status`. Homebrew updates the paired source binaries in its Cellar, but
+cannot use sudo to replace the root helper or update the user app bundle.
+`status` reports those stale copies explicitly.
+
+The formula installs a ready-made arm64 archive; it does not need the Kotlin
+toolchain. It intentionally has no Homebrew service: the source collector is
+copied by setup to the root-owned
+`/Library/PrivilegedHelperTools/harmon-collector` before launchd can execute it.
+Release and tap handoff instructions are in
+[docs/releasing.md](docs/releasing.md).
+
 ## Install a source build with launchd
 
 Build the paired release binaries, then run `setup` as the login user:
@@ -398,7 +425,7 @@ so it cannot shadow an upgraded Homebrew binary. An unrelated file or symlink at
 that path is left alone. The former agent Label, plist, and helper path are
 cleaned up during the same migration.
 
-After setup, and after every binary upgrade, run:
+After setup, and after every source binary upgrade, run:
 
 ```shell
 harmon status

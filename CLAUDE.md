@@ -239,6 +239,7 @@ selftest/     macos/app depending only on bridge-probe; the binding checks
 plugins/sqldelight-gen/
               jvm/amper-plugin module driving the SQLDelight compiler
 scripts/      compatibility setup/uninstall entry points, release tools, and test-native.sh
+packaging/    Homebrew formula template; release packaging renders the transferable formula
 project.yaml  the extra modules and the plugin; the root module is included
               implicitly
 libs.versions.toml
