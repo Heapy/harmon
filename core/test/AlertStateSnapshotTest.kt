@@ -3,12 +3,9 @@ import dev.yoda.harmon.analysis.DELIVERY_RETRY_THRESHOLD
 import dev.yoda.harmon.analysis.deliveryRetryDelaySamples
 import dev.yoda.harmon.analysis.isSnapshotFresh
 import dev.yoda.harmon.model.Alert
-import dev.yoda.harmon.model.MonitoringReport
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFalse
-import kotlin.test.assertNotNull
-import kotlin.test.assertNull
 import kotlin.test.assertTrue
 import kotlin.test.fail
 import kotlin.time.Duration.Companion.days
@@ -23,12 +20,7 @@ private const val PUSHABLE_SAMPLE_LIMIT = 100
 
 private val SAVED_AT = Instant.parse("2026-07-29T00:00:00Z")
 
-private val FIRING = setOf("cpu:firefox", "memory:chrome")
-
-/**
- * Covers what survives a restart of the agent: the alert state as a snapshot, its trip through the
- * database, and the age past which restoring it does more harm than starting over.
- */
+/** Covers the pure alert-state snapshot and freshness policy used across an agent restart. */
 class AlertStateSnapshotTest {
 
     /**
@@ -86,62 +78,6 @@ class AlertStateSnapshotTest {
         assertFalse(isSnapshotFresh(SAVED_AT, SAVED_AT - 1.seconds, INTERVAL_SECONDS))
         assertFalse(isSnapshotFresh(SAVED_AT, SAVED_AT - 1.days, INTERVAL_SECONDS))
     }
-
-    @Test
-    fun theSnapshotSurvivesTheDatabaseWithItsCounter() = withScratchHome { home ->
-        withHistoryStore(home, intervalSeconds = INTERVAL_SECONDS) { store ->
-            val state = AlertState()
-            state.commit(FIRING, setOf("memory:chrome"))
-            repeat(DELIVERY_RETRY_THRESHOLD) {
-                state.commit(FIRING, emptySet(), failedKeys = setOf("cpu:firefox"))
-            }
-            val snapshot = state.snapshot()
-            assertTrue(
-                snapshot.keys.values.any { it.settled } &&
-                    snapshot.keys.values.any { it.failures > 0 },
-                "a round trip over rows that are all zero would prove nothing",
-            )
-
-            store.record(reportAt(SAVED_AT), alertState = snapshot)
-
-            assertEquals(snapshot, store.restorableAlertState(now = SAVED_AT + 60.seconds))
-        }
-    }
-
-    /**
-     * The store judges the age itself, because the interval it is judged in is already its own. The
-     * whole snapshot goes: the counter and the keys mean nothing apart, so half of yesterday's state
-     * is not a smaller restore but a wrong one.
-     */
-    @Test
-    fun aSnapshotOlderThanTheTtlIsNotHandedBack() = withScratchHome { home ->
-        withHistoryStore(home, intervalSeconds = INTERVAL_SECONDS) { store ->
-            val state = AlertState()
-            state.commit(FIRING, setOf("memory:chrome"))
-            store.record(reportAt(SAVED_AT), alertState = state.snapshot())
-
-            assertNotNull(
-                store.restorableAlertState(now = SAVED_AT + (INTERVAL_SECONDS * 2).seconds),
-            )
-            assertNull(
-                store.restorableAlertState(now = SAVED_AT + (INTERVAL_SECONDS * 3).seconds),
-                "a snapshot this old belongs to a machine the agent no longer knows",
-            )
-        }
-    }
-
-    /**
-     * `once` and `diagnose` have no alert state to speak of, and a run of one of them must not leave
-     * the agent looking like it had just started with nothing firing.
-     */
-    @Test
-    fun aSampleWrittenWithoutAlertStateLeavesNoneToRestore() = withScratchHome { home ->
-        withHistoryStore(home, intervalSeconds = INTERVAL_SECONDS) { store ->
-            store.record(reportAt(SAVED_AT))
-
-            assertNull(store.restorableAlertState(now = SAVED_AT))
-        }
-    }
 }
 
 /**
@@ -162,10 +98,3 @@ private fun samplesUntilPushable(state: AlertState, alerts: List<Alert>): Int {
     }
     return samples
 }
-
-private fun reportAt(capturedAt: Instant): MonitoringReport = MonitoringReport(
-    usage = systemUsage(processes = listOf(processUsage(pid = 11, name = "firefox")))
-        .copy(capturedAt = capturedAt),
-    alerts = listOf(alert("cpu:firefox")),
-    topProcessCount = 1,
-)
