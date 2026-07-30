@@ -40,10 +40,12 @@ jobs:
           version="${GITHUB_REF_NAME#v}"
           tarball="dist/harmon-${version}-macos-arm64.tar.gz"
           scripts/package-release.sh --output-dir dist --tag "$GITHUB_REF_NAME"
-          echo "tarball=$tarball" >> "$GITHUB_OUTPUT"
-          echo "checksum=$tarball.sha256" >> "$GITHUB_OUTPUT"
-          echo "provenance=$tarball.provenance.json" >> "$GITHUB_OUTPUT"
-          echo "formula=dist/Formula/harmon.rb" >> "$GITHUB_OUTPUT"
+          {
+            echo "tarball=$tarball"
+            echo "checksum=$tarball.sha256"
+            echo "provenance=$tarball.provenance.json"
+            echo "formula=dist/Formula/harmon.rb"
+          } >> "$GITHUB_OUTPUT"
 
       - name: Attest paired release provenance
         uses: actions/attest@v4
