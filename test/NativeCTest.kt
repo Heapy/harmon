@@ -62,6 +62,8 @@ private val C_HARNESS_CHECKS = setOf(
     "processes.rusage-issue-path-matches-a-fresh-read",
     "processes.rusage-issue-uid-is-unknown",
     "processes.listing-frees-its-pid-list",
+    "processes.exec-path-survives-a-deleted-binary",
+    "processes.exec-path-ignores-a-relative-exec",
     "processes.rejects-invalid-arguments",
     "snapshot.memory-and-load-are-plausible",
     "snapshot.memory-and-load-match-a-fresh-read",

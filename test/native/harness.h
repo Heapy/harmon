@@ -25,6 +25,7 @@
 #include <stddef.h>
 #include <stdio.h>
 #include <string.h>
+#include <unistd.h>
 
 /*
  * Whether this build is the sanitized one `scripts/test-native.sh --sanitize`
@@ -79,6 +80,28 @@ static inline size_t hm_test_heap_bytes_in_use(void) {
  * names the other instead.
  */
 #define HM_TEST_TIMEOUT_SECONDS 60
+
+/*
+ * Never returns. What every child these suites start does instead of doing work,
+ * and the three lines before the wait are what keeps a hung run from hanging
+ * `./kotlin test`: `fork` cleared the alarm `main` armed, and a child that
+ * outlives a parent killed by one would hold the harness's output pipe open —
+ * both descriptors, because the bridge runs every command with `2>&1`.
+ *
+ * `main` reaches it through `--park` so that a child can also arrive here by
+ * exec'ing a *copy* of this binary, which is what the two exec-path checks need
+ * and what no system binary can serve: a copy of one is outside the trust cache
+ * and the kernel kills it before it runs a line. `alarm` survives `execve`, so
+ * such a child is bounded by the same number without arming anything twice.
+ */
+static inline void hm_test_park_forever(void) {
+    alarm(HM_TEST_TIMEOUT_SECONDS);
+    close(STDOUT_FILENO);
+    close(STDERR_FILENO);
+    for (;;) {
+        pause();
+    }
+}
 
 extern int hm_test_failures;
 extern int hm_test_reported;

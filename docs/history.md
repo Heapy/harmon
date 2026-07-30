@@ -319,9 +319,10 @@ CREATE INDEX process_sample_sample_id ON process_sample(sample_id);
 `process` is the lookup: `pid` and `started_at` are `ProcessUsage.identity`, the
 rest is the naming half of `ProcessUsage`, written once instead of 288 times a
 day. `uid` is null when the collector could not read it, and `executable_path` is
-null when it read an empty one. All four naming columns freeze at first sighting:
-the insert is `ON CONFLICT DO NOTHING`, so a process that renames itself keeps
-the name it was first seen under.
+null when it read an empty one. `name`, `uid` and `parent_pid` freeze at first
+sighting: the insert conflicts into a no-op, so a process that renames itself
+keeps the name it was first seen under. `executable_path` is the one column a
+later sighting may still write, and only from null to non-null; see below.
 
 `process_sample` is one row per readable process per sample — around 222 000 a
 day on a machine running several hundred processes — and every column after the
@@ -505,16 +506,30 @@ against a `HOME` of its own.
 
 ## Three things the schema does not carry
 
-**The first name a process was seen under.** The lookup insert is
-`INSERT … ON CONFLICT DO NOTHING` against `UNIQUE(pid, started_at)`, so `name`,
-`executable_path`, `uid` and `parent_pid` freeze at first sighting and are never
-corrected. Two ordinary events make them wrong afterwards: an `exec()` replaces
-the image without changing the pid or its start time, so the row keeps the name
-of the program that came before; and a process whose parent exits is re-parented
-to launchd, so `parent_pid` names a parent that is no longer the real one.
-Correcting either would cost an `UPDATE` per process per sample — around 222 000
-writes a day — to track something that almost never changes, and the row would
-then no longer describe the moment it was written either.
+**The first name a process was seen under.** The lookup insert conflicts into a
+no-op against `UNIQUE(pid, started_at)`, so `name`, `uid` and `parent_pid` freeze
+at first sighting and are never corrected. Two ordinary events make them wrong
+afterwards: an `exec()` replaces the image without changing the pid or its start
+time, so the row keeps the name of the program that came before; and a process
+whose parent exits is re-parented to launchd, so `parent_pid` names a parent that
+is no longer the real one. Correcting either would cost an `UPDATE` per process
+per sample — around 222 000 writes a day — to track something that almost never
+changes, and the row would then no longer describe the moment it was written
+either.
+
+`executable_path` is outside that freeze in one direction. Null there is not a
+value the process ever had; it is the collector saying it could not look, and the
+answer can arrive later — when a collector gains the privilege to read another
+user's process, or when the bridge that once reported nothing for a replaced
+binary learns to read the saved exec path. So the conflict clause is
+`DO UPDATE SET executable_path = excluded.executable_path` guarded by
+`process.executable_path IS NULL AND excluded.executable_path IS NOT NULL`: it
+writes only for rows that carry no path, and never replaces one. Without it the
+first sighting of a long-running session decides its path for the life of that
+session — days of samples that no query grouping by path can attribute — and a
+fix in the collector would reach only processes started after it. The cost the
+freeze exists to avoid does not apply: the guard is false for every row that
+already has a path, which is all but a handful of them.
 
 **Application groups without a bundle.** `ApplicationGrouper` gives every process
 it cannot tie to an `.app` bundle a singleton group of its own, keyed

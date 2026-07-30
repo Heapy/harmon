@@ -43,9 +43,16 @@ int main(int argc, char **argv) {
     for (int index = 1; index < argc; index++) {
         if (strcmp(argv[index], "--self-check") == 0) {
             self_check = 1;
+        } else if (strcmp(argv[index], "--park") == 0) {
+            /*
+             * Runs no check and never returns: this is the harness as a child of itself, which
+             * `processes.exec-path-survives-a-deleted-binary` execs a deletable copy of. Handled
+             * before anything is reported, so a copy started by hand prints nothing either.
+             */
+            hm_test_park_forever();
         } else if (argv[index][0] == '-' || hm_test_filter != NULL) {
             /* Why a dash is a usage error: CLAUDE.md, the protocol paragraph. */
-            fprintf(stderr, "usage: %s [--self-check] [name-prefix]\n", argv[0]);
+            fprintf(stderr, "usage: %s [--self-check|--park] [name-prefix]\n", argv[0]);
             return 2;
         } else {
             hm_test_filter = argv[index];

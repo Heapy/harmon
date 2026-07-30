@@ -40,6 +40,7 @@ The Kotlin collector calls a small C bridge in
 | Process enumeration | `proc_listallpids` | Candidate PIDs |
 | Process identity | `proc_pidinfo(PROC_PIDTBSDINFO)` | Parent PID and UID |
 | Process display metadata | `proc_name`, `proc_pidpath` | Name and executable path |
+| Executable path fallback | `sysctl(KERN_PROCARGS2)` | The path a process was exec'd with, when `proc_pidpath` cannot resolve one |
 | Process resource ledger | `proc_pid_rusage(RUSAGE_INFO_V6)` | CPU, memory, wakeups, page-ins, physical disk I/O, logical writes, instructions, cycles, energy, start time |
 | Older-kernel fallback | `proc_pid_rusage(RUSAGE_INFO_V4)` | Same prefix without V6 energy fields |
 | Process task counters | `proc_pidinfo(PROC_PIDTASKINFO)` | Faults, COW faults, Mach/Unix calls, context switches, threads |
@@ -67,6 +68,33 @@ capacity of the sample array it feeds and given the same kind of headroom. It is
 therefore never the narrower of the two, whatever the caller reserved: a process
 that does not fit the sample array is reported as a capacity failure instead of
 disappearing from a truncated listing.
+
+## Executable paths
+
+`proc_pidpath` resolves the running image back to a name on disk, so it fails
+once that file is gone — which is the state an in-place upgrade leaves every
+process it did not restart in. Observed on the machine this was written on: four
+sessions started from an `nvm` prefix that a later install replaced, reported
+with no executable path at all while `ps` still showed one, and 77 % of the
+machine's second largest writer therefore landed outside every grouping that
+reads the path.
+
+The collector falls back to the path the process was exec'd with, which the
+kernel saved at exec time and which nothing on disk can invalidate. Two limits
+are deliberate:
+
+- only an absolute path is accepted. The saved string is whatever was handed to
+  `execve`, so a process started as `./server` reports exactly that, and storing
+  it would fold every unrelated `./server` on the machine into one group. Such a
+  process keeps an empty path, as before;
+- the region is readable by root and by the process's own user. For anyone
+  else the fallback fails the same way `proc_pidpath` already did, so an
+  unprivileged collector gains nothing for other users' processes.
+
+The path a process reports is therefore where its binary was when it started,
+not where an equivalent binary lives now: two sessions of the same program
+across an upgrade are two paths, and grouping by path keeps them apart. That is
+the honest reading of what ran.
 
 ## Process identity
 

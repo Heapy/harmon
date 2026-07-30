@@ -59,6 +59,13 @@ extern "C" {
 #define HM_PROCESS_LIST_HEADROOM 256
 #define HM_MIN_PROCESS_LIST 512
 #define HM_MAX_PROCESS_LIST (1 << 20)
+/*
+ * The largest saved argument region hm_read_exec_path_from_args will allocate for. It bounds one
+ * transient allocation on a path that only runs when proc_pidpath already failed; kern.argmax caps
+ * the region itself at 1 MiB on macOS 15, and the headroom above that is for a kernel that raises
+ * it rather than for any region seen here.
+ */
+#define HM_MAX_PROCESS_ARGS (4U * 1024U * 1024U)
 
 typedef struct {
     int32_t pid;
@@ -696,6 +703,63 @@ static inline int hm_attribute_candidate(
     return consumed;
 }
 
+/*
+ * The absolute path a process was exec'd with, taken from the argument region the kernel saved at
+ * exec time. Writes nothing and returns 0 unless it has a whole absolute path to write.
+ *
+ * This exists because proc_pidpath resolves the vnode of the running image back to a name, so it
+ * fails with ENOENT the moment that file is unlinked — which is what an in-place upgrade does to
+ * every process still running out of the prefix it replaced. Measured here: four codex sessions
+ * out of an nvm prefix a later install overwrote, reported with no path at all while `ps` still
+ * showed one, which put 77 % of this machine's second largest writer in a bucket that groups by
+ * nothing. The saved region answers from a copy made at exec time, so replacing or deleting the
+ * file changes nothing about it.
+ *
+ * Two properties of KERN_PROCARGS2 shape the function, and both cost a day each to find:
+ *
+ *   - a buffer narrower than the region is not a short read of its head. The kernel copies out the
+ *     *tail* and still returns 0, so a fixed-size buffer yields a slice of the environment
+ *     beginning wherever it landed — an empty string here, plausible garbage on the next machine.
+ *     The size has to be asked for first and the whole region taken, which is why this allocates.
+ *   - the string is the path handed to execve verbatim, so it is relative exactly when the caller's
+ *     was: a binary started as `./server` reports `./server`. That is worse than nothing for
+ *     anything that groups by path — every `./server` on the machine would fold into one — so only
+ *     an absolute path is accepted, and a truncated one is refused rather than shortened.
+ *
+ * The region belongs to the process's own user, and to root; for anyone else the sysctl fails with
+ * EINVAL, which is the population proc_pidpath has already refused by the time this is reached.
+ */
+static inline int hm_read_exec_path_from_args(pid_t pid, char *out, uint32_t out_size) {
+    int name[3] = {CTL_KERN, KERN_PROCARGS2, (int)pid};
+    size_t region_size = 0;
+    if (sysctl(name, 3, NULL, &region_size, NULL, 0) != 0 ||
+        region_size <= sizeof(int) ||
+        region_size > HM_MAX_PROCESS_ARGS) {
+        return 0;
+    }
+
+    char *region = (char *)malloc(region_size);
+    if (region == NULL) {
+        return 0;
+    }
+
+    int written = 0;
+    if (sysctl(name, 3, region, &region_size, NULL, 0) == 0 && region_size > sizeof(int)) {
+        const char *path = region + sizeof(int);
+        const size_t readable = region_size - sizeof(int);
+        if (memchr(path, '\0', readable) != NULL && path[0] == '/') {
+            const int length = snprintf(out, out_size, "%s", path);
+            if (length > 0 && (uint32_t)length < out_size) {
+                written = 1;
+            } else {
+                out[0] = '\0';
+            }
+        }
+    }
+    free(region);
+    return written;
+}
+
 static inline void hm_read_process_metadata(
     pid_t pid,
     int32_t *parent_pid,
@@ -748,7 +812,8 @@ static inline void hm_read_process_metadata(
     }
 
     if (executable_path != NULL && executable_path_size > 0) {
-        if (proc_pidpath(pid, executable_path, executable_path_size) <= 0) {
+        if (proc_pidpath(pid, executable_path, executable_path_size) <= 0 &&
+            !hm_read_exec_path_from_args(pid, executable_path, executable_path_size)) {
             executable_path[0] = '\0';
         }
         executable_path[executable_path_size - 1] = '\0';

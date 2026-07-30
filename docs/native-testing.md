@@ -22,8 +22,10 @@ figures, `host_statistics` for the tick counters, `host_statistics64` for the
 virtual memory sample, `hw.memsize` and `getloadavg` for the two the collector
 divides by, a second walk of the block storage registry, a second IOPS read for
 the battery, a second region walk for the compressed bytes, a second
-`proc_pidinfo` for the process metadata, a second `proc_pid_rusage` plus
-`PROC_PIDTASKINFO` for the 24 numbers of a process sample. A plausibility
+`proc_pidinfo` for the process metadata — plus a second read of the saved
+argument region, because the anchor has to mirror the bridge's whole fallback
+order or it calls every process with a replaced binary a disagreement — a second
+`proc_pid_rusage` plus `PROC_PIDTASKINFO` for the 24 numbers of a process sample. A plausibility
 assertion survives a transposed pair of fields; an anchor does not. Where an
 anchor cannot separate two fields, the gap is listed below rather than left to
 the comment.
@@ -64,7 +66,18 @@ run under:
   `processes.issue-metadata-matches-a-fresh-read` need the account to own more
   rusage-readable processes than the sample array holds, plus 32 behind them, so
   the listing forks the shortfall as placeholder children first — nothing at all
-  on a desktop session (585 here), a few dozen under a service account.
+  on a desktop session (585 here), a few dozen under a service account;
+- `processes.exec-path-survives-a-deleted-binary` and
+  `processes.exec-path-ignores-a-relative-exec` need a process whose executable
+  has been deleted underneath it, one reached through an absolute path and one
+  through `./name`, so both make one: a copy of the harness binary in a fresh
+  `mkdtemp` under `/tmp`, exec'd with `--park` and unlinked once the exec has
+  landed. The copy is of the harness rather than of something small like
+  `/bin/cat` because on Apple silicon a copy of a system binary is outside the
+  kernel's trust cache and is killed before it runs a line, while a copy of a
+  binary the compiler ad-hoc signed minutes earlier runs normally. The directory
+  is resolved through `realpath` first: `/tmp` is a symlink, and `proc_pidpath`
+  answers with `/private/tmp`.
 
 Both report what they did in every failure, so a machine that refuses `mlock`,
 serves the read from cache or cannot fork says so in those words instead of
@@ -119,7 +132,10 @@ it — the harnesses and the bridge point here rather than restating it. Output 
 executed check passed and 1 otherwise. Arguments are `--self-check`, which adds a
 deliberately failing check so the `fail` branch is executed rather than assumed,
 and one name-prefix filter, which is the first argument that is not a flag — in
-any position, so `--self-check harness.` is how both are combined. Anything else
+any position, so `--self-check harness.` is how both are combined. The C harness
+takes one more, `--park`, which runs no check at all: it is how the binary parks
+as a child of itself, and only `processes.exec-path-survives-a-deleted-binary`
+passes it, to a copy of the binary it is about to delete. Anything else
 beginning with a dash, one or two, or a second filter, is a usage error and exits
 2: an unknown flag taken for a filter would select nothing and exit 0, which is
 how a mistyped `--self-check` would read as a clean run, and `-selfcheck` is the
@@ -129,8 +145,9 @@ success from a harness whose `fail` branch never ran. A filter that selects
 nothing prints `ok harness.no-checks-selected`. Both harnesses arm a
 60-second `alarm` before their first check, so a walk or a socket that hung
 inside the kernel dies on SIGALRM instead of hanging `./kotlin test`; the bridge
-reports that as "died on signal 14". A child the C harness forks re-arms that
-alarm and closes **both** standard descriptors: `fork` clears the parent's alarm,
+reports that as "died on signal 14". A child the C harness starts re-arms that
+alarm and closes **both** standard descriptors — through `fork` or through
+`--park` after an `execve`, which the alarm survives: `fork` clears the parent's alarm,
 and a child that outlives a parent killed by one holds the harness's output pipe
 open, so the reader in `NativeHarness.kt` waits for an EOF that never comes.
 Both descriptors, because the bridge runs every command with `2>&1` and 1 and 2

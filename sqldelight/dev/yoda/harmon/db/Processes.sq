@@ -1,10 +1,18 @@
 -- The process lookup, keyed by identity rather than by pid alone: pids are recycled within minutes
 -- on a busy machine, and started_at is the only thing separating one tenant of a pid from the next.
 --
--- name, executable_path, uid and parent_pid are frozen at first sighting, because the insert is
--- ON CONFLICT DO NOTHING. A process that renames itself later keeps the name it was first seen
--- under; correcting that would cost an UPDATE per process per sample — ~222 000 writes a day — to
--- fix something that almost never changes.
+-- name, uid and parent_pid are frozen at first sighting, because the insert conflicts into a
+-- no-op. A process that renames itself later keeps the name it was first seen under; correcting
+-- that would cost an UPDATE per process per sample — ~222 000 writes a day — to fix something that
+-- almost never changes.
+--
+-- executable_path is the exception, and only in the one direction that cannot be a rename: null to
+-- non-null. The path is unreadable while the collector runs unprivileged over another user's
+-- process, and it was unreadable for any process whose binary had been replaced until the bridge
+-- learned to fall back to the saved exec path. Frozen, such a row stays null for the life of the
+-- process — days, for a long-running session — and everything that groups by path silently loses
+-- it. The insert's conflict clause fills it instead, which costs a write only for the rows that
+-- are actually null, and never overwrites a path already stored.
 CREATE TABLE process (
   id              INTEGER PRIMARY KEY AUTOINCREMENT,
   pid             INTEGER NOT NULL,
@@ -79,7 +87,8 @@ CREATE INDEX process_sample_sample_id ON process_sample(sample_id);
 insertProcess:
 INSERT INTO process(pid, started_at, name, executable_path, uid, parent_pid)
 VALUES (?, ?, ?, ?, ?, ?)
-ON CONFLICT DO NOTHING;
+ON CONFLICT (pid, started_at) DO UPDATE SET executable_path = excluded.executable_path
+WHERE process.executable_path IS NULL AND excluded.executable_path IS NOT NULL;
 
 -- The id is read back instead of taken from last_insert_rowid(): on the second sighting of a process
 -- the insert above does nothing, and last_insert_rowid() still points at whatever row was written

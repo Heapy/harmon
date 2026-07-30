@@ -95,6 +95,63 @@ typedef struct {
 } HMOwnProcesses;
 
 /*
+ * The saved exec path of `pid`, verbatim: relative whenever the process was
+ * started that way, and empty when the region cannot be read at all.
+ *
+ * Deliberately without the absolute-path filter the bridge applies. Two of the
+ * checks below have to separate "the bridge refused a relative path" from "there
+ * was nothing there to refuse", and a reader that had already dropped the
+ * relative ones could not tell them apart.
+ */
+static int hm_test_saved_exec_path(pid_t pid, char *out, size_t out_size) {
+    out[0] = '\0';
+    int name[3] = {CTL_KERN, KERN_PROCARGS2, (int)pid};
+    size_t region_size = 0;
+    if (sysctl(name, 3, NULL, &region_size, NULL, 0) != 0 || region_size <= sizeof(int)) {
+        return 0;
+    }
+
+    char *region = (char *)malloc(region_size);
+    if (region == NULL) {
+        return 0;
+    }
+    int found = 0;
+    if (sysctl(name, 3, region, &region_size, NULL, 0) == 0 && region_size > sizeof(int)) {
+        const char *path = region + sizeof(int);
+        if (memchr(path, '\0', region_size - sizeof(int)) != NULL) {
+            snprintf(out, out_size, "%s", path);
+            found = out[0] != '\0';
+        }
+    }
+    free(region);
+    return found;
+}
+
+/*
+ * A second read of one process's executable path, in the order the bridge reads
+ * it: `proc_pidpath`, and the saved exec path only when that fails and only when
+ * it is absolute.
+ *
+ * Mirroring the fallback is the point, the same way the name anchor mirrors
+ * proc_name → `pbi_name` → `pbi_comm`: what the two anchors below assert is that
+ * `hm_read_process_metadata` performed this sequence, so an anchor that stopped
+ * at `proc_pidpath` would call every process with a replaced binary a
+ * disagreement — four of them here, all of them right.
+ */
+static void hm_fresh_exec_path(pid_t pid, char *out, size_t out_size) {
+    memset(out, 0, out_size);
+    if (proc_pidpath(pid, out, (uint32_t)out_size) > 0) {
+        return;
+    }
+    char saved[HM_PROCESS_PATH_SIZE];
+    if (hm_test_saved_exec_path(pid, saved, sizeof(saved)) && saved[0] == '/') {
+        snprintf(out, out_size, "%s", saved);
+    } else {
+        out[0] = '\0';
+    }
+}
+
+/*
  * The processes this account can read the rusage of, which is exactly the
  * population `hm_list_processes` turns into samples. Counting them with the same
  * call the bridge uses is the only way to know whether the sample array can fill.
@@ -121,21 +178,6 @@ static int hm_count_readable_processes(void) {
     return readable;
 }
 
-/*
- * Never returns. The three lines before the wait are what keeps a hung run from
- * hanging `./kotlin test`: `fork` cleared the alarm `main` armed, and a child
- * that outlives a parent killed by one would hold the harness's output pipe open
- * — both descriptors, because the bridge runs every command with `2>&1`.
- */
-static void hm_run_placeholder_child(void) {
-    alarm(HM_TEST_TIMEOUT_SECONDS);
-    close(STDOUT_FILENO);
-    close(STDERR_FILENO);
-    for (;;) {
-        pause();
-    }
-}
-
 static HMOwnProcesses hm_top_up_own_processes(void) {
     HMOwnProcesses own = {hm_count_readable_processes(), NULL, 0};
     if (own.owned < 0 || own.owned >= HM_LISTING_OWN_MINIMUM) {
@@ -153,7 +195,7 @@ static HMOwnProcesses hm_top_up_own_processes(void) {
     for (int index = 0; index < wanted; ++index) {
         const pid_t child = fork();
         if (child == 0) {
-            hm_run_placeholder_child();
+            hm_test_park_forever();
         }
         if (child < 0) {
             break;
@@ -194,7 +236,8 @@ static void hm_release_own_processes(HMOwnProcesses *own) {
  * instead, over the one field that survives the refusal.
  *
  * The second read mirrors the bridge's fallback order — proc_name first, then
- * `pbi_name` and `pbi_comm` — because that order is the mapping under test.
+ * `pbi_name` and `pbi_comm`, and `proc_pidpath` before the saved exec path —
+ * because that order is the mapping under test.
  */
 static void hm_check_issue_metadata(
     const HMProcessIssue *issues,
@@ -225,10 +268,7 @@ static void hm_check_issue_metadata(
             );
         }
         char path[HM_PROCESS_PATH_SIZE];
-        memset(path, 0, sizeof(path));
-        if (proc_pidpath(issue->pid, path, (uint32_t)sizeof(path)) <= 0) {
-            path[0] = '\0';
-        }
+        hm_fresh_exec_path(issue->pid, path, sizeof(path));
 
         ++compared;
         const char *disagreement = NULL;
@@ -891,7 +931,8 @@ static void hm_check_own_fields(
 
 /*
  * The executable path of an issue the rusage branch produced, against a fresh
- * `proc_pidpath`.
+ * read of it — `hm_fresh_exec_path`, so the fallback the bridge applies is part
+ * of what is compared rather than a source of disagreement.
  *
  * The sibling check on the narrow listing cannot see this branch at all: it needs
  * `PROC_PIDTBSDINFO` to build its anchor, and that call is refused for exactly
@@ -912,8 +953,8 @@ static void hm_check_rusage_issue_paths(const HMProcessIssue *issues, int writte
             continue;
         }
         char path[HM_PROCESS_PATH_SIZE];
-        memset(path, 0, sizeof(path));
-        if (proc_pidpath(issue->pid, path, (uint32_t)sizeof(path)) <= 0) {
+        hm_fresh_exec_path(issue->pid, path, sizeof(path));
+        if (path[0] == '\0') {
             continue;
         }
 
@@ -1392,6 +1433,256 @@ static void hm_check_listing_frees_its_pid_list(void) {
 }
 
 /*
+ * Where the two exec-path checks build the binaries they delete, and how long
+ * they will wait for a child to finish exec'ing one. The wait is bounded in
+ * milliseconds against a fork+exec of this binary — 132 KiB, or 564 KiB
+ * sanitized — which needs one or two of them; the bound is what keeps a machine
+ * that cannot exec the copy at all from sitting in this loop until the harness
+ * alarm, and a child that never execs is reported as `ready=0` rather than as a
+ * bridge that lost the path.
+ */
+#define HM_EXEC_PATH_DIRECTORY "/tmp/harmon-exec-path-XXXXXX"
+#define HM_EXEC_ATTEMPTS 1000
+
+/* A child of this harness running a copy of this binary that the test then deletes. */
+typedef struct {
+    pid_t pid;
+    char path[HM_PROCESS_PATH_SIZE];
+} HMDeletedBinary;
+
+static int hm_copy_executable(const char *from, const char *to) {
+    const int source = open(from, O_RDONLY);
+    if (source < 0) {
+        return 0;
+    }
+    const int target = open(to, O_WRONLY | O_CREAT | O_TRUNC, 0755);
+    if (target < 0) {
+        close(source);
+        return 0;
+    }
+
+    char buffer[65536];
+    int copied = 1;
+    ssize_t taken;
+    while (copied && (taken = read(source, buffer, sizeof(buffer))) != 0) {
+        if (taken < 0) {
+            copied = 0;
+            break;
+        }
+        ssize_t written = 0;
+        while (written < taken) {
+            const ssize_t step = write(target, buffer + written, (size_t)(taken - written));
+            if (step <= 0) {
+                copied = 0;
+                break;
+            }
+            written += step;
+        }
+    }
+    close(source);
+    close(target);
+    return copied;
+}
+
+/*
+ * A child parked in a private copy of `binary`, started through an absolute path
+ * or through `./name` from the copy's own directory.
+ *
+ * The copy is of this harness rather than of something small and idle like
+ * `/bin/cat` because a copy of a system binary does not run at all on Apple
+ * silicon: the original is trusted through the kernel's trust cache rather than
+ * through anything inside the file, and the copy is killed on exec before it
+ * reaches a line of its own. This binary is signed ad-hoc by the compiler that
+ * built it moments earlier, so a copy of it is as runnable as the original —
+ * measured both ways here — and `--park` is the argument that makes it hold
+ * still. Copying is the point: the checks delete the file out from under a
+ * process that is still running it.
+ */
+static HMDeletedBinary hm_start_deleted_binary(
+    const char *binary,
+    const char *directory,
+    const char *file,
+    int relative
+) {
+    HMDeletedBinary child = {-1, {0}};
+    snprintf(child.path, sizeof(child.path), "%s/%s", directory, file);
+    if (!hm_copy_executable(binary, child.path)) {
+        return child;
+    }
+
+    const pid_t started = fork();
+    if (started == 0) {
+        if (relative) {
+            char here[HM_PROCESS_PATH_SIZE];
+            snprintf(here, sizeof(here), "./%s", file);
+            if (chdir(directory) == 0) {
+                execl(here, here, "--park", (char *)NULL);
+            }
+        } else {
+            execl(child.path, child.path, "--park", (char *)NULL);
+        }
+        _exit(127);
+    }
+
+    if (started < 0) {
+        unlink(child.path);
+        return child;
+    }
+    child.pid = started;
+    return child;
+}
+
+/*
+ * Whether the child has finished exec'ing its copy, which the unlink has to wait
+ * for: a binary deleted before the exec reaches it fails the exec instead of the
+ * path lookup, and the check would then be measuring a child that never ran.
+ * `proc_pidpath` answering with the copy's path is the exec having completed —
+ * for the relative child too, because it resolves what the process is running
+ * rather than what it was named.
+ */
+static int hm_wait_for_exec(pid_t pid, const char *path) {
+    for (int attempt = 0; attempt < HM_EXEC_ATTEMPTS; ++attempt) {
+        char seen[HM_PROCESS_PATH_SIZE];
+        memset(seen, 0, sizeof(seen));
+        if (proc_pidpath(pid, seen, (uint32_t)sizeof(seen)) > 0 && strcmp(seen, path) == 0) {
+            return 1;
+        }
+        usleep(1000);
+    }
+    return 0;
+}
+
+static void hm_release_deleted_binary(HMDeletedBinary *child) {
+    if (child->pid > 0) {
+        kill(child->pid, SIGKILL);
+        int status = 0;
+        while (waitpid(child->pid, &status, 0) < 0 && errno == EINTR) {
+        }
+        child->pid = -1;
+    }
+    unlink(child->path);
+}
+
+/*
+ * The fallback `hm_read_process_metadata` reaches for once `proc_pidpath` has
+ * refused, over the two processes the machine cannot be asked to provide.
+ *
+ * Both children are running a file that no longer exists, which is the state
+ * every process is left in by an in-place upgrade of the prefix it was started
+ * from — four codex sessions here, out of an nvm prefix a later install
+ * replaced, and the whole reason the fallback exists. `proc_pidpath` fails with
+ * ENOENT for them while `ps` still shows a path, so a bridge without the
+ * fallback reports nothing and everything that groups by path loses them.
+ *
+ * The second child is the same state reached through `./cat-relative`, and it
+ * asserts the opposite: the saved region holds a relative path, and the bridge
+ * must refuse it rather than store it. Storing it would be worse than the empty
+ * string it replaces — `./server` is not an identity, and every process on the
+ * machine started that way would group as one. That is why the check reads the
+ * region a second time itself: without that read, an empty result would prove
+ * only that nothing was there.
+ */
+static void hm_check_exec_path_fallback(void) {
+    char own[HM_PROCESS_PATH_SIZE];
+    memset(own, 0, sizeof(own));
+    char template[] = HM_EXEC_PATH_DIRECTORY;
+    char directory[HM_PROCESS_PATH_SIZE];
+    /*
+     * Resolved, because `/tmp` is a symlink to `/private/tmp` and `proc_pidpath` answers with the
+     * real path. Unresolved, the exec would still work and every comparison below would be against
+     * a path the kernel never reports.
+     */
+    if (proc_pidpath(getpid(), own, (uint32_t)sizeof(own)) <= 0 ||
+        mkdtemp(template) == NULL ||
+        realpath(template, directory) == NULL) {
+        CHECK(
+            "processes.exec-path-survives-a-deleted-binary",
+            0,
+            "nothing to build a deletable binary from: own path '%s', directory %s",
+            own,
+            strerror(errno)
+        );
+        CHECK("processes.exec-path-ignores-a-relative-exec", 0, "nothing to build from");
+        return;
+    }
+
+    HMDeletedBinary absolute = hm_start_deleted_binary(own, directory, "parked-absolute", 0);
+    HMDeletedBinary relative = hm_start_deleted_binary(own, directory, "parked-relative", 1);
+    const int started = absolute.pid > 0 && relative.pid > 0;
+    const int ready = started &&
+        hm_wait_for_exec(absolute.pid, absolute.path) &&
+        hm_wait_for_exec(relative.pid, relative.path);
+    if (ready) {
+        unlink(absolute.path);
+        unlink(relative.path);
+    }
+
+    char absolute_bridge[HM_PROCESS_PATH_SIZE];
+    char relative_bridge[HM_PROCESS_PATH_SIZE];
+    char relative_saved[HM_PROCESS_PATH_SIZE];
+    char refused[HM_PROCESS_PATH_SIZE];
+    memset(absolute_bridge, 0, sizeof(absolute_bridge));
+    memset(relative_bridge, 0, sizeof(relative_bridge));
+    memset(relative_saved, 0, sizeof(relative_saved));
+    int absolute_resolved = 1;
+    int relative_resolved = 1;
+    if (ready) {
+        absolute_resolved =
+            proc_pidpath(absolute.pid, refused, (uint32_t)sizeof(refused)) > 0;
+        relative_resolved =
+            proc_pidpath(relative.pid, refused, (uint32_t)sizeof(refused)) > 0;
+        hm_read_process_metadata(
+            absolute.pid,
+            NULL,
+            NULL,
+            NULL,
+            0,
+            absolute_bridge,
+            (uint32_t)sizeof(absolute_bridge)
+        );
+        hm_read_process_metadata(
+            relative.pid,
+            NULL,
+            NULL,
+            NULL,
+            0,
+            relative_bridge,
+            (uint32_t)sizeof(relative_bridge)
+        );
+        hm_test_saved_exec_path(relative.pid, relative_saved, sizeof(relative_saved));
+    }
+
+    CHECK(
+        "processes.exec-path-survives-a-deleted-binary",
+        ready && !absolute_resolved && strcmp(absolute_bridge, absolute.path) == 0,
+        "expected the deleted '%s' to be refused by proc_pidpath and reported from the "
+            "saved exec path anyway; started=%d ready=%d proc_pidpath-resolved=%d "
+            "bridge reported '%s'",
+        absolute.path,
+        started,
+        ready,
+        absolute_resolved,
+        absolute_bridge
+    );
+    CHECK(
+        "processes.exec-path-ignores-a-relative-exec",
+        ready && !relative_resolved && relative_saved[0] == '.' && relative_bridge[0] == '\0',
+        "expected a relative exec of a since-deleted binary to be left empty rather than "
+            "stored; started=%d ready=%d proc_pidpath-resolved=%d the saved region holds "
+            "'%s' and the bridge reported '%s'",
+        started,
+        ready,
+        relative_resolved,
+        relative_saved,
+        relative_bridge
+    );
+
+    hm_release_deleted_binary(&absolute);
+    hm_release_deleted_binary(&relative);
+    rmdir(directory);
+}
+
+/*
  * Rejected arguments never reach the buffers, so the two samples stay
  * deliberately uninitialised: a call that touched them would be the bug.
  */
@@ -1426,5 +1717,6 @@ void hm_run_processes_tests(void) {
     hm_check_process_listing();
     hm_check_own_listing();
     hm_check_listing_frees_its_pid_list();
+    hm_check_exec_path_fallback();
     hm_check_process_listing_invalid_arguments();
 }

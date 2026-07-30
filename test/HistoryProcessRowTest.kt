@@ -93,12 +93,13 @@ class HistoryProcessRowTest {
     }
 
     /**
-     * The naming half of the row freezes at first sighting, which is what `ON CONFLICT DO NOTHING`
-     * buys and the only reason the lookup costs one write per process rather than 288 a day.
+     * The naming half of the row freezes at first sighting, which is the only reason the lookup
+     * costs one write per process rather than 288 a day.
      *
-     * Worth pinning because the alternative reads like a bug fix: turning the clause into
-     * `DO UPDATE` so a renamed process shows its new name would rewrite every row already written
-     * under the old one, and every assertion above would stay green while it happened.
+     * Worth pinning because the alternative reads like a bug fix: widening the conflict clause so
+     * that a renamed process shows its new name would rewrite every row already written under the
+     * old one, and every assertion above would stay green while it happened. The clause does update
+     * one column, and the case below is the whole of what it may touch.
      */
     @Test
     fun theNamingColumnsKeepWhatTheProcessWasFirstSeenAs() = withInMemoryDatabase { database ->
@@ -120,6 +121,37 @@ class HistoryProcessRowTest {
         assertEquals("/Applications/Marked.app/Contents/MacOS/Marked", lookup.executable_path)
         assertEquals(502L, lookup.uid)
         assertEquals(4241L, lookup.parent_pid)
+    }
+
+    /**
+     * A path that was unreadable at first sighting is filled in by the sighting that reads it, and
+     * by no other.
+     *
+     * The one column the freeze above does not cover, because null is not a value the process ever
+     * had — it is the collector saying it could not look. A process whose binary has been replaced
+     * refuses `proc_pidpath` for as long as it runs, which for a long-lived session is days of
+     * samples: frozen, every one of them would carry a null the reports cannot group, and the
+     * bridge learning to read the path would fix nothing for the processes already running. The
+     * second half of the assertion is the direction that must not happen — a path already stored is
+     * not replaced by a later reading of it, or the freeze is gone.
+     */
+    @Test
+    fun anUnreadablePathIsFilledInOnceItBecomesReadable() = withInMemoryDatabase { database ->
+        val processes = database.processesQueries
+        val unreadable = markedProcess().copy(executablePath = null)
+
+        val first = processes.upsertProcess(unreadable)
+        val second = processes.upsertProcess(markedProcess())
+        val third = processes.upsertProcess(
+            markedProcess().copy(executablePath = "/usr/bin/somewhere-else"),
+        )
+
+        assertEquals(first, second, "filling the path in must not write a second row")
+        assertEquals(first, third)
+        assertEquals(
+            "/Applications/Marked.app/Contents/MacOS/Marked",
+            processes.selectProcesses().executeAsOne().executable_path,
+        )
     }
 
     /** A refused reading must stay distinguishable from a reading of zero. */
