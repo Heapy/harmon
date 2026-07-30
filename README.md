@@ -20,8 +20,9 @@ flowchart LR
 
 The privileged collector never loads user configuration or notification
 credentials. The user agent never calls the process-inspection APIs directly.
-Both roles currently use the same native executable, installed at different,
-appropriately owned paths.
+They are different native executables: `harmon-collector` links only collection
+and IPC code, while `harmon` owns the agent, CLI, notifications, HTTP, and
+SQLite history.
 
 See [the collection model](docs/collection.md) for metric definitions,
 [the service architecture](docs/architecture.md) for the privilege and IPC
@@ -160,23 +161,25 @@ scripts/test-native.sh socket.
 Neither harness is meant to run as root; two of the checks assume an ordinary
 user. `CLAUDE.md` describes both harnesses in full.
 
-The release executable is written to:
+The release executables are written to:
 
 ```text
 build/tasks/_harmon_linkMacosArm64Release/harmon.kexe
+build/tasks/_harmon-collector_linkMacosArm64Release/harmon-collector.kexe
 ```
 
 The `_harmon_` in that path is the name of the checkout *directory*: the root
 module has no `name:` key, so a clone or a git worktree under a different
 directory produces `build/tasks/_<directory>_linkMacosArm64Release/` instead.
-The same applies to the debug paths below.
+The collector is a physical `harmon-collector/` module, so its task directory
+and output name stay stable. The same Debug/Release suffix convention applies
+to the paths below.
 
 For a local, unprivileged IPC smoke test without installing launchd services,
 start the collector in one terminal:
 
 ```shell
-build/tasks/_harmon_linkMacosArm64Debug/harmon.kexe \
-  collector \
+build/tasks/_harmon-collector_linkMacosArm64Debug/harmon-collector.kexe \
   --socket /tmp/harmon-dev.sock \
   --allowed-uid "$(id -u)" \
   --allowed-gid "$(id -g)" \
@@ -197,7 +200,7 @@ the current login user.
 ## Commands
 
 ```text
-harmon collector --allowed-uid UID --allowed-gid GID [--socket PATH]
+harmon-collector --allowed-uid UID --allowed-gid GID [--socket PATH]
 harmon run [--config PATH]
 harmon once [--config PATH] [--sample-seconds N] [--notify]
 harmon diagnose [--config PATH] [--sample-seconds N]
@@ -207,10 +210,10 @@ harmon --help
 harmon --version
 ```
 
-launchd owns the `collector` command in a normal installation. With no command,
-Harmon starts the user-agent loop. `once` takes two collector snapshots and
-prints one report. `diagnose` also prints grouping, attribution coverage, and
-process-access failures.
+launchd owns `harmon-collector` in a normal installation; it is not a `harmon`
+subcommand. With no command, `harmon` starts the user-agent loop. `once` takes
+two collector snapshots and prints one report. `diagnose` also prints grouping,
+attribution coverage, and process-access failures.
 
 `--sample-seconds` is the gap between those two snapshots and accepts 1 to 300
 seconds inclusive. A value outside that range, or one that is not an integer,
@@ -373,12 +376,12 @@ Run the installer as the login user:
 
 It asks for sudo only for the system-owned collector files and services. It:
 
-- builds the release executable;
+- builds both release executables in one invocation;
 - installs the background-only agent bundle under
   `~/Library/Application Support/Harmon/Harmon.app`;
 - links the user CLI at `~/.local/bin/harmon` to the bundled executable;
-- installs a root-owned copy at
-  `/Library/PrivilegedHelperTools/dev.yoda.harmon`;
+- installs `harmon-collector` at the root-owned
+  `/Library/PrivilegedHelperTools/harmon-collector` path;
 - registers `dev.yoda.harmon.collector` as a system LaunchDaemon;
 - creates `/var/run/harmon.collector.sock`, accessible only to root and the
   configured login user;
@@ -412,20 +415,18 @@ rm -f ~/Library/Application\ Support/Harmon/history.db*
 ## Project structure
 
 ```text
-src/
-  ipc/         versioned kotlinx.serialization protocol and Unix socket roles
-  monitor/     privileged macOS collection and interval calculations
-  analysis/    application grouping, alert rules, and alert state
-  config/      user-agent configuration
-  history/     the SQLite sample history and its retention
-  report/      text, local HTML, and kotlinx.serialization JSON reporting
-  notify/      Notification Center, webhook, and Telegram delivery
-  runtime/     user-agent monitoring loop
-sqldelight/    history schema and the queries generated from it
-plugins/       the SQLDelight code generator, as an Amper plugin
-nativebridge/  libproc, Mach, sysctl, IOKit, sockets, and libcurl bridge
-selftest/      binding checks that run the bridge from Kotlin
-test/          unit tests, plus the C test harness in test/native
+core/          shared model, protocol, policy, config, reports, and agent runtime
+history-sqlite/
+               SQLDelight history implementation, schema, retention, and tests
+harmon-collector/
+               collector app, IPC server, Darwin probes, and collector tests
+src/           harmon CLI, IPC client, notifications, and app composition root
+bridge-ipc/    Unix sockets and JSON framing cinterop
+bridge-probe/  libproc, Mach, sysctl, and IOKit cinterop
+bridge-http/   libcurl cinterop
+plugins/       the SQLDelight code generator, as a Toolchain plugin
+selftest/      probe binding checks run from Kotlin
+test/          root CLI/factory/harness tests, plus the C harness in test/native
 launchd/       LaunchDaemon and LaunchAgent templates
 scripts/       install and uninstall flows, plus the C harness runner
 docs/          architecture, metric semantics, and the history schema

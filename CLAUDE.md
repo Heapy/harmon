@@ -1,7 +1,8 @@
 # Harmon
 
 Kotlin/Native macOS workload monitor built with the JetBrains Kotlin Toolchain
-(Amper). One executable serves three roles: root collector, user agent, and CLI.
+(Amper). Two executables enforce the privilege boundary: `harmon` is the user
+agent and CLI; `harmon-collector` is the root collector.
 
 ## Build and test
 
@@ -21,6 +22,18 @@ Always the checked-in `./kotlin` wrapper — there is no Gradle build.
 `allWarningsAsErrors: true`, into every module: a new module does **not**
 inherit the root module's Kotlin settings, so without the template the
 strictness would silently not apply to it.
+
+Debug application outputs are:
+
+```text
+build/tasks/_harmon_linkMacosArm64Debug/harmon.kexe
+build/tasks/_harmon-collector_linkMacosArm64Debug/harmon-collector.kexe
+```
+
+The root module takes its name from the checkout directory, so `_harmon_` can
+be `_<checkout>_` in a differently named clone or worktree. The collector is a
+physical `harmon-collector/` module, so its task directory and executable name
+are stable. Replace `Debug` with `Release` for `--variant release`.
 
 What that strictness actually catches is narrower than it sounds. A deprecation
 warning fails the build like an error (`warnings found and -Werror specified`).
@@ -53,24 +66,17 @@ lets the miss pass silently. Platform libraries (`platform.posix`,
 links into the test binary normally, and this branch depends on it:
 `$libs.sqldelight.native.driver` reaches a real SQLite through sqliter's
 cinterop, which is why the whole storage layer is unit-tested against actual
-files instead of through `selftest`. See the comment on the dependency in
-`module.yaml`. So "cinterop is unreachable from tests" is true of
-`nativebridge` and false in general — do not conclude from it that a test cannot
-open a database.
+files instead of through `selftest`. See the dependency comment in
+`history-sqlite/module.yaml`. So "cinterop is unreachable from tests" is true
+of the project-owned `bridge-*` modules and false in general — do not conclude
+from it that a test cannot open a database.
 
-The symptom depends on where the bridge lives, and it moved earlier once
-`nativebridge` became its own module. Previously the bridge compiled into the
-root module and the failure was at run time —
-`IrLinkageError: Function 'hm_...' can not be called`. Now it arrives as a
-module dependency, and a test source file cannot even name it: referencing
-`dev.yoda.harmon.nativebridge` from `test/` fails to compile with
-`unresolved reference 'nativebridge'`. Adding the dependency to the test
-fragment does not help; that is exactly the registration KTC-5573 is about.
-
-Partial linkage still resolves per call site for code that lives in `src/`: a
-pure function may sit in a file that imports `nativebridge` and stay testable,
-as long as the function itself does not call into the bridge.
-`processCapacityFor` in `DarwinSystemCollector.kt` is the working example.
+A test source file cannot name the project bridge bindings at all:
+referencing `dev.yoda.harmon.nativebridge.ipc`, `.probe`, or `.http` from an
+ordinary module test fails with an unresolved reference. Adding the bridge as a
+test dependency does not help; that is exactly the registration KTC-5573 is
+about. This is why bridge-free policy and calculations live in `core`, while
+the two app modules own the native call sites.
 
 The consequence is not that the native layer is unverified — see the next
 section — but that neither harness can be an ordinary `kotlin.test` class. When
@@ -80,11 +86,14 @@ what gets deleted.
 
 ## How the native layer is tested
 
-The whole C bridge is `nativebridge/cinterop/harmon_native.def`, and two
-external harnesses cover it, both driven from `./kotlin test`: a C test binary
-built from `test/native/` for everything assertable from C, and a `selftest`
-macos/app module for the one thing plain C cannot check about itself — that
-Kotlin sees the structs and types the bridge actually exports.
+The native layer is split into three responsibility-specific definitions:
+`bridge-ipc/cinterop/harmon_ipc.def`,
+`bridge-probe/cinterop/harmon_probe.def`, and
+`bridge-http/cinterop/harmon_http.def`. Two external harnesses cover them, both
+driven from `./kotlin test`: a C test binary built from `test/native/` for
+everything assertable from C, and a `selftest` macos/app module depending only
+on `bridge-probe` for the one thing plain C cannot check about itself — that
+Kotlin sees the structs and types the probe bridge actually exports.
 `test/NativeHarness.kt` drives both through `popen` and turns their output into
 assertions.
 
@@ -121,7 +130,7 @@ recipe, without installing launchd services: start a local unprivileged
 collector on a development socket,
 
 ```shell
-build/tasks/_harmon_linkMacosArm64Debug/harmon.kexe collector \
+build/tasks/_harmon-collector_linkMacosArm64Debug/harmon-collector.kexe \
   --allow-unprivileged \
   --socket /tmp/harmon-dev.sock \
   --allowed-uid "$(id -u)" \
@@ -141,23 +150,18 @@ Such a collector sees only what the login user can see, not what root can. To
 A/B a native change, run two collectors on two separate sockets — one binary
 built before the change, one after — and diagnose against each.
 
-The `_harmon_` in those paths is the *directory* name: the root module has no
-`name:` key, so a checkout under a different directory — a git worktree, say —
-produces `build/tasks/_<directory>_linkMacosArm64Debug/harmon.kexe` instead.
-`selftest` lives in its own directory, so `_selftest_linkMacosArm64Debug` is
-stable everywhere.
-
 ## The history database
 
 `harmon run` writes every sample to
 `~/Library/Application Support/Harmon/history.db` through SQLDelight. The `.sq`
-schema is in `sqldelight/dev/yoda/harmon/db/`, and `plugins/sqldelight-gen` — a
-`jvm/amper-plugin` module, registered in `project.yaml` and enabled in
-`module.yaml` — runs the SQLDelight compiler over it at build time. The
-compiler, its dialect and the runtime `native-driver` share one `version.ref` in
-`libs.versions.toml`; a mismatch between generator and driver surfaces as a
-compile error against a stranger's API rather than as a resolution failure.
-`docs/history.md` is the schema reference.
+schema is in `history-sqlite/sqldelight/dev/yoda/harmon/db/`, and
+`plugins/sqldelight-gen` — a `jvm/amper-plugin` module registered in
+`project.yaml` and enabled only by `history-sqlite/module.yaml` — runs the
+SQLDelight compiler over it at build time. The compiler, its dialect and the
+runtime `native-driver` share one `version.ref` in `libs.versions.toml`; a
+mismatch between generator and driver surfaces as a compile error against a
+stranger's API rather than as a resolution failure. `docs/history.md` is the
+schema reference.
 
 Six facts that each cost a day to find. All were established in this
 repository; none are visible from the code that depends on them.
@@ -194,36 +198,41 @@ and fails `SQLITE_READONLY`. It works as an `executeQuery` inside its own
 transaction. Invisible in a small database: a delete that frees no page returns
 no row.
 
-**sqliter's `-lsqlite3` is not propagated to the final link.** Toolchain 0.11.x
-drops the transitive `linkerOpts`, so both binaries fail with
-`ld: symbol(s) not found` for `_sqlite3_*` unless `module.yaml` carries
-`freeCompilerArgs: [-linker-option, -lsqlite3]` itself. Portable — `-lsqlite3`
-is a system library in every macOS SDK, no `-L` needed.
+**The explicit `-lsqlite3` compiler setting is module-local.** The bridge spike
+proved that `linkerOpts` declared by a `.def` do reach a dependent app. That is
+not what this setting is: `freeCompilerArgs` does not cross a module boundary.
+`history-sqlite/module.yaml` therefore carries
+`[-linker-option, -lsqlite3]` for its own test executable, and the root
+`module.yaml` repeats it for the final `harmon` link. `harmon-collector` is a
+separate app module and inherits neither copy. `-lsqlite3` is a system library
+in every macOS SDK, so no `-L` is needed.
 
 To see what a `.sq` file actually generated, read
-`build/tasks/_harmon_generate@sqldelight-gen/dev/yoda/harmon/db/harmon/HarmonDatabaseImpl.kt`.
+`build/tasks/_history-sqlite_generate@sqldelight-gen/dev/yoda/harmon/db/harmon/HarmonDatabaseImpl.kt`.
 That is where a named parameter, a nullable column or a missing query shows up
 as Kotlin.
 
 ## Layout
 
 ```text
-src/dev/yoda/harmon/
-  ipc/        versioned protocol and Unix socket roles
-  monitor/    privileged macOS collection and interval calculations
-  analysis/   application grouping, alert rules, alert state
-  config/     user-agent configuration
-  history/    the SQLite sample history, its retention, and the model mapping
-  report/     text, HTML, and JSON reporting
-  notify/     Notification Center, webhook, Telegram delivery
-  runtime/    user-agent monitoring loop
-test/         flat directory, kotlin.test, shared fixtures in TestFixtures.kt
+core/         kmp/lib with model, protocol, policy, config, reports, and runtime
+  src/        no project cinterop and no SQLDelight types
+  test/       pure/core tests and module-local TestFixtures.kt
+history-sqlite/
+  src/        HistoryStore, row mappings, and retention
+  sqldelight/ schema and queries; generated code goes to the build tree
+  test/       real-sqlite tests and its own duplicated model fixtures
+harmon-collector/
+  src/        collector CLI, IPC server, Darwin collector, and composition main
+  test/       collector parser and constructor-limit tests
+src/          harmon CLI, IPC client, notification implementations, and main
+test/         root-only CLI, notification factory, and external harness tests
   native/     the C harness: one binary from every *.c, no main outside main.c,
               one suite per file named after the prefix it reports under
-sqldelight/   the .sq schema and queries; codegen output goes to the build tree
-nativebridge/ kmp/lib module; cinterop/harmon_native.def holds the whole C
-              bridge inline and is compiled by the Kotlin/Native cinterop tool
-selftest/     macos/app module depending on nativebridge; the binding checks
+bridge-ipc/   socket/framing cinterop, no linker options
+bridge-probe/ libproc/Mach/sysctl/IOKit cinterop, collector-only
+bridge-http/  libcurl cinterop, harmon-only
+selftest/     macos/app depending only on bridge-probe; the binding checks
               that ./kotlin test cannot reach
 plugins/sqldelight-gen/
               jvm/amper-plugin module driving the SQLDelight compiler
@@ -236,18 +245,26 @@ harmon.module-template.yaml
               settings.kotlin applied by every module
 ```
 
-`test/` is flat and its files declare no package, so a **private top-level
-classifier collides across files**: two files each declaring
+Each module's `test/` is flat and its files declare no package, so a
+**private top-level classifier collides across files in that module**: two
+files each declaring
 `private object Fake` fail with `redeclaration`, and the second file's own
 reference to it then fails with `it is private in file`. Private top-level
 functions and properties do not collide — same name, same signature, two files
-compiles. Verified A/B in this repository.
+compile. Test source is not exported across module dependencies, so shared
+builders are duplicated in `core/test` and `history-sqlite/test`, never moved
+into production just to make tests share them.
 
-Dependency injection is through constructor parameters with default values
-(`HarmonService`, `CollectorServer`, `UsageCalculator`, `DarwinSystemCollector`,
-`ApplicationGrouper`). Use that seam for testability instead of adding
-abstractions. A default parameter can only reference parameters declared before
-it, which fixes the order in some of those constructors.
+Dependency injection is through constructor parameters, but a default must not
+construct a bridge-backed or otherwise heavy implementation. `HarmonService`
+therefore requires its `SystemCollector` and lazy `NotificationDispatcher`;
+`CollectorServer` requires its `SystemCollector`. The root `src/main.kt`
+constructs `CollectorClient`, notification implementations, and
+`HistoryStore`; `harmon-collector/src/main.kt` constructs
+`DarwinSystemCollector` and `CollectorServer`. Defaults for pure collaborators
+such as `UsageCalculator`, `AlertAnalyzer`, and `ApplicationGrouper`, optional
+`history = null`, scalar capacities, and log sinks remain legitimate. Keep
+future app-specific assembly in the two `main.kt` composition roots.
 
 ## Documentation
 

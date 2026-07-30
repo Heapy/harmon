@@ -32,8 +32,10 @@ was exact.
 
 ## macOS data sources
 
-The Kotlin collector calls a small C bridge in
-`nativebridge/cinterop/harmon_native.def`.
+The Kotlin collector calls the probe C bridge in
+`bridge-probe/cinterop/harmon_probe.def`. Unix socket/framing calls live
+separately in `bridge-ipc`; neither collector module can reach the libcurl
+bridge used by the user application.
 
 | Scope | Public source | Values |
 |---|---|---|

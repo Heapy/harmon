@@ -593,7 +593,7 @@ Build, then start an unprivileged collector on a development socket, as in
 
 ```shell
 ./kotlin build
-build/tasks/_harmon_linkMacosArm64Debug/harmon.kexe collector \
+build/tasks/_harmon-collector_linkMacosArm64Debug/harmon-collector.kexe \
   --allow-unprivileged --socket /tmp/harmon-dev.sock \
   --allowed-uid "$(id -u)" --allowed-gid "$(id -g)"
 ```

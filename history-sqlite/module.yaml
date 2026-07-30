@@ -10,6 +10,8 @@ plugins:
 
 dependencies:
   - ../core
+  # Unlike the project's own bridge cinterops, this third-party klib is available to this
+  # module's test compilation, so storage tests exercise real SQLite files.
   - $libs.sqldelight.native.driver
 
 settings:

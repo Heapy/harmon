@@ -1,8 +1,10 @@
 # How the native layer is tested
 
-The whole C bridge is `nativebridge/cinterop/harmon_native.def`. Two external
-harnesses cover it, both driven from `./kotlin test`, split by what the assert
-is actually about:
+The native layer is split by responsibility across
+`bridge-ipc/cinterop/harmon_ipc.def`,
+`bridge-probe/cinterop/harmon_probe.def`, and
+`bridge-http/cinterop/harmon_http.def`. Two external harnesses cover it, both
+driven from `./kotlin test`, split by what the assert is actually about:
 
 | Harness | Covers | Why that one |
 |---|---|---|
@@ -90,16 +92,20 @@ processes the account has started *recently*: an earlier
 `attribution.bytes-match-an-independent-walk` gave up after 24 of them and failed
 for a whole build running alongside it, or for a second copy of the harness.
 
-`scripts/test-native.sh` regenerates the header the C tests include straight
-from the `.def` (`sed '1,/^---$/d'` into `build/native-test/`), compiles every
-`test/native/*.c` into one binary with `clang -std=c11 -Wall -Wextra -Werror`
-plus the `.def`'s own `linkerOpts` frameworks, and runs it. The `.def` stays the
-single source of truth — cinterop cannot be pointed at a separate header, so no
-checked-in `.h` exists — and the generated copy lives for one run.
+`scripts/test-native.sh` regenerates three headers straight from the `.def`
+bodies (`sed '1,/^---$/d'` into `build/native-test/`):
+`harmon_ipc.h`, `harmon_probe.h`, and `harmon_http.h`. It compiles every
+`test/native/*.c` into one binary with
+`clang -std=c11 -Wall -Wextra -Werror`, plus the probe and HTTP definitions'
+own `linkerOpts`, and runs it. IPC has no linker options. Each `.def` stays the
+single source of truth for its header — cinterop cannot be pointed at a
+portable checked-in header, so the generated copies live for one run.
 
-Each `*_test.c` is one suite reporting under one name prefix, named after it, and
-`main.c` maps the two; `harness.h` carries the protocol and the alarm, `anchors.h`
-what more than one suite needs to compare a sample against a second reading.
+Each `*_test.c` is one suite reporting under one name prefix, named after it.
+Framing and socket suites include the IPC header; process, attribution,
+snapshot, and pure suites include the probe header; the HTTP callback suite
+includes the HTTP header. `main.c` maps files to prefixes, `harness.h` carries
+the protocol and alarm, and `anchors.h` carries comparisons shared by suites.
 
 **The sanitized pass.** `./kotlin test` runs the C harness twice: once as above,
 once with `--sanitize`, which builds the same sources with
@@ -194,8 +200,8 @@ message quotes the *absolute* resolved path and the working directory, and
 `SelftestBridgeTest` checks the binary before running it. A missing binary
 **fails** the test with the absolute path and "run `./kotlin build` first" — a
 silent skip is not an option. A binary older than the newest file under
-`selftest/src/`, or than `nativebridge/cinterop/harmon_native.def`,
-`selftest/module.yaml`, `nativebridge/module.yaml` or
+`selftest/src/`, or than `bridge-probe/cinterop/harmon_probe.def`,
+`selftest/module.yaml`, `bridge-probe/module.yaml` or
 `harmon.module-template.yaml`, fails as well; watching only the `.def` would miss
 the common case, which is editing the checks themselves, and watching only
 sources would miss a change to what gets linked. The path is deliberately tied
@@ -264,7 +270,7 @@ And the largest hole on the list, which is Kotlin rather than C:
   sample.system_time_ns` written there produces exactly the report
   `processes.own-sample-matches-a-fresh-rusage` exists to prevent, and not one
   check turns red. It stays that way because the test compilation cannot reach
-  cinterop at all (KTC-5573) and `selftest` cannot depend on an application
-  module; moving the collector into `nativebridge` would drag `model/` along with
-  it. What covers it today is `harmon diagnose` on a real machine, read by a
-  human.
+  cinterop at all (KTC-5573) and `selftest` cannot depend on the
+  `harmon-collector` application module. Moving the mapping into
+  `bridge-probe` would pull the shared model across the native bridge boundary.
+  What covers it today is `harmon diagnose` on a real machine, read by a human.

@@ -5,20 +5,35 @@ root access out of Notification Center, Telegram, webhooks, and future UI code.
 
 ## Components
 
-| Component | launchd domain | Effective user | Responsibilities |
-|---|---|---:|---|
-| Collector | system LaunchDaemon | root | Read process, VM, swap, CPU, storage, and power counters; serve snapshots |
-| Agent | Aqua LaunchAgent | login user | Schedule samples, calculate deltas, group applications, evaluate rules, log, notify, and store history |
-| CLI | interactive user process | caller | Run one-shot reports, diagnostics, config checks, and notification tests |
+| Component | Binary | launchd domain | Effective user | Responsibilities |
+|---|---|---|---:|---|
+| Collector | `harmon-collector` | system LaunchDaemon | root | Read process, VM, swap, CPU, storage, and power counters; serve snapshots |
+| Agent | `harmon` | Aqua LaunchAgent | login user | Schedule samples, calculate deltas, group applications, evaluate rules, log, notify, and store history |
+| CLI | `harmon` | interactive user process | caller | Run one-shot reports, diagnostics, config checks, and notification tests |
 
-The release currently contains all roles in one Kotlin/Native executable.
-Installation places a root-owned copy under `/Library/PrivilegedHelperTools`
-and a signed, background-only user application bundle under
+The release contains two Kotlin/Native executables. Installation puts
+`harmon-collector` under the root-owned
+`/Library/PrivilegedHelperTools/harmon-collector` path and puts `harmon` in a
+signed, background-only user application bundle under
 `~/Library/Application Support/Harmon/Harmon.app`; `~/.local/bin/harmon`
-links to that bundled executable. The bundle gives Notification Center a
+links to the bundled user executable. The bundle gives Notification Center a
 stable Harmon identity and routes notification clicks back to the running
-agent. Command dispatch occurs before user configuration is loaded, so the
-collector does not read notification secrets or initiate network delivery.
+agent.
+
+This is a final-link boundary, not command dispatch inside one image:
+
+- `harmon-collector` links `core`, `bridge-ipc`, and `bridge-probe`;
+- `harmon` links `core`, `history-sqlite`, `bridge-ipc`, and `bridge-http`;
+- the collector image has no AppKit, libcurl, libsqlite3, notification code,
+  history schema, SQLDelight runtime, CLI parser, or user configuration parser;
+- Foundation remains in the collector because Kotlin/Native executables link
+  it as a runtime baseline. `selftest.kexe` never imports Foundation and still
+  has the same dependency, so its presence is not evidence that user-session
+  code crossed the privilege boundary.
+
+`otool -L` is the acceptance check for that boundary. The expected collector
+frameworks are Foundation, CoreFoundation, and IOKit; AppKit, libcurl, and
+libsqlite3 must be absent.
 
 The icon shown next to a notification is the bundle's own icon: `Info.plist`
 names `Harmon.icns` through `CFBundleIconFile`, and the installer copies that
@@ -231,10 +246,11 @@ open, both carry the same metadata, and any mode set on those would be gone the
 next time they were created. `historyRetentionDays=0` is how a user opts out of
 persistence entirely; the file is then never created.
 
-The root process currently links the same executable image as the user agent,
-including notification and HTTP code, although its command path does not call
-them. A future hardening step can split the build into distinct collector and
-agent binaries without changing the versioned snapshot protocol.
+The root process is the separate `harmon-collector` image. It contains neither
+the user notification/HTTP implementations nor the SQLite history stack, and
+the LaunchDaemon executes only the root-owned helper path. The shared surface
+is deliberately limited to the pure model/protocol/policy code in `core` and
+the IPC bridge; Darwin probes enter only through `bridge-probe`.
 
 ## Future UI
 

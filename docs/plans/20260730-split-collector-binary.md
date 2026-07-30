@@ -13,7 +13,7 @@
 
 - `libcurl` и весь HTTP-клиент;
 - `libsqlite3`, sqliter-klib, SQLDelight runtime и сгенерированную схему;
-- AppKit/Foundation и Notification Center;
+- AppKit и Notification Center;
 - `notify/`, `history/`, `cli/` и парсер конфигурации с секретами.
 
 Проверка `otool -L` — часть функциональной приёмки. Ветка исполнения, которая «не вызывает»
@@ -72,6 +72,13 @@ harmon-collector \
    не компилируется; исполнение call site даёт `IrLinkageError`.
 5. Владелец исправил первоначальный граф: SQLite нельзя оставлять в `core`. Для неё обязателен
    отдельный `history-sqlite`.
+6. Спайк измерял `linkerOpts` из `.def`, и они переходят границу модуля. Явный
+   `freeCompilerArgs: [-linker-option, -lsqlite3]` — другая настройка: она помодульная и не
+   наследуется финальным app-модулем, поэтому нужна и в `history-sqlite` для его test executable,
+   и в корневом `harmon` для финальной ссылки.
+7. Foundation присутствует даже в `selftest.kexe`, который её не импортирует: это базовая
+   динамическая зависимость Kotlin/Native runtime, а не утечка пользовательской половины в
+   collector. Критерий изоляции проверяет отсутствие AppKit, libcurl и libsqlite3.
 
 ### Уточнение по фактическому состоянию C tests
 
@@ -111,7 +118,8 @@ harmon-collector \
 - **e2e**: dev-коллектор запускается отдельным `harmon-collector.kexe`, `harmon diagnose` ходит к
   нему через `/tmp/harmon-dev.sock`;
 - **link acceptance**:
-  - `harmon-collector.kexe` не содержит `libcurl`, `libsqlite3`, AppKit или Foundation;
+  - `harmon-collector.kexe` не содержит `libcurl`, `libsqlite3` или AppKit;
+  - Foundation в обоих executables ожидаема как базовая зависимость Kotlin/Native runtime;
   - `harmon.kexe` содержит `libcurl` и `libsqlite3`, но не тянет IOKit через probe;
   - CoreFoundation и IOKit в коллекторе ожидаемы: это явные зависимости `bridge-probe`;
 - известный sandbox-only отказ `sysctl vm.swapusage: Operation not permitted` отмечается отдельно
@@ -235,7 +243,11 @@ interface History {
 - `history-sqlite/sqldelight/dev/yoda/harmon/db/*.sq`;
 - `plugins: { sqldelight-gen: enabled }`;
 - `$libs.sqldelight.native.driver`;
-- `freeCompilerArgs: [-linker-option, -lsqlite3]`.
+- `freeCompilerArgs: [-linker-option, -lsqlite3]` для test executable модуля.
+
+Корневой `harmon` повторяет тот же `freeCompilerArgs` для собственной финальной ссылки. Это не
+противоречит транзитивным `linkerOpts` bridge-модулей: compiler settings одного модуля другой
+модуль не наследует.
 
 `SqlConversions.kt` остаётся в core: у него нет импортов SQLDelight, sqliter или generated db.
 `HistoryStore` сохраняет своё деградирующее поведение. Меняется только тип, который видит service.
@@ -336,12 +348,13 @@ imperative flow на `harmon setup`, но это отдельная работа
 - Create: `harmon-collector/module.yaml`
 - Modify: `selftest/module.yaml`
 
-- [ ] зарегистрировать все новые модули и удалить `./nativebridge`
-- [ ] оставить SQLDelight plugin зарегистрированным project-wide, включить его только в history
-- [ ] перенести native-driver и `-lsqlite3` из root module в `history-sqlite`
-- [ ] настроить зависимости двух app-модулей ровно по графу Solution Overview
-- [ ] применить `harmon.module-template.yaml` в каждом новом модуле
-- [ ] проверить `./kotlin show modules`, tasks и effective settings всех новых модулей
+- [x] зарегистрировать все новые модули и удалить `./nativebridge`
+- [x] оставить SQLDelight plugin зарегистрированным project-wide, включить его только в history
+- [x] перенести native-driver в `history-sqlite`, а `-lsqlite3` оставить в нём и продублировать
+  в root final-link module
+- [x] настроить зависимости двух app-модулей ровно по графу Solution Overview
+- [x] применить `harmon.module-template.yaml` в каждом новом модуле
+- [x] проверить `./kotlin show modules`, tasks и effective settings всех новых модулей
 
 ### Task 2: Разделить C bridge
 
@@ -352,13 +365,13 @@ imperative flow на `harmon setup`, но это отдельная работа
 - Create: `bridge-http/cinterop/harmon_http.def`
 - Modify: Kotlin imports в IPC, collector, notification и selftest source
 
-- [ ] перенести текущий C body по фактическому call graph, включая `HM_MAX_PROCESS_ARGS` в probe
-- [ ] оставить у IPC пустой набор linker options, у probe только IOKit/CoreFoundation, у HTTP
+- [x] перенести текущий C body по фактическому call graph, включая `HM_MAX_PROCESS_ARGS` в probe
+- [x] оставить у IPC пустой набор linker options, у probe только IOKit/CoreFoundation, у HTTP
   только `-lcurl`
-- [ ] задать три разных packages и guards; продублировать только inline helpers, которые реально
+- [x] задать три разных packages и guards; продублировать только inline helpers, которые реально
   нужны двум мостам
-- [ ] обновить импорты на `.ipc`, `.probe`, `.http`
-- [ ] собрать проект до перехода к тестам
+- [x] обновить импорты на `.ipc`, `.probe`, `.http`
+- [x] собрать проект до перехода к тестам
 
 ### Task 3: Адаптировать native harness и selftest
 
@@ -371,12 +384,12 @@ imperative flow на `harmon setup`, но это отдельная работа
 - Modify: `test/{NativeHarness.kt,NativeHarnessTest.kt,SelftestBridgeTest.kt}`
 - Modify: `selftest/src/main.kt`
 
-- [ ] генерировать три header и собирать C harness с linkerOpts двух непустых bridge
-- [ ] вынести реальную проверку `hm_discard_http_response` в suite `http.`
-- [ ] обновить suite map и полный ожидаемый список check names
-- [ ] перевести selftest только на `bridge-probe`
-- [ ] обновить staleness guard и его unit tests
-- [ ] выполнить обычный и sanitized native harness
+- [x] генерировать три header и собирать C harness с linkerOpts двух непустых bridge
+- [x] вынести реальную проверку `hm_discard_http_response` в suite `http.`
+- [x] обновить suite map и полный ожидаемый список check names
+- [x] перевести selftest только на `bridge-probe`
+- [x] обновить staleness guard и его unit tests
+- [x] выполнить обычный и sanitized native harness
 
 ### Task 4: Выделить core без тяжёлых реализаций
 
@@ -388,12 +401,12 @@ imperative flow на `harmon setup`, но это отдельная работа
 - Modify: `core/src/dev/yoda/harmon/runtime/HarmonService.kt`
 - Move/split: чистые root tests → `core/test/`
 
-- [ ] разрезать три смешанных Kotlin-файла ровно по native call sites
-- [ ] ввести чистый `History` и переключить на него `HarmonService`
-- [ ] убрать bridge-touching defaults из `HarmonService`, остальные defaults сохранить
-- [ ] разделить `NotificationDispatcherTest`: чистая политика в core, factory cases в root
-- [ ] перенести/адаптировать service tests на fake `History`
-- [ ] собрать и прогнать core tests без собственного cinterop
+- [x] разрезать три смешанных Kotlin-файла ровно по native call sites
+- [x] ввести чистый `History` и переключить на него `HarmonService`
+- [x] убрать bridge-touching defaults из `HarmonService`, остальные defaults сохранить
+- [x] разделить `NotificationDispatcherTest`: чистая политика в core, factory cases в root
+- [x] перенести/адаптировать service tests на fake `History`
+- [x] собрать и прогнать core tests без собственного cinterop
 
 ### Task 5: Выделить history-sqlite
 
@@ -404,12 +417,12 @@ imperative flow на `harmon setup`, но это отдельная работа
 - Move/split: history tests → `history-sqlite/test/`
 - Create: `history-sqlite/test/TestFixtures.kt`
 
-- [ ] реализовать `HistoryStore : History` без изменения деградации/ретеншна
-- [ ] убедиться, что generated db и SQLDelight imports встречаются только в history-sqlite
-- [ ] разделить `AlertStateSnapshotTest` на pure и database round-trip части
-- [ ] сохранить production-driver tests и SQLite helper fixtures в history module
-- [ ] проверить, что core compile/link не получает `-lsqlite3`
-- [ ] выполнить build до history tests, затем полный набор тестов модуля
+- [x] реализовать `HistoryStore : History` без изменения деградации/ретеншна
+- [x] убедиться, что generated db и SQLDelight imports встречаются только в history-sqlite
+- [x] разделить `AlertStateSnapshotTest` на pure и database round-trip части
+- [x] сохранить production-driver tests и SQLite helper fixtures в history module
+- [x] проверить, что core compile/link не получает `-lsqlite3`
+- [x] выполнить build до history tests, затем полный набор тестов модуля
 
 ### Task 6: Разделить client/server и добавить harmon-collector
 
@@ -423,11 +436,11 @@ imperative flow на `harmon setup`, но это отдельная работа
 - Move: `test/DarwinCollectorLimitsTest.kt` → `harmon-collector/test/`
 - Modify: root `src/dev/yoda/harmon/cli/Cli.kt`, `test/CliParserTest.kt`
 
-- [ ] удалить `Command.Collector`, parser branch, root check и server startup из `harmon`
-- [ ] перенести прежний collector parser case в test нового parser
-- [ ] сохранить `--allow-unprivileged`, абсолютный socket path и обязательные uid/gid
-- [ ] явно собрать `CollectorServer(DarwinSystemCollector())` в collector main
-- [ ] убедиться, что имя выхода — `harmon-collector.kexe`
+- [x] удалить `Command.Collector`, parser branch, root check и server startup из `harmon`
+- [x] перенести прежний collector parser case в test нового parser
+- [x] сохранить `--allow-unprivileged`, абсолютный socket path и обязательные uid/gid
+- [x] явно собрать `CollectorServer(DarwinSystemCollector())` в collector main
+- [x] убедиться, что имя выхода — `harmon-collector.kexe`
 
 ### Task 7: Сделать root composition явным
 
@@ -437,11 +450,11 @@ imperative flow на `harmon setup`, но это отдельная работа
 - Create/Modify: root notification implementation/factory files
 - Modify: root notification factory tests
 
-- [ ] оставить в CLI orchestration, но передавать ему service/history factories из `main.kt`
-- [ ] собирать `CollectorClient`, lazy notification dispatcher и `HistoryStore` только в root main
-- [ ] открывать history только для `run`, как раньше
-- [ ] сохранить поведение `once`, `diagnose`, `check-config`, `test-notifications`
-- [ ] проверить help: в нём больше нет `harmon collector`
+- [x] оставить в CLI orchestration, но передавать ему service/history factories из `main.kt`
+- [x] собирать `CollectorClient`, lazy notification dispatcher и `HistoryStore` только в root main
+- [x] открывать history только для `run`, как раньше
+- [x] сохранить поведение `once`, `diagnose`, `check-config`, `test-notifications`
+- [x] проверить help: в нём больше нет `harmon collector`
 
 ### Task 8: Обновить source installer и launchd
 
@@ -450,12 +463,12 @@ imperative flow на `harmon setup`, но это отдельная работа
 - Modify: `scripts/uninstall.sh`
 - Modify: `launchd/dev.yoda.harmon.collector.plist.template`
 
-- [ ] проверять наличие обоих release `.kexe`
-- [ ] устанавливать разные файлы в app bundle и PrivilegedHelperTools
-- [ ] убрать аргумент `collector` из daemon plist
-- [ ] мигрировать/удалять legacy helper path безопасно после `bootout`
-- [ ] сохранить uid/gid/socket и текущую двухдоменную последовательность launchctl
-- [ ] прогнать `plutil -lint` над обоими сгенерированными plist
+- [x] проверять наличие обоих release `.kexe`
+- [x] устанавливать разные файлы в app bundle и PrivilegedHelperTools
+- [x] убрать аргумент `collector` из daemon plist
+- [x] мигрировать/удалять legacy helper path безопасно после `bootout`
+- [x] сохранить uid/gid/socket и текущую двухдоменную последовательность launchctl
+- [x] прогнать `plutil -lint` над обоими сгенерированными plist
 
 ### Task 9: Обновить наблюдаемую документацию
 
@@ -467,23 +480,40 @@ imperative flow на `harmon setup`, но это отдельная работа
 - Modify: `docs/collection.md`
 - Modify: `docs/history.md`
 
-- [ ] описать два release outputs, две команды и новый dev-рецепт
-- [ ] заменить устаревшие пути nativebridge и generated SQLDelight output
-- [ ] зафиксировать явный composition root и новую DI convention в `CLAUDE.md`
-- [ ] описать три headers, suite mapping и staleness guard в native testing
-- [ ] удалить из architecture будущий hardening step: он стал текущей архитектурой
-- [ ] обновить install paths и project tree
+- [x] описать два release outputs, две команды и новый dev-рецепт
+- [x] заменить устаревшие пути nativebridge и generated SQLDelight output
+- [x] зафиксировать явный composition root и новую DI convention в `CLAUDE.md`
+- [x] описать три headers, suite mapping и staleness guard в native testing
+- [x] удалить из architecture будущий hardening step: он стал текущей архитектурой
+- [x] обновить install paths и project tree
 
 ### Task 10: Verify acceptance criteria
 
-- [ ] выполнить `./kotlin build`
-- [ ] выполнить `./kotlin test`
-- [ ] выполнить `scripts/test-native.sh`
-- [ ] выполнить `otool -L` для debug `harmon.kexe`
-- [ ] выполнить `otool -L` для debug `harmon-collector.kexe`
-- [ ] доказать отсутствия curl/sqlite/AppKit/Foundation в collector и IOKit в harmon
-- [ ] отдельно записать sandbox-only `vm.swapusage` отказ, если он воспроизвёлся
-- [ ] проверить `git diff --check`, историю логических коммитов и чистое рабочее дерево
+- [x] выполнить `./kotlin build`
+- [x] выполнить `./kotlin test`
+- [x] выполнить `scripts/test-native.sh`
+- [x] выполнить `otool -L` для debug `harmon.kexe`
+- [x] выполнить `otool -L` для debug `harmon-collector.kexe`
+- [x] доказать отсутствия curl/sqlite/AppKit в collector и IOKit в harmon; Foundation принять как
+  базовую зависимость Kotlin/Native runtime
+- [x] отдельно записать sandbox-only `vm.swapusage` отказ, если он воспроизвёлся
+- [x] проверить `git diff --check`, историю логических коммитов и чистое рабочее дерево
+
+Финальный прогон 2026-07-30:
+
+- `./kotlin build` — success;
+- `./kotlin test` — 253/255: `core` 160/160, `history-sqlite` 54/54,
+  `harmon-collector` 5/5, root `harmon` 34/36;
+- две root failures — обычный и sanitized wrappers одного C-check
+  `snapshot.swap-and-virtual-memory-readable`; прямой
+  `/usr/sbin/sysctl vm.swapusage` отвечает `Operation not permitted`;
+- прямой C-харнесс — 89 `ok`, 1 тот же sandbox-only `fail`, как без sanitizer, так и с ним;
+- `harmon-collector.kexe` по `otool -L` содержит Foundation, IOKit и CoreFoundation, но не AppKit,
+  libcurl или libsqlite3; `harmon.kexe` содержит Foundation, CoreFoundation, AppKit, libcurl и
+  libsqlite3, но не IOKit;
+- `selftest.kexe`, не импортирующий Foundation, тоже содержит Foundation — это подтверждает
+  runtime baseline; дополнительный `strings`-чек collector не нашёл AppKit/curl/sqlite и ключей
+  пользовательских notification/history settings.
 
 ## Post-Completion
 
