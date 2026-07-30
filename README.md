@@ -386,6 +386,18 @@ Run `harmon setup` again after every `brew upgrade harmon`, then verify with
 cannot use sudo to replace the root helper or update the user app bundle.
 `status` reports those stale copies explicitly.
 
+An installation made by the former source script may still have
+`~/.local/bin/harmon` earlier in `PATH`. For that one migration run, invoke the
+new Homebrew binary explicitly:
+
+```shell
+"$(brew --prefix)/bin/harmon" setup
+"$(brew --prefix)/bin/harmon" status
+```
+
+Setup removes only the former installer's managed symlink; an unrelated file or
+symlink at that path is preserved.
+
 The formula installs a ready-made arm64 archive; it does not need the Kotlin
 toolchain. It intentionally has no Homebrew service: the source collector is
 copied by setup to the root-owned

@@ -2,6 +2,7 @@ class Harmon < Formula
   desc "Lightweight macOS process and battery monitor"
   homepage "https://github.com/Heapy/harmon"
   url "https://github.com/Heapy/harmon/releases/download/v@VERSION@/harmon-@VERSION@-macos-arm64.tar.gz"
+  version "@VERSION@"
   sha256 "@SHA256@"
   license "GPL-3.0-only"
 
@@ -18,8 +19,8 @@ class Harmon < Formula
 
   def caveats
     <<~EOS
-      Run `harmon setup` after installation and after every `brew upgrade harmon`.
-      Then run `harmon status` to verify the installed agent and collector.
+      Run `#{bin}/harmon setup` after installation and after every `brew upgrade harmon`.
+      Then run `#{bin}/harmon status` to verify the installed agent and collector.
     EOS
   end
 
