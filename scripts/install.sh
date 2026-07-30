@@ -26,9 +26,10 @@ HARMON_CONFIG="$INSTALL_CONFIG_DIR/config"
 HARMON_SOCKET="/var/run/harmon.collector.sock"
 HARMON_AGENT_PLIST="$LAUNCH_AGENTS_DIR/dev.yoda.harmon.agent.plist"
 HARMON_AGENT_SERVICE="gui/$USER_ID/dev.yoda.harmon.agent"
-HARMON_COLLECTOR_BINARY="/Library/PrivilegedHelperTools/dev.yoda.harmon"
+HARMON_COLLECTOR_BINARY="/Library/PrivilegedHelperTools/harmon-collector"
 HARMON_COLLECTOR_PLIST="/Library/LaunchDaemons/dev.yoda.harmon.collector.plist"
 HARMON_COLLECTOR_SERVICE="system/dev.yoda.harmon.collector"
+LEGACY_COLLECTOR_BINARY="/Library/PrivilegedHelperTools/dev.yoda.harmon"
 LEGACY_PLIST="$LAUNCH_AGENTS_DIR/dev.yoda.harmon.plist"
 LEGACY_SERVICE="gui/$USER_ID/dev.yoda.harmon"
 
@@ -41,15 +42,20 @@ else
     exit 1
 fi
 
-echo "Building release binary..."
+echo "Building release binaries..."
 (
     cd "$PROJECT_DIR"
     "$TOOLCHAIN" build --variant release
 )
 
-BUILT_BINARY="$PROJECT_DIR/build/tasks/_harmon_linkMacosArm64Release/harmon.kexe"
-if [ ! -x "$BUILT_BINARY" ]; then
-    echo "Release binary was not found at $BUILT_BINARY" >&2
+BUILT_AGENT_BINARY="$PROJECT_DIR/build/tasks/_harmon_linkMacosArm64Release/harmon.kexe"
+BUILT_COLLECTOR_BINARY="$PROJECT_DIR/build/tasks/_harmon-collector_linkMacosArm64Release/harmon-collector.kexe"
+if [ ! -x "$BUILT_AGENT_BINARY" ]; then
+    echo "Release agent binary was not found at $BUILT_AGENT_BINARY" >&2
+    exit 1
+fi
+if [ ! -x "$BUILT_COLLECTOR_BINARY" ]; then
+    echo "Release collector binary was not found at $BUILT_COLLECTOR_BINARY" >&2
     exit 1
 fi
 
@@ -64,7 +70,7 @@ echo "Checking sudo access for the system LaunchDaemon..."
     "$HARMON_APP_CONTENTS/MacOS" \
     "$HARMON_APP_CONTENTS/Resources"
 
-/usr/bin/install -m 0755 "$BUILT_BINARY" "$HARMON_AGENT_BINARY"
+/usr/bin/install -m 0755 "$BUILT_AGENT_BINARY" "$HARMON_AGENT_BINARY"
 /usr/bin/install -m 0644 \
     "$PROJECT_DIR/launchd/Harmon.Info.plist" \
     "$HARMON_APP_CONTENTS/Info.plist"
@@ -138,12 +144,13 @@ echo "Installing the privileged collector (sudo is required)..."
     >/dev/null 2>&1 || true
 /bin/launchctl bootout "$HARMON_AGENT_SERVICE" >/dev/null 2>&1 || true
 /bin/launchctl bootout "$LEGACY_SERVICE" >/dev/null 2>&1 || true
+/usr/bin/sudo /bin/rm -f "$LEGACY_COLLECTOR_BINARY"
 
 /usr/bin/sudo /usr/bin/install -d -o root -g wheel -m 0755 \
     /Library/PrivilegedHelperTools \
     /Library/Logs/Harmon
 /usr/bin/sudo /usr/bin/install -o root -g wheel -m 0755 \
-    "$BUILT_BINARY" \
+    "$BUILT_COLLECTOR_BINARY" \
     "$HARMON_COLLECTOR_BINARY"
 /usr/bin/sudo /usr/bin/install -o root -g wheel -m 0644 \
     "$COLLECTOR_PLIST_TEMP" \

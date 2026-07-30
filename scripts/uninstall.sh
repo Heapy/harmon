@@ -12,7 +12,8 @@ HARMON_AGENT_SERVICE="gui/$USER_ID/dev.yoda.harmon.agent"
 HARMON_AGENT_PLIST="$HOME/Library/LaunchAgents/dev.yoda.harmon.agent.plist"
 HARMON_COLLECTOR_SERVICE="system/dev.yoda.harmon.collector"
 HARMON_COLLECTOR_PLIST="/Library/LaunchDaemons/dev.yoda.harmon.collector.plist"
-HARMON_COLLECTOR_BINARY="/Library/PrivilegedHelperTools/dev.yoda.harmon"
+HARMON_COLLECTOR_BINARY="/Library/PrivilegedHelperTools/harmon-collector"
+LEGACY_COLLECTOR_BINARY="/Library/PrivilegedHelperTools/dev.yoda.harmon"
 HARMON_SOCKET="/var/run/harmon.collector.sock"
 LEGACY_SERVICE="gui/$USER_ID/dev.yoda.harmon"
 LEGACY_PLIST="$HOME/Library/LaunchAgents/dev.yoda.harmon.plist"
@@ -28,6 +29,7 @@ HARMON_APP="$HOME/Library/Application Support/Harmon/Harmon.app"
 /usr/bin/sudo /bin/rm -f \
     "$HARMON_COLLECTOR_PLIST" \
     "$HARMON_COLLECTOR_BINARY" \
+    "$LEGACY_COLLECTOR_BINARY" \
     "$HARMON_SOCKET"
 
 echo "Harmon collector, user agent, and installed binaries were removed."

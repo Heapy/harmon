@@ -8,7 +8,6 @@
     <key>ProgramArguments</key>
     <array>
         <string>@HARMON_COLLECTOR_BINARY@</string>
-        <string>collector</string>
         <string>--socket</string>
         <string>@HARMON_SOCKET@</string>
         <string>--allowed-uid</string>
