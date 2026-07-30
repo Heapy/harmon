@@ -1,3 +1,81 @@
-headers = mach-o/dyld.h
-headerFilter = mach-o/dyld.h
+headers = mach-o/dyld.h spawn.h sys/wait.h
+headerFilter = mach-o/dyld.h spawn.h sys/wait.h
 package = dev.yoda.harmon.nativebridge.install
+---
+#include <spawn.h>
+#include <stdlib.h>
+#include <sys/wait.h>
+#include <unistd.h>
+
+extern char **environ;
+
+typedef struct HMSpawnActions {
+    posix_spawn_file_actions_t value;
+} HMSpawnActions;
+
+static inline HMSpawnActions *hm_spawn_actions_create(
+    int read_descriptor,
+    int write_descriptor,
+    int *result
+) {
+    HMSpawnActions *actions = calloc(1, sizeof(*actions));
+    if (actions == NULL) {
+        *result = -1;
+        return NULL;
+    }
+    int status = posix_spawn_file_actions_init(&actions->value);
+    if (status == 0) {
+        status = posix_spawn_file_actions_adddup2(
+            &actions->value,
+            write_descriptor,
+            STDOUT_FILENO
+        );
+    }
+    if (status == 0) {
+        status = posix_spawn_file_actions_adddup2(
+            &actions->value,
+            write_descriptor,
+            STDERR_FILENO
+        );
+    }
+    if (status == 0) {
+        status = posix_spawn_file_actions_addclose(&actions->value, read_descriptor);
+    }
+    if (status == 0) {
+        status = posix_spawn_file_actions_addclose(&actions->value, write_descriptor);
+    }
+    if (status != 0) {
+        posix_spawn_file_actions_destroy(&actions->value);
+        free(actions);
+        *result = status;
+        return NULL;
+    }
+    *result = 0;
+    return actions;
+}
+
+static inline void hm_spawn_actions_destroy(HMSpawnActions *actions) {
+    posix_spawn_file_actions_destroy(&actions->value);
+    free(actions);
+}
+
+static inline int hm_spawn(
+    pid_t *process_id,
+    const char *path,
+    const HMSpawnActions *actions,
+    char *const arguments[]
+) {
+    const posix_spawn_file_actions_t *native_actions =
+        actions == NULL ? NULL : &actions->value;
+    return posix_spawn(process_id, path, native_actions, NULL, arguments, environ);
+}
+
+static inline int hm_wait_exit_code(int status) {
+    if (WIFEXITED(status)) {
+        return WEXITSTATUS(status);
+    }
+    if (WIFSIGNALED(status)) {
+        return 128 + WTERMSIG(status);
+    }
+    return 1;
+}

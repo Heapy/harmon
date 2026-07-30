@@ -238,7 +238,7 @@ selftest/     macos/app depending only on bridge-probe; the binding checks
               that ./kotlin test cannot reach
 plugins/sqldelight-gen/
               jvm/amper-plugin module driving the SQLDelight compiler
-scripts/      install and uninstall flows, plus test-native.sh
+scripts/      compatibility setup/uninstall entry points, release tools, and test-native.sh
 project.yaml  the extra modules and the plugin; the root module is included
               implicitly
 libs.versions.toml

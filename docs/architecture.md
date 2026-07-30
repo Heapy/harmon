@@ -15,10 +15,11 @@ The release contains two Kotlin/Native executables. Installation puts
 `harmon-collector` under the root-owned
 `/Library/PrivilegedHelperTools/harmon-collector` path and puts `harmon` in a
 signed, background-only user application bundle under
-`~/Library/Application Support/Harmon/Harmon.app`; `~/.local/bin/harmon`
-links to the bundled user executable. The bundle gives Notification Center a
-stable Harmon identity and routes notification clicks back to the running
-agent.
+`~/Library/Application Support/Harmon/Harmon.app`. The interactive CLI remains
+the binary supplied by Homebrew or the build tree; setup removes only the
+former installer's managed `~/.local/bin/harmon` symlink so it cannot shadow a
+future upgrade. The bundle gives Notification Center a stable Harmon identity
+and routes notification clicks back to the running agent.
 
 This is a final-link boundary, not command dispatch inside one image:
 
@@ -43,6 +44,19 @@ the result through `realpath`, and then looks only beside that resolved binary:
 `libexec/harmon-collector` and `share/harmon/` in an installed archive, or the
 matching Debug/Release collector and source resources when running from
 `build/tasks`. It contains no Homebrew prefix.
+
+`harmon setup` has two privilege phases. The ordinary process creates every
+path under the login user's home, signs and registers `Harmon.app`, preserves
+the existing config while enforcing mode `0600`, and writes the LaunchAgent.
+It then performs one exact sudo re-exec of its resolved binary with
+`setup --system --uid N --gid M`. That root process writes only
+`/Library/PrivilegedHelperTools`, `/Library/LaunchDaemons`, and
+`/Library/Logs/Harmon`, then replaces both launchd jobs. The public `--system`
+form supports automation that has already staged the user half.
+
+Both launchd plists are encoded from typed `LaunchdJob` values, linted by
+`plutil` while still temporary siblings of their targets, permissioned, and
+atomically renamed. No text template or XML substitution remains.
 
 The icon shown next to a notification is the bundle's own icon: `Info.plist`
 names `Harmon.icns` through `CFBundleIconFile`, and the installer copies that

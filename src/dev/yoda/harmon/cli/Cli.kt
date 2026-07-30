@@ -8,6 +8,8 @@ import dev.yoda.harmon.config.SAMPLE_SECONDS_RANGE
 import dev.yoda.harmon.history.History
 import dev.yoda.harmon.report.ReportFormatter
 import dev.yoda.harmon.runtime.HarmonService
+import dev.yoda.harmon.setup.SetupRequest
+import dev.yoda.harmon.util.failureDescription
 import dev.yoda.harmon.util.printError
 import kotlin.system.exitProcess
 
@@ -16,6 +18,7 @@ object HarmonApplication {
         arguments: Array<String>,
         serviceFactory: (HarmonConfig, History?) -> HarmonService,
         historyFactory: (HarmonConfig) -> History?,
+        setup: (SetupRequest) -> Unit,
     ) {
         val command = try {
             CliParser.parse(arguments)
@@ -64,6 +67,20 @@ object HarmonApplication {
                     if (results.any { !it.successful }) {
                         exitProcess(1)
                     }
+                }
+            }
+            is Command.Setup -> {
+                try {
+                    setup(
+                        SetupRequest(
+                            system = command.system,
+                            userId = command.userId,
+                            groupId = command.groupId,
+                        ),
+                    )
+                } catch (failure: Throwable) {
+                    printError("setup error: ${failureDescription(failure)}")
+                    exitProcess(1)
                 }
             }
         }
@@ -124,6 +141,12 @@ sealed interface Command {
     data class TestNotifications(
         val configPath: String?,
     ) : Command
+
+    data class Setup(
+        val system: Boolean,
+        val userId: UInt?,
+        val groupId: UInt?,
+    ) : Command
 }
 
 class CliException(message: String) : IllegalArgumentException(message)
@@ -141,6 +164,9 @@ object CliParser {
         }
         val commandName = arguments.first().takeUnless { it.startsWith('-') } ?: "run"
         val optionStart = if (commandName == "run" && arguments.first().startsWith('-')) 0 else 1
+        if (commandName == "setup") {
+            return parseSetup(arguments.drop(1))
+        }
         var configPath: String? = null
         var sampleSeconds: Long? = null
         var notify = false
@@ -203,6 +229,8 @@ object CliParser {
           harmon diagnose [--config PATH] [--sample-seconds N]
           harmon check-config [--config PATH]
           harmon test-notifications [--config PATH]
+          harmon setup
+          harmon setup --system --uid UID --gid GID
           harmon --help
           harmon --version
 
@@ -215,11 +243,61 @@ object CliParser {
 
         Secret settings can be supplied via HARMON_WEBHOOK_BEARER_TOKEN,
         HARMON_TELEGRAM_BOT_TOKEN and HARMON_TELEGRAM_CHAT_ID.
+
+        setup creates the user-owned application, config, and LaunchAgent, then
+        requests sudo once for the root-owned collector and LaunchDaemon.
+        The --system form is public for MDM and other automation.
     """.trimIndent()
+
+    private fun parseSetup(arguments: List<String>): Command.Setup {
+        var system = false
+        var userId: UInt? = null
+        var groupId: UInt? = null
+        var index = 0
+        while (index < arguments.size) {
+            when (val option = arguments[index]) {
+                "--system" -> {
+                    if (system) {
+                        throw CliException("--system may be specified only once")
+                    }
+                    system = true
+                    index += 1
+                }
+                "--uid" -> {
+                    if (userId != null) {
+                        throw CliException("--uid may be specified only once")
+                    }
+                    userId = arguments.unsignedValueAfter(index, option)
+                    index += 2
+                }
+                "--gid" -> {
+                    if (groupId != null) {
+                        throw CliException("--gid may be specified only once")
+                    }
+                    groupId = arguments.unsignedValueAfter(index, option)
+                    index += 2
+                }
+                else -> throw CliException("unknown setup option '$option'")
+            }
+        }
+        if (!system && (userId != null || groupId != null)) {
+            throw CliException("--uid and --gid require --system")
+        }
+        if (system && (userId == null || groupId == null)) {
+            throw CliException("--system requires both --uid and --gid")
+        }
+        return Command.Setup(system, userId, groupId)
+    }
 
     private fun Array<String>.valueAfter(index: Int, option: String): String =
         getOrNull(index + 1)?.takeUnless { it.startsWith('-') }
             ?: throw CliException("$option requires a value")
+
+    private fun List<String>.unsignedValueAfter(index: Int, option: String): UInt =
+        getOrNull(index + 1)
+            ?.takeUnless { it.startsWith('-') }
+            ?.toUIntOrNull()
+            ?: throw CliException("$option requires an unsigned integer")
 
     private fun rejectSampleOptions(sampleSeconds: Long?, notify: Boolean) {
         if (sampleSeconds != null) {

@@ -366,20 +366,25 @@ alert state it resumes after a restart; everything else is a `sqlite3` query
 against a schema that is meant to be queried by hand. That schema, with the
 queries worth starting from, is [the sample history](docs/history.md).
 
-## Install with launchd
+## Install a source build with launchd
 
-Run the installer as the login user:
+Build the paired release binaries, then run `setup` as the login user:
 
 ```shell
-./scripts/install.sh
+./kotlin build --variant release
+build/tasks/_harmon_linkMacosArm64Release/harmon.kexe setup
 ```
 
-It asks for sudo only for the system-owned collector files and services. It:
+`scripts/install.sh` remains as a compatibility shortcut that performs exactly
+those two commands. All installation behavior lives in `harmon setup`; the
+script does not generate plist files or call launchctl itself.
 
-- builds both release executables in one invocation;
+Setup first creates the application bundle, config, logs, and LaunchAgent as the
+login user. It then re-executes the same resolved binary once through sudo for
+the root-owned helper, LaunchDaemon, and service bootstrap. It:
+
 - installs the background-only agent bundle under
   `~/Library/Application Support/Harmon/Harmon.app`;
-- links the user CLI at `~/.local/bin/harmon` to the bundled executable;
 - installs `harmon-collector` at the root-owned
   `/Library/PrivilegedHelperTools/harmon-collector` path;
 - registers `dev.yoda.harmon.collector` as a system LaunchDaemon;
@@ -387,6 +392,11 @@ It asks for sudo only for the system-owned collector files and services. It:
   configured login user;
 - registers `dev.yoda.harmon.agent` in the Aqua user session;
 - preserves an existing user configuration.
+
+An old `~/.local/bin/harmon` symlink managed by the former installer is removed
+so it cannot shadow an upgraded Homebrew binary. An unrelated file or symlink at
+that path is left alone. The former agent Label, plist, and helper path are
+cleaned up during the same migration.
 
 Inspect services and logs:
 
@@ -429,8 +439,8 @@ bridge-http/   libcurl cinterop
 plugins/       the SQLDelight code generator, as a Toolchain plugin
 selftest/      probe binding checks run from Kotlin
 test/          root CLI/factory/harness tests, plus the C harness in test/native
-launchd/       LaunchDaemon and LaunchAgent templates
-scripts/       install and uninstall flows, plus the C harness runner
+launchd/       Harmon.app metadata and icon
+scripts/       compatibility install/uninstall entry points, release tools, and C tests
 docs/          architecture, metric semantics, and the history schema
 LICENSE        GPL-3.0-only license text
 ```

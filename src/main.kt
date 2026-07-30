@@ -4,8 +4,10 @@ import dev.yoda.harmon.ipc.CollectorClient
 import dev.yoda.harmon.notify.NotificationDispatcher
 import dev.yoda.harmon.notify.from
 import dev.yoda.harmon.runtime.HarmonService
+import dev.yoda.harmon.setup.HarmonSetup
 
 fun main(arguments: Array<String>) {
+    val setup = HarmonSetup()
     HarmonApplication.run(
         arguments = arguments,
         serviceFactory = { config, history ->
@@ -24,5 +26,6 @@ fun main(arguments: Array<String>) {
                 )
             }
         },
+        setup = setup::run,
     )
 }

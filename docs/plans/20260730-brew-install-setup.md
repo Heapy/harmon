@@ -387,7 +387,7 @@ app bundle подписывается заново на машине польз�
 - [x] реализовать `_NSGetExecutablePath` с resize loop и `realpath`
 - [x] реализовать Cellar sibling layout без знания prefix
 - [x] реализовать debug/release build-tree layout
-- [ ] валидировать regular/executable/readable paths и парность версий
+- [x] валидировать regular/executable/readable paths и парность версий
 - [x] покрыть symlink, spaces, отсутствующий collector/resource и смешанные variants
 
 ### Task 3: Typed plist model и atomic writer
@@ -400,8 +400,8 @@ app bundle подписывается заново на машине польз�
 
 - [x] реализовать ограниченный typed plist encoder с XML escaping
 - [x] собрать agent и collector structures со всеми текущими launchd keys
-- [ ] писать temp → `plutil -lint` → chmod/chown intent → rename
-- [ ] snapshot-тестами закрепить args, domains, uid/gid, paths и modes
+- [x] писать temp → `plutil -lint` → chmod/chown intent → rename
+- [x] snapshot-тестами закрепить args, domains, uid/gid, paths и modes
 
 ### Task 4: CommandRunner и validation
 
@@ -410,10 +410,10 @@ app bundle подписывается заново на машине польз�
 - Create: `src/dev/yoda/harmon/setup/SetupValidation.kt`
 - Create: corresponding tests
 
-- [ ] выполнять команды argv-массивом без shell interpolation
-- [ ] различать допустимый not-found для bootout/killall и настоящий failure
-- [ ] проверить arm64, minimum macOS, uid/root phase и resources до mutations
-- [ ] дать tests fake runner и записывать точную последовательность
+- [x] выполнять команды argv-массивом без shell interpolation
+- [x] различать допустимый not-found для bootout/killall и настоящий failure
+- [x] проверить arm64, minimum macOS, uid/root phase и resources до mutations
+- [x] дать tests fake runner и записывать точную последовательность
 
 ### Task 5: User phase `harmon setup`
 
@@ -422,13 +422,13 @@ app bundle подписывается заново на машине польз�
 - Modify: root `cli/Cli.kt`, `main.kt`
 - Create: setup parser/filesystem tests
 
-- [ ] добавить `Command.Setup(system = false, ...)`
-- [ ] собрать app bundle/resources с правильными modes
-- [ ] выбрать trusted identity или ad-hoc и проверить codesign
-- [ ] зарегистрировать bundle и обновить Notification Center caches
-- [ ] создать config iff absent, всегда ужесточить до `0600`
-- [ ] создать typed LaunchAgent
-- [ ] доказать идемпотентность повторным integration test
+- [x] добавить `Command.Setup(system = false, ...)`
+- [x] собрать app bundle/resources с правильными modes
+- [x] выбрать trusted identity или ad-hoc и проверить codesign
+- [x] зарегистрировать bundle и обновить Notification Center caches
+- [x] создать config iff absent, всегда ужесточить до `0600`
+- [x] создать typed LaunchAgent
+- [x] доказать идемпотентность повторным integration test
 
 ### Task 6: System phase и один sudo re-exec
 
@@ -437,12 +437,12 @@ app bundle подписывается заново на машине польз�
 - Modify: setup command dispatch
 - Create: privilege/sequence tests
 
-- [ ] re-exec exact realpath self с `--system --uid --gid`
-- [ ] запретить system phase без root и uid 0
-- [ ] копировать collector только в root-owned helper path
-- [ ] создать typed LaunchDaemon
-- [ ] выполнить заданную bootout/bootstrap/enable/kickstart sequence
-- [ ] не писать в user home из system phase
+- [x] re-exec exact realpath self с `--system --uid --gid`
+- [x] запретить system phase без root и uid 0
+- [x] копировать collector только в root-owned helper path
+- [x] создать typed LaunchDaemon
+- [x] выполнить заданную bootout/bootstrap/enable/kickstart sequence
+- [x] не писать в user home из system phase
 
 ### Task 7: `harmon status`
 

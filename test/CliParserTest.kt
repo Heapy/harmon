@@ -59,4 +59,45 @@ class CliParserTest {
             "expected the allowed range in '$message'",
         )
     }
+
+    @Test
+    fun parsesTheUserAndPublicSystemSetupForms() {
+        val user = assertIs<Command.Setup>(
+            CliParser.parse(arrayOf("setup")),
+        )
+        assertEquals(false, user.system)
+        assertEquals(null, user.userId)
+        assertEquals(null, user.groupId)
+
+        val system = assertIs<Command.Setup>(
+            CliParser.parse(
+                arrayOf(
+                    "setup",
+                    "--system",
+                    "--uid",
+                    "501",
+                    "--gid",
+                    "20",
+                ),
+            ),
+        )
+        assertTrue(system.system)
+        assertEquals(501u, system.userId)
+        assertEquals(20u, system.groupId)
+    }
+
+    @Test
+    fun keepsSystemIdentityOptionsOutOfTheUserPhase() {
+        assertFailsWith<CliException> {
+            CliParser.parse(arrayOf("setup", "--uid", "501", "--gid", "20"))
+        }
+        assertFailsWith<CliException> {
+            CliParser.parse(arrayOf("setup", "--system", "--uid", "501"))
+        }
+        assertFailsWith<CliException> {
+            CliParser.parse(
+                arrayOf("setup", "--system", "--uid", "0", "--gid", "invalid"),
+            )
+        }
+    }
 }
