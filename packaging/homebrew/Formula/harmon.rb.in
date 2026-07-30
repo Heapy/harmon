@@ -11,9 +11,9 @@ class Harmon < Formula
   def install
     bin.install "bin/harmon"
     libexec.install "libexec/harmon-collector"
-    (share/"harmon").install "share/harmon/Harmon.Info.plist",
-                             "share/harmon/Harmon.icns",
-                             "share/harmon/harmon.conf.example"
+    pkgshare.install "share/harmon/Harmon.Info.plist",
+                     "share/harmon/Harmon.icns",
+                     "share/harmon/harmon.conf.example"
   end
 
   def caveats
