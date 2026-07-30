@@ -223,7 +223,7 @@ PROVENANCE="$OUTPUT_DIR/$ARCHIVE_NAME.provenance.json"
     '  "platform": "macos-arm64",' \
     '  "contents": ["bin/harmon", "libexec/harmon-collector", "share/harmon/Harmon.Info.plist", "share/harmon/Harmon.icns", "share/harmon/harmon.conf.example"]' \
     '}' > "$PROVENANCE"
-/usr/bin/plutil -lint "$PROVENANCE" >/dev/null
+/usr/bin/ruby -rjson -e 'JSON.parse(File.read(ARGV.fetch(0)))' "$PROVENANCE"
 
 echo "Packaged paired Harmon $VERSION release:"
 echo "  $ARCHIVE"
