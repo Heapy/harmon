@@ -1,6 +1,9 @@
+import dev.yoda.harmon.analysis.AlertAnalyzer
+import dev.yoda.harmon.config.HarmonConfig
 import dev.yoda.harmon.model.MonitoringReport
 import dev.yoda.harmon.model.ProcessCollectionIssue
 import dev.yoda.harmon.model.ProcessCollectionIssueReason
+import dev.yoda.harmon.model.ReparentedFrom
 import dev.yoda.harmon.model.Severity
 import dev.yoda.harmon.report.ReportFormatter
 import kotlinx.serialization.json.Json
@@ -259,6 +262,36 @@ class ReportFormatterTest {
             output,
             "- 2 more over threshold, past maxAlertsPerCategory: memory:one, memory:two",
         )
+    }
+
+    /**
+     * The orphan rule carries no rendering of its own: its alert reaches the reader through the
+     * same `Alerts:` block every other rule uses, which is what this asserts end to end from the
+     * analyzer rather than from a hand-built alert.
+     */
+    @Test
+    fun rendersAnOrphanAlertThroughTheSharedAlertsBlock() {
+        val usage = systemUsage(
+            processes = listOf(
+                processUsage(
+                    pid = 44559,
+                    name = "node",
+                    reparentedFrom = ReparentedFrom(pid = 44268, name = "codex"),
+                ),
+            ),
+        )
+        val outcome = AlertAnalyzer().analyze(usage, HarmonConfig(), activeKeys = emptySet())
+
+        val output = ReportFormatter.text(
+            MonitoringReport(
+                usage = usage,
+                alerts = outcome.alerts,
+                topProcessCount = 5,
+            ),
+        )
+
+        assertContains(output, "Alerts:")
+        assertContains(output, "- warning: node (pid 44559) lost its parent codex (pid 44268)")
     }
 
     private fun rankedNames(output: String, heading: String): List<String> = output

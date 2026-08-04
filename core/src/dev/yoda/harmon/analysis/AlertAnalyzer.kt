@@ -3,6 +3,7 @@ package dev.yoda.harmon.analysis
 import dev.yoda.harmon.config.HarmonConfig
 import dev.yoda.harmon.model.Alert
 import dev.yoda.harmon.model.ApplicationUsage
+import dev.yoda.harmon.model.ProcessUsage
 import dev.yoda.harmon.model.Severity
 import dev.yoda.harmon.model.SystemUsage
 import dev.yoda.harmon.util.Format
@@ -254,7 +255,68 @@ class AlertAnalyzer {
                 )
             }
         }
+
+        addAll(
+            orphanAlerts(
+                processes = usage.processes,
+                maxPerCategory = config.maxAlertsPerCategory,
+                suppressed = suppressed,
+            ),
+        )
     }
+
+    /**
+     * One alert per process whose parent changed to [INIT_PID] since the previous sample.
+     *
+     * The rule reads a transition, not a state. [ProcessUsage.reparentedFrom] only says the parent
+     * changed, so the `parentPid == INIT_PID` half of the condition belongs here, in the consumer.
+     * A process first seen with pid 1 as its parent has no transition to report, which is what
+     * keeps an ordinary double-forking daemon out of this list without any heuristic.
+     *
+     * Severity is always [Severity.WARNING]. Every other rule reads `CRITICAL` off a value at twice
+     * its threshold; an event has no magnitude, so there is no reading of it that would be worse
+     * than another.
+     *
+     * The cap is applied here instead of through [selectAlerting]: that helper is typed for
+     * `ApplicationUsage` and ranks by a numeric metric, and orphanhood has none. Sorting by pid is
+     * what makes the choice deterministic rather than dependent on sample order. Everything past
+     * [maxPerCategory] goes to [suppressed], and there it is lost for good rather than deferred:
+     * [analyze] keeps a suppressed key firing only when it was already active, a brand-new orphan
+     * never was, so it never enters the alert state and its edge does not occur a second time.
+     *
+     * The key says `orphan` while the history column recording the same fact is `reparented_at`.
+     * The two words are aimed at different readers: the key is user-facing and speaks POSIX, the
+     * column lives in a schema where `orphan` already means a row nothing references.
+     */
+    private fun orphanAlerts(
+        processes: List<ProcessUsage>,
+        maxPerCategory: Int,
+        suppressed: MutableSet<String>,
+    ): List<Alert> {
+        val orphaned = processes
+            .mapNotNull { process ->
+                process.reparentedFrom
+                    ?.takeIf { process.parentPid == INIT_PID }
+                    ?.let { parent -> process to parent }
+            }
+            .sortedBy { (process, _) -> process.identity.pid }
+        orphaned.asSequence()
+            .drop(maxPerCategory)
+            .mapTo(suppressed) { (process, _) -> process.orphanKey() }
+        return orphaned.take(maxPerCategory).map { (process, parent) ->
+            val parentLabel = parent.name?.let { "$it " }.orEmpty()
+            Alert(
+                key = process.orphanKey(),
+                severity = Severity.WARNING,
+                title = "Orphaned process",
+                message = "${process.name} (pid ${process.identity.pid}) lost its parent " +
+                    "$parentLabel(pid ${parent.pid})",
+            )
+        }
+    }
+
+    private fun ProcessUsage.orphanKey(): String =
+        "orphan:process:${identity.pid}:${identity.startedAt}"
 
     /**
      * The [maxPerCategory] applications above the threshold with the highest [value], each paired
@@ -330,6 +392,9 @@ class AlertAnalyzer {
     private companion object {
         const val BYTES_PER_MEBIBYTE: ULong = 1_048_576u
         const val BYTES_PER_MEBIBYTE_DOUBLE = 1_048_576.0
+
+        /** launchd, the parent every orphaned process is handed to on Darwin. */
+        const val INIT_PID = 1
 
         /**
          * The hysteresis factor, as a fraction so the integer and the floating-point form cannot

@@ -1,6 +1,7 @@
 import dev.yoda.harmon.analysis.AlertAnalyzer
 import dev.yoda.harmon.config.AlertThresholds
 import dev.yoda.harmon.config.HarmonConfig
+import dev.yoda.harmon.model.ReparentedFrom
 import dev.yoda.harmon.model.Severity
 import kotlin.test.Test
 import kotlin.test.assertEquals
@@ -367,8 +368,106 @@ class AlertAnalyzerTest {
         assertEquals(Severity.WARNING, alerts.single().severity)
     }
 
+    @Test
+    fun reportsAProcessWhoseParentBecamePidOne() {
+        val usage = systemUsage(processes = listOf(orphan()))
+
+        val alerts = AlertAnalyzer().analyze(usage, HarmonConfig(), activeKeys = emptySet()).alerts
+
+        val alert = alerts.single()
+        assertEquals("orphan:process:44559:44559", alert.key)
+        assertEquals(Severity.WARNING, alert.severity)
+        assertEquals("node (pid 44559) lost its parent codex (pid 44268)", alert.message)
+    }
+
+    /**
+     * `UsageCalculator` records every parent change, not only the one that ends at pid 1, so the
+     * gate that turns a change into orphanhood is this rule's own. On Darwin no other transition
+     * exists, but the rule states the condition rather than assuming it.
+     */
+    @Test
+    fun raisesNoAlertWhenTheNewParentIsNotPidOne() {
+        val usage = systemUsage(processes = listOf(orphan(parentPid = 300)))
+
+        val outcome = AlertAnalyzer().analyze(usage, HarmonConfig(), activeKeys = emptySet())
+
+        assertEquals(emptyList(), outcome.alerts)
+        assertEquals(emptySet(), outcome.suppressedKeys)
+    }
+
+    /** The parent was already gone in the previous sample too, so only its pid can be named. */
+    @Test
+    fun namesTheParentByPidAloneWhenThePreviousSampleDidNotHoldItsName() {
+        val usage = systemUsage(processes = listOf(orphan(parentName = null)))
+
+        val alerts = AlertAnalyzer().analyze(usage, HarmonConfig(), activeKeys = emptySet()).alerts
+
+        assertEquals("node (pid 44559) lost its parent (pid 44268)", alerts.single().message)
+    }
+
+    /**
+     * The pid order is what makes the cut deterministic: orphanhood has no metric to rank by, so
+     * without it the two processes that lose their notification would depend on sample order.
+     */
+    @Test
+    fun capsOrphanAlertsByPidAndSuppressesTheRest() {
+        val usage = systemUsage(
+            processes = listOf(50, 30, 10, 40, 20).map { pid -> orphan(pid = pid) },
+        )
+
+        val outcome = AlertAnalyzer()
+            .analyze(usage, HarmonConfig(maxAlertsPerCategory = 3), activeKeys = emptySet())
+
+        assertEquals(
+            listOf("orphan:process:10:10", "orphan:process:20:20", "orphan:process:30:30"),
+            outcome.alerts.map { it.key },
+        )
+        assertEquals(
+            setOf("orphan:process:40:40", "orphan:process:50:50"),
+            outcome.suppressedKeys,
+        )
+    }
+
+    /** A suppressed orphan never joins the firing set, so its edge is gone for good. */
+    @Test
+    fun doesNotKeepASuppressedOrphanFiringForALaterSample() {
+        val usage = systemUsage(
+            processes = (1..5).map { pid -> orphan(pid = pid) },
+        )
+
+        val outcome = AlertAnalyzer()
+            .analyze(usage, HarmonConfig(maxAlertsPerCategory = 3), activeKeys = emptySet())
+
+        assertEquals(3, outcome.firingKeys.size)
+        assertTrue(
+            outcome.suppressedKeys.none { it in outcome.firingKeys },
+            outcome.firingKeys.toString(),
+        )
+    }
+
+    @Test
+    fun raisesNoAlertForAProcessThatDidNotChangeItsParent() {
+        val usage = systemUsage(processes = listOf(processUsage(pid = 44559, name = "node")))
+
+        val outcome = AlertAnalyzer().analyze(usage, HarmonConfig(), activeKeys = emptySet())
+
+        assertEquals(emptyList(), outcome.alerts)
+        assertEquals(emptySet(), outcome.suppressedKeys)
+    }
+
     private companion object {
         const val CPU_KEY = "cpu:process:42:42"
+
+        fun orphan(
+            pid: Int = 44559,
+            parentPid: Int = 1,
+            parentName: String? = "codex",
+        ) = processUsage(
+            pid = pid,
+            parentPid = parentPid,
+            name = "node",
+            reparentedFrom = ReparentedFrom(pid = 44268, name = parentName),
+        )
 
         /** 2^44 MiB: the byte value wraps to zero without a saturating conversion. */
         const val OVERFLOWING_MIB = 1L shl 44
