@@ -1,9 +1,11 @@
+import dev.yoda.harmon.model.ReparentedFrom
 import dev.yoda.harmon.monitor.CollectionException
 import dev.yoda.harmon.monitor.UsageCalculator
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFailsWith
 import kotlin.test.assertFalse
+import kotlin.test.assertNull
 import kotlin.test.assertTrue
 
 class UsageCalculatorTest {
@@ -170,5 +172,138 @@ class UsageCalculatorTest {
             withoutTerminals.single { it.name == "Terminal" }.processIds,
         )
         assertEquals(listOf(600), withDefaults.single { it.name == "Terminal" }.processIds)
+    }
+
+    /**
+     * The transition is the whole signal. A snapshot cannot tell an orphan from a daemon,
+     * so the calculator has to report the parent the process had a sample ago.
+     */
+    @Test
+    fun reportsThePreviousParentWhenItChanged() {
+        val previous = rawSnapshot(
+            monotonicNs = 1_000_000_000u,
+            processes = listOf(
+                rawProcess(pid = 44268, startedAt = 10u, name = "codex", parentPid = 500),
+                rawProcess(pid = 44559, startedAt = 20u, name = "node", parentPid = 44268),
+            ),
+        )
+        val current = rawSnapshot(
+            monotonicNs = 2_000_000_000u,
+            processes = listOf(
+                rawProcess(pid = 44559, startedAt = 20u, name = "node", parentPid = 1),
+            ),
+        )
+
+        val process = UsageCalculator().calculate(previous, current).processes.single()
+
+        assertEquals(ReparentedFrom(pid = 44268, name = "codex"), process.reparentedFrom)
+        assertEquals(1, process.parentPid)
+    }
+
+    /**
+     * A deliberate double fork lands entirely between two samples, so harmon meets the
+     * process already detached. No previous sample means no transition, which is what keeps
+     * `tmux -L` and `ssh -f` from reporting themselves.
+     */
+    @Test
+    fun reportsNothingForAProcessMissingFromThePreviousSnapshot() {
+        val previous = rawSnapshot(monotonicNs = 1_000_000_000u, processes = emptyList())
+        val current = rawSnapshot(
+            monotonicNs = 2_000_000_000u,
+            processes = listOf(
+                rawProcess(pid = 44559, startedAt = 20u, name = "tmux", parentPid = 1),
+            ),
+        )
+
+        val process = UsageCalculator().calculate(previous, current).processes.single()
+
+        assertNull(process.reparentedFrom)
+    }
+
+    /**
+     * The identity key is (pid, startedAt), so a recycled pid does not resolve to the
+     * process that used to wear it and cannot be mistaken for a transition.
+     */
+    @Test
+    fun reportsNothingWhenThePidWasReusedByAnotherProcess() {
+        val previous = rawSnapshot(
+            monotonicNs = 1_000_000_000u,
+            processes = listOf(
+                rawProcess(pid = 44559, startedAt = 20u, name = "node", parentPid = 44268),
+            ),
+        )
+        val current = rawSnapshot(
+            monotonicNs = 2_000_000_000u,
+            processes = listOf(
+                rawProcess(pid = 44559, startedAt = 99u, name = "python", parentPid = 1),
+            ),
+        )
+
+        val process = UsageCalculator().calculate(previous, current).processes.single()
+
+        assertNull(process.reparentedFrom)
+    }
+
+    /**
+     * The name is what turns the alert into a lead, but it is best effort: a parent already
+     * gone in the previous snapshot leaves the pid alone to identify it.
+     */
+    @Test
+    fun leavesTheParentNameNullWhenThePreviousSnapshotDidNotCarryIt() {
+        val previous = rawSnapshot(
+            monotonicNs = 1_000_000_000u,
+            processes = listOf(
+                rawProcess(pid = 44559, startedAt = 20u, name = "node", parentPid = 44268),
+            ),
+        )
+        val current = rawSnapshot(
+            monotonicNs = 2_000_000_000u,
+            processes = listOf(
+                rawProcess(pid = 44559, startedAt = 20u, name = "node", parentPid = 1),
+            ),
+        )
+
+        val process = UsageCalculator().calculate(previous, current).processes.single()
+
+        assertEquals(ReparentedFrom(pid = 44268, name = null), process.reparentedFrom)
+    }
+
+    /**
+     * The field means "changed its parent", not "was orphaned". Filtering on the new parent
+     * being pid 1 belongs to the alert rule and to the history store, not here.
+     */
+    @Test
+    fun reportsATransitionToAParentOtherThanPidOne() {
+        val previous = rawSnapshot(
+            monotonicNs = 1_000_000_000u,
+            processes = listOf(
+                rawProcess(pid = 700, startedAt = 5u, name = "supervisor", parentPid = 1),
+                rawProcess(pid = 44559, startedAt = 20u, name = "node", parentPid = 44268),
+            ),
+        )
+        val current = rawSnapshot(
+            monotonicNs = 2_000_000_000u,
+            processes = listOf(
+                rawProcess(pid = 44559, startedAt = 20u, name = "node", parentPid = 700),
+            ),
+        )
+
+        val process = UsageCalculator().calculate(previous, current).processes.single()
+
+        assertEquals(ReparentedFrom(pid = 44268, name = null), process.reparentedFrom)
+        assertEquals(700, process.parentPid)
+    }
+
+    @Test
+    fun reportsNothingWhenTheParentDidNotChange() {
+        val processes = listOf(
+            rawProcess(pid = 44559, startedAt = 20u, name = "node", parentPid = 44268),
+        )
+        val previous = rawSnapshot(monotonicNs = 1_000_000_000u, processes = processes)
+        val current = rawSnapshot(monotonicNs = 2_000_000_000u, processes = processes)
+
+        val process = UsageCalculator().calculate(previous, current).processes.single()
+
+        assertNull(process.reparentedFrom)
     }
 }

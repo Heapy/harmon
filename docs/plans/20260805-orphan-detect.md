@@ -306,15 +306,15 @@ harmon-collector → RawSystemSnapshot (parentPid уже внутри)
 - Modify: `core/src/dev/yoda/harmon/monitor/UsageCalculator.kt`
 - Modify: `core/test/UsageCalculatorTest.kt`
 
-- [ ] построить `nameByPid` из `previous.processes` один раз на вызов `calculate`
-- [ ] в цикле по процессам заполнить `reparentedFrom` сравнением `previousProcess.parentPid != currentProcess.parentPid`
-- [ ] прокинуть значение в `calculateProcessUsage`, сохранив её чистоту (никаких обращений к истории или конфигу)
-- [ ] написать тест: переход при совпадающем `identity` даёт `reparentedFrom` с прежним pid родителя
-- [ ] написать тест: процесса не было в `previous` → `null` (это штатная демонизация, которую фильтрует интервал)
-- [ ] написать тест: тот же `pid`, другой `startedAt` → `null` — переиспользование pid не путается с переходом
-- [ ] написать тест: имя родителя резолвится из `previous`; если родителя там не было → `name == null`, но `pid` заполнен
-- [ ] написать тест: переход к родителю, отличному от 1, заполняет `reparentedFrom` — фильтрация это забота потребителя, а не калькулятора
-- [ ] `./kotlin build && ./kotlin test` — должны пройти до задачи 3
+- [x] построить `nameByPid` из `previous.processes` один раз на вызов `calculate`
+- [x] в цикле по процессам заполнить `reparentedFrom` сравнением `previousProcess.parentPid != currentProcess.parentPid`
+- [x] прокинуть значение в `calculateProcessUsage`, сохранив её чистоту (никаких обращений к истории или конфигу)
+- [x] написать тест: переход при совпадающем `identity` даёт `reparentedFrom` с прежним pid родителя
+- [x] написать тест: процесса не было в `previous` → `null` (это штатная демонизация, которую фильтрует интервал)
+- [x] написать тест: тот же `pid`, другой `startedAt` → `null` — переиспользование pid не путается с переходом
+- [x] написать тест: имя родителя резолвится из `previous`; если родителя там не было → `name == null`, но `pid` заполнен
+- [x] написать тест: переход к родителю, отличному от 1, заполняет `reparentedFrom` — фильтрация это забота потребителя, а не калькулятора
+- [x] `./kotlin build && ./kotlin test` — должны пройти до задачи 3
 
 ### Task 3: Правило алерта в AlertAnalyzer
 

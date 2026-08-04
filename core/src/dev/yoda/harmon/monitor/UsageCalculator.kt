@@ -7,6 +7,7 @@ import dev.yoda.harmon.model.ProcessorUsage
 import dev.yoda.harmon.model.ProcessUsage
 import dev.yoda.harmon.model.RawProcessSample
 import dev.yoda.harmon.model.RawSystemSnapshot
+import dev.yoda.harmon.model.ReparentedFrom
 import dev.yoda.harmon.model.StorageUsage
 import dev.yoda.harmon.model.SystemUsage
 import dev.yoda.harmon.model.VirtualMemoryUsage
@@ -31,10 +32,19 @@ class UsageCalculator(
         val elapsedNanoseconds = current.monotonicTimeNs - previous.monotonicTimeNs
         val elapsedSeconds = elapsedNanoseconds.toDouble() / NANOSECONDS_PER_SECOND
         val previousByIdentity = previous.processes.associateBy { it.identity }
+        // Built once per call, not per process: the only place a dead parent can still be
+        // named is the previous snapshot, and every process in this loop resolves against
+        // the same map.
+        val previousNameByPid = previous.processes.associate { it.identity.pid to it.name }
 
         val processes = current.processes.map { currentProcess ->
             val previousProcess = previousByIdentity[currentProcess.identity]
-            calculateProcessUsage(previousProcess, currentProcess, elapsedSeconds)
+            calculateProcessUsage(
+                previousProcess,
+                currentProcess,
+                elapsedSeconds,
+                reparentedFrom(previousProcess, currentProcess, previousNameByPid),
+            )
         }
 
         return SystemUsage(
@@ -57,10 +67,33 @@ class UsageCalculator(
         )
     }
 
+    /**
+     * Reports the parent a process had one sample ago when this sample shows a different
+     * one, and null otherwise.
+     *
+     * A process absent from [previous] yields null rather than a transition. That is what
+     * keeps a deliberate double fork quiet: such a process is first seen already detached,
+     * so there is no earlier parent to compare against. It also settles pid reuse, because
+     * the lookup key is the whole identity — a different process wearing a recycled pid has
+     * a different `startedAt` and simply misses.
+     *
+     * The result says the parent changed, nothing more. Whether the new parent being pid 1
+     * makes this an orphan worth reporting is left to the consumer, so this calculator stays
+     * a pure function of the two snapshots.
+     */
+    private fun reparentedFrom(
+        previous: RawProcessSample?,
+        current: RawProcessSample,
+        previousNameByPid: Map<Int, String>,
+    ): ReparentedFrom? = previous
+        ?.takeIf { it.parentPid != current.parentPid }
+        ?.let { ReparentedFrom(it.parentPid, previousNameByPid[it.parentPid]) }
+
     private fun calculateProcessUsage(
         previous: RawProcessSample?,
         current: RawProcessSample,
         elapsedSeconds: Double,
+        reparentedFrom: ReparentedFrom?,
     ): ProcessUsage {
         val userSeconds = delta(current.userTimeNs, previous?.userTimeNs)
             .toDouble() / NANOSECONDS_PER_SECOND
@@ -161,6 +194,7 @@ class UsageCalculator(
             runningThreadCount = current.runningThreadCount,
             billedEnergyPerSecond = billedEnergyPerSecond.finiteNonNegative(),
             batteryImpactScore = impactScore.finiteNonNegative(),
+            reparentedFrom = reparentedFrom,
         )
     }
 
