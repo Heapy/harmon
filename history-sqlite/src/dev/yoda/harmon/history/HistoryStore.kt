@@ -48,6 +48,16 @@ private const val VACUUM_PAGE_LIMIT = 2_048
 
 private const val INCREMENTAL_VACUUM_PRAGMA = "PRAGMA incremental_vacuum($VACUUM_PAGE_LIMIT)"
 
+/** The column `PRAGMA table_info` answers a column's name in: cid, **name**, type, … */
+private const val TABLE_INFO_NAME_COLUMN = 1
+
+private const val PROCESS_TABLE = "process"
+
+private const val REPARENTED_AT_COLUMN = "reparented_at"
+
+private const val ADD_REPARENTED_AT =
+    "ALTER TABLE $PROCESS_TABLE ADD COLUMN $REPARENTED_AT_COLUMN TEXT"
+
 /**
  * The agent's history: the database file, the connection to it, and the generated queries over it.
  *
@@ -68,6 +78,24 @@ class HistoryStore(
     private val logError: (String) -> Unit = ::printError,
 ) : History {
     val database: HarmonDatabase = HarmonDatabase(driver)
+
+    /**
+     * Brings a file an older build wrote up to the schema this build queries, before anything reads
+     * it — see [migrateSchema] for why a migration is the store's own work here.
+     *
+     * Opening stops being lazy because of this. sqliter connects on first use, and a store nothing
+     * ever queried used to leave no file behind; the `PRAGMA table_info` below is a use, so the
+     * database is now created and connected to while [openOrNull] is still running. That is the
+     * point rather than a side effect: a migration that ran at the first write would run inside the
+     * transaction of the first sample, and its failure would be reported as a failed write.
+     *
+     * A migration that throws therefore leaves [openOrNull] to catch it, log it and hand back no
+     * store — the agent keeps monitoring without history rather than writing into a shape its
+     * queries disagree with.
+     */
+    init {
+        migrateSchema(driver)
+    }
 
     /** Samples handed to [record] in this run, which is the only clock the retention pass has. */
     private var recordedSamples = 0L
@@ -352,6 +380,57 @@ private fun openHistoryDriver(directory: String): SqlDriver = NativeSqliteDriver
         )
     },
 )
+
+/**
+ * Adds every column the current schema has and the open file does not, and does nothing at all to a
+ * file that already matches — which is every file this build itself created.
+ *
+ * This is the first migration the project has, and it is hand-written because the generated one
+ * cannot run. `plugins/sqldelight-gen` drives the SQLDelight compiler with
+ * `deriveSchemaFromMigrations = false` and `verifyMigrations = false`, so a `.sqm` file contributes
+ * nothing to generation and `Schema.migrate()` is a body that returns `QueryResult.Unit`. The driver
+ * would not call it anyway: sqliter maintains `user_version` from `Schema.version`, that version is
+ * still 1, and every file an older build wrote already carries 1 — so as far as sqliter is
+ * concerned, a database missing `reparented_at` is up to date. Schema evolution belongs to whoever
+ * opens the store, and this is it. `docs/history.md` carries the same in prose.
+ *
+ * The guard is a read of `PRAGMA table_info` rather than a `runCatching` around an `ALTER TABLE`
+ * that would fail on every start after the first. sqliter prints the whole stack trace of a failing
+ * statement before it throws, so a swallowed exception is still a wall of red in the launchd log on
+ * every agent start for the life of the machine — the exception would be caught, the noise would
+ * not.
+ *
+ * `ALTER TABLE … ADD COLUMN` is the cheap half of SQLite's ALTER: it rewrites the table header and
+ * no row, so this costs the same on the 25 000-row `process` lookup of a year-old database as on an
+ * empty one. Column order does not matter to anything reading it — SQLDelight expands `SELECT *`
+ * into an explicit list of names at generation time, so a column appended at the end is read by
+ * name like every other.
+ */
+private fun migrateSchema(driver: SqlDriver) {
+    if (REPARENTED_AT_COLUMN in columnNamesOf(driver, PROCESS_TABLE)) return
+
+    driver.execute(identifier = null, sql = ADD_REPARENTED_AT, parameters = 0).value
+}
+
+/**
+ * The names of [table]'s columns as the open database has them, empty when there is no such table.
+ *
+ * `PRAGMA table_info` answers with a row per column, so it has to go through `executeQuery` like
+ * `PRAGMA incremental_vacuum` does and for the same reason — sqliter's `execute` throws on the first
+ * row a statement returns. Unlike that one it is a read, so the reader pool serves it happily.
+ */
+private fun columnNamesOf(driver: SqlDriver, table: String): Set<String> = driver.executeQuery(
+    identifier = null,
+    sql = "PRAGMA table_info($table)",
+    mapper = { cursor ->
+        val names = mutableSetOf<String>()
+        while (cursor.next().value) {
+            cursor.getString(TABLE_INFO_NAME_COLUMN)?.let(names::add)
+        }
+        QueryResult.Value(names)
+    },
+    parameters = 0,
+).value
 
 /**
  * Creates [path] and every missing directory above it, the last one readable by its owner alone.

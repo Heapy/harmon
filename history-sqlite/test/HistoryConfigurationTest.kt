@@ -24,7 +24,10 @@ class HistoryConfigurationTest {
         val store = assertNotNull(
             configuredHistory(historyConfig("historyRetentionDays=1"), home),
         )
-        /* sqliter connects on first use, so the file appears with the first sample, not on open. */
+        /*
+         * The file is already there by now: sqliter connects on first use, and the schema migration
+         * the store runs while opening is a use. Recording is what puts a sample into it.
+         */
         store.record(rankingReport())
         store.close()
 
