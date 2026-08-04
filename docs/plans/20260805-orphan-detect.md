@@ -341,13 +341,13 @@ harmon-collector → RawSystemSnapshot (parentPid уже внутри)
 **Files:**
 - Modify: `history-sqlite/sqldelight/dev/yoda/harmon/db/Processes.sq`
 
-- [ ] добавить `reparented_at TEXT` в `CREATE TABLE process` для новых баз
-- [ ] добавить запрос `markReparented` с условием `reparented_at IS NULL` для идемпотентности
-- [ ] комментарием объяснить, почему это отдельный запрос, а не расширение `insertProcess`
-- [ ] комментарием объяснить выбор TEXT вместо `REFERENCES sample(id)`: ретеншен удаляет сэмплы, CASCADE снёс бы процесс, SET NULL потерял бы факт
-- [ ] комментарием отметить коллизию терминологии: `orphan` в этой схеме уже значит «строка без ссылающихся детей» (`deleteOrphanApplications`), поэтому колонка называется `reparented_at`
-- [ ] тестов нет: задача определяет SQL и не несёт поведения. Поведение покрывают задачи 5 и 6
-- [ ] `./kotlin build`, затем сверить генерацию: колонка — в `build/tasks/_history-sqlite_generate@sqldelight-gen/dev/yoda/harmon/db/harmon/HarmonDatabaseImpl.kt` (там только DDL), сам запрос — в `.../db/ProcessesQueries.kt` (там тела запросов)
+- [x] добавить `reparented_at TEXT` в `CREATE TABLE process` для новых баз
+- [x] добавить запрос `markReparented` с условием `reparented_at IS NULL` для идемпотентности
+- [x] комментарием объяснить, почему это отдельный запрос, а не расширение `insertProcess`
+- [x] комментарием объяснить выбор TEXT вместо `REFERENCES sample(id)`: ретеншен удаляет сэмплы, CASCADE снёс бы процесс, SET NULL потерял бы факт
+- [x] комментарием отметить коллизию терминологии: `orphan` в этой схеме уже значит «строка без ссылающихся детей» (`deleteOrphanApplications`), поэтому колонка называется `reparented_at`
+- [x] тестов нет: задача определяет SQL и не несёт поведения. Поведение покрывают задачи 5 и 6
+- [x] `./kotlin build`, затем сверить генерацию: колонка — в `build/tasks/_history-sqlite_generate@sqldelight-gen/dev/yoda/harmon/db/harmon/HarmonDatabaseImpl.kt` (там только DDL), сам запрос — в `.../db/ProcessesQueries.kt` (там тела запросов)
 
 ### Task 5: Механизм миграции и его тесты
 

@@ -13,6 +13,21 @@
 -- process — days, for a long-running session — and everything that groups by path silently loses
 -- it. The insert's conflict clause fills it instead, which costs a write only for the rows that
 -- are actually null, and never overwrites a path already stored.
+--
+-- reparented_at records the one moment a live process was seen to change parent to pid 1, and it is
+-- written by markReparented below rather than by the insert. Two naming and typing choices here are
+-- not arbitrary:
+--
+-- The column is called reparented_at, not orphaned_at, because "orphan" is already taken in this
+-- schema: deleteOrphanProcesses and deleteOrphanApplications call a row with no referencing children
+-- an orphan. The POSIX sense of the word — a process whose parent died — survives only in the alert
+-- key the agent emits, which is user-facing; inside the schema the column says what was observed, a
+-- reparenting, and leaves "orphan" to mean what the retention queries already mean by it.
+--
+-- The type is a time string, not REFERENCES sample(id). Retention deletes old samples, so an
+-- ON DELETE CASCADE would take the process row with them and a SET NULL would erase the fact itself
+-- once the sample that carried it left the window. A timestamp outlives the window being trimmed;
+-- it is written in the same ISO-8601 representation as sample.captured_at.
 CREATE TABLE process (
   id              INTEGER PRIMARY KEY AUTOINCREMENT,
   pid             INTEGER NOT NULL,
@@ -21,6 +36,7 @@ CREATE TABLE process (
   executable_path TEXT,
   uid             INTEGER,
   parent_pid      INTEGER NOT NULL,
+  reparented_at   TEXT,
   UNIQUE (pid, started_at)
 );
 
@@ -89,6 +105,22 @@ INSERT INTO process(pid, started_at, name, executable_path, uid, parent_pid)
 VALUES (?, ?, ?, ?, ?, ?)
 ON CONFLICT (pid, started_at) DO UPDATE SET executable_path = excluded.executable_path
 WHERE process.executable_path IS NULL AND excluded.executable_path IS NOT NULL;
+
+-- A separate statement rather than another column in the upsert above, for the same reason that
+-- upsert stays as narrow as it is: it runs for every process on every sample, and its conflict
+-- clause is written so that it writes nothing on the overwhelmingly common path. Carrying
+-- reparented_at through it would put the column into ~222 000 statements a day to record an event
+-- that fires zero times a day on a healthy machine. This statement runs only when a process was
+-- actually seen changing parent, so on that healthy machine it never runs at all.
+--
+-- reparented_at IS NULL makes the write idempotent. The transition is visible in exactly one sample,
+-- but a repeated sample, a re-run over the same data, or a future rule that revisits the process must
+-- not move the timestamp: the fact being stored is when the parent was lost, not when it was last
+-- noticed to be missing.
+markReparented:
+UPDATE process
+SET reparented_at = ?
+WHERE id = ? AND reparented_at IS NULL;
 
 -- The id is read back instead of taken from last_insert_rowid(): on the second sighting of a process
 -- the insert above does nothing, and last_insert_rowid() still points at whatever row was written
