@@ -18,6 +18,7 @@ import dev.yoda.harmon.model.ProcessIdentity
 import dev.yoda.harmon.model.ProcessUsage
 import dev.yoda.harmon.model.RawProcessSample
 import dev.yoda.harmon.model.RawSystemSnapshot
+import dev.yoda.harmon.model.ReparentedFrom
 import dev.yoda.harmon.model.Severity
 import dev.yoda.harmon.model.StorageCounters
 import dev.yoda.harmon.model.StorageUsage
@@ -172,6 +173,7 @@ fun processUsage(
     compressedOrPagedOutBytes: ULong? = null,
     energyWatts: Double = 0.0,
     impact: Double = 0.0,
+    reparentedFrom: ReparentedFrom? = null,
 ): ProcessUsage = ProcessUsage(
     identity = ProcessIdentity(pid, startedAt),
     parentPid = parentPid,
@@ -203,6 +205,7 @@ fun processUsage(
     runningThreadCount = 0,
     billedEnergyPerSecond = 0.0,
     batteryImpactScore = impact,
+    reparentedFrom = reparentedFrom,
 )
 
 fun systemUsage(

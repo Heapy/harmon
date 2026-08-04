@@ -292,13 +292,13 @@ harmon-collector → RawSystemSnapshot (parentPid уже внутри)
 - Modify: `core/test/TestFixtures.kt`
 - Modify: `history-sqlite/test/TestFixtures.kt`
 
-- [ ] добавить `data class ReparentedFrom(val pid: Int, val name: String?)` рядом с `ProcessUsage`
-- [ ] добавить поле `val reparentedFrom: ReparentedFrom?` в `ProcessUsage` со значением по умолчанию `null`
-- [ ] добавить параметр `reparentedFrom` в обе фикстуры `processUsage` — `core/test/TestFixtures.kt:147` и `history-sqlite/test/TestFixtures.kt:162` (дублируются намеренно, тестовые исходники не экспортируются между модулями)
-- [ ] написать KDoc **на английском**: семантика «сменил родителя», а не «осиротел», и почему имя приходит из предыдущего снимка
-- [ ] проверить, что `ProcessUsage` не `@Serializable` и поле не попадает в IPC-протокол
-- [ ] тестов нет: задача объявляет поле и не несёт поведения. Поведение покрывает задача 2
-- [ ] `./kotlin build` — компилируется до перехода к задаче 2
+- [x] добавить `data class ReparentedFrom(val pid: Int, val name: String?)` рядом с `ProcessUsage`
+- [x] добавить поле `val reparentedFrom: ReparentedFrom?` в `ProcessUsage` со значением по умолчанию `null`
+- [x] добавить параметр `reparentedFrom` в обе фикстуры `processUsage` — `core/test/TestFixtures.kt:147` и `history-sqlite/test/TestFixtures.kt:162` (дублируются намеренно, тестовые исходники не экспортируются между модулями)
+- [x] написать KDoc **на английском**: семантика «сменил родителя», а не «осиротел», и почему имя приходит из предыдущего снимка
+- [x] проверить, что `ProcessUsage` не `@Serializable` и поле не попадает в IPC-протокол
+- [x] тестов нет: задача объявляет поле и не несёт поведения. Поведение покрывает задача 2
+- [x] `./kotlin build` — компилируется до перехода к задаче 2
 
 ### Task 2: Детект перехода в UsageCalculator
 

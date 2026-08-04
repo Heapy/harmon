@@ -170,6 +170,20 @@ object InstantAsStringSerializer : KSerializer<Instant> {
         Instant.parse(decoder.decodeString())
 }
 
+/**
+ * The parent a process had before it changed, together with that parent's name when it is
+ * known.
+ *
+ * The name is resolved from the previous snapshot rather than the current one: by the time
+ * the change is visible the old parent is usually gone, so the current snapshot can no
+ * longer name it. A parent missing from the previous snapshot too leaves [name] null while
+ * [pid] stays populated.
+ */
+data class ReparentedFrom(
+    val pid: Int,
+    val name: String?,
+)
+
 data class ProcessUsage(
     val identity: ProcessIdentity,
     val parentPid: Int,
@@ -201,6 +215,18 @@ data class ProcessUsage(
     val runningThreadCount: Int,
     val billedEnergyPerSecond: Double,
     val batteryImpactScore: Double,
+    /**
+     * Who the parent was in the previous sample when it differs from [parentPid] in this
+     * one; null when the parent did not change, or when the process was not in the previous
+     * sample at all.
+     *
+     * The field states "changed its parent", not "was orphaned": whether the new parent
+     * being pid 1 makes this an orphan is a question for the consumer, which is why the
+     * `parentPid == 1` check lives there and not here. From a single snapshot an orphan is
+     * indistinguishable from a process that daemonised on purpose; only the transition
+     * between two snapshots tells them apart.
+     */
+    val reparentedFrom: ReparentedFrom? = null,
 )
 
 data class ApplicationUsage(
