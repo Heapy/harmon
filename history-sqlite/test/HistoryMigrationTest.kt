@@ -15,6 +15,7 @@ import platform.posix.S_IWUSR
 import platform.posix.chmod
 import kotlin.test.Test
 import kotlin.test.assertEquals
+import kotlin.test.assertFails
 import kotlin.test.assertFalse
 import kotlin.test.assertNotNull
 import kotlin.test.assertNull
@@ -247,7 +248,148 @@ class HistoryMigrationTest {
                 store.close()
             }
         }
+
+    /**
+     * The failure the open-time classification cannot see, and the one the whole retry exists for.
+     *
+     * The `PRAGMA table_info` guard and the `ALTER TABLE` do not run on the same connection —
+     * sqldelight serves a pragma from its reader pool and a write from its transaction pool — so a
+     * database that answers the read can still refuse the write. In production that is the previous
+     * agent holding the write lock across a launchd restart, or a disk with no room left; here it is
+     * the mode taken off the file after the reader is already connected, which fails the transaction
+     * pool's first connection instead. Whichever it is, it says nothing about the stored schema, and
+     * a store that treated it as a schema verdict would disable history for the run at exactly the
+     * start that the one migration this project has is due to run.
+     */
+    @Test
+    fun anAlterThatFailsOnTheMomentIsRetriedRatherThanDisablingHistory() = withScratchHome { home ->
+        writePreMigrationDatabase(home)
+        val logged = mutableListOf<String>()
+
+        withPreMigrationDriver(home) { driver ->
+            withStoreOver(driver, home, logged) { store ->
+                withUnopenableDatabase(home) {
+                    assertFails("the write the migration could not run for has to fail") {
+                        store.record(orphanReport())
+                    }
+                }
+
+                assertEquals(
+                    emptyList(),
+                    logged,
+                    "a lock or a full disk under the ALTER is not a verdict about the file",
+                )
+
+                store.record(orphanReport())
+
+                assertTrue(
+                    REPARENTED_AT in driver.processColumns(),
+                    "the next sample has to run the migration the last one could not: " +
+                        "${driver.processColumns()}",
+                )
+                assertEquals(
+                    SAMPLE_AT,
+                    store.database.processesQueries.selectProcesses().executeAsOne().reparented_at,
+                    "and then take the sample into the widened table",
+                )
+            }
+        }
+    }
+
+    /**
+     * The bound on that retry, which is the other half of it being survivable.
+     *
+     * A file that is reachable and permanently broken — corrupt, not a database at all — fails the
+     * migration the same way a locked one does and never stops. Retried on every sample it would
+     * cost a stack trace sqliter prints for itself and a connection its factory drops without
+     * closing, every interval, for the life of a daemon that never returns. So the store gives up:
+     * it says `history disabled: …` once, closes the driver, and records nothing more.
+     *
+     * [ATTEMPT_CEILING] rather than the store's own number, so that this asserts the retry is
+     * bounded rather than restating what it is bounded to.
+     */
+    @Test
+    fun aMigrationThatKeepsFailingGivesUpInsteadOfRetryingForever() = withScratchHome { home ->
+        writePreMigrationDatabase(home)
+        val logged = mutableListOf<String>()
+
+        withPreMigrationDriver(home) { driver ->
+            withStoreOver(driver, home, logged) { store ->
+                withUnopenableDatabase(home) {
+                    var attempts = 0
+                    while (
+                        attempts < ATTEMPT_CEILING &&
+                        runCatching { store.record(orphanReport()) }.isFailure
+                    ) {
+                        attempts++
+                    }
+
+                    assertTrue(
+                        attempts < ATTEMPT_CEILING,
+                        "the store has to stop trying a migration that keeps failing, not carry " +
+                            "sqliter's stack trace and a leaked connection into every sample",
+                    )
+                    assertEquals(1, logged.size, "and say so once: $logged")
+                    assertTrue(
+                        logged.single().startsWith("history disabled: "),
+                        "the reason has to name history rather than the sample: ${logged.single()}",
+                    )
+                    assertFails("giving up has to hand the connection back") {
+                        driver.processColumns()
+                    }
+                }
+            }
+        }
+    }
 }
+
+/** Attempts past which a retry counts as unbounded, for the test that asserts it is not. */
+private const val ATTEMPT_CEILING = 10
+
+/**
+ * Runs [body] against a driver over the pre-migration file, configured the way production is, with
+ * its reader connection already established.
+ *
+ * That last part is the point. `HistoryStore.openOrNull` would migrate the file before handing the
+ * store over, and this file's tests about a failing `ALTER TABLE` need the connection the pragma
+ * reads through to be alive while the one the `ALTER` writes through cannot be made — which is the
+ * arrangement production is in on the first start after an upgrade, and is not reachable through
+ * `openOrNull`.
+ */
+private fun withPreMigrationDriver(home: String, body: (SqlDriver) -> Unit) {
+    val driver = productionShapedDriver(home, PreMigrationSchema)
+    try {
+        assertFalse(
+            REPARENTED_AT in driver.processColumns(),
+            "the fixture must be pre-migration, and this read is what connects the reader pool",
+        )
+        body(driver)
+    } finally {
+        driver.close()
+    }
+}
+
+/**
+ * A store over an already-built [driver], the way `openOrNull` would have built one had its own
+ * migration attempt not been part of opening.
+ *
+ * The store is not closed afterwards because [withPreMigrationDriver] closes the driver, and a
+ * store that gave up on the file has closed it already.
+ */
+private fun withStoreOver(
+    driver: SqlDriver,
+    home: String,
+    logged: MutableList<String>,
+    body: (HistoryStore) -> Unit,
+) = body(
+    HistoryStore(
+        directory = "$home/$HISTORY_DIRECTORY",
+        driver = driver,
+        retentionDays = 7,
+        intervalSeconds = 300,
+        logError = { logged += it },
+    ),
+)
 
 /**
  * Runs [body] with the database file in place and impossible to open, and puts its mode back

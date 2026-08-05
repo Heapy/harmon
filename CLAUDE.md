@@ -175,10 +175,12 @@ to apply it fails silently. Schema evolution is hand-rolled in the store;
 `HistoryStore.openOrNull` runs is the first one written. Its `PRAGMA table_info`
 read is also why opening the store is no longer lazy: sqliter connects and
 creates `history.db` inside `openOrNull`, where a store nothing ever queried used
-to leave no file behind. That read is what tells the two open-time failures
-apart — a file it reached and cannot repair disables history for the run, a file
-it could not reach at all still hands back a store, which migrates at its first
-write.
+to leave no file behind. What that read cannot do is tell the two failures
+apart. It goes to the reader pool and the `ALTER TABLE` after it goes to the
+transaction pool, so they are two connections and in WAL a locked file answers
+the first and refuses the second — the classification is therefore SQLite's
+error code (`SQLITE_ERROR` is a wrong shape and disables history; a busy, full
+or unopenable file is retried), bounded to three attempts a run.
 
 **`PRAGMA auto_vacuum` belongs in `lifecycleConfig.onCreateConnection`.** That
 is the only hook sqliter runs before it applies `journal_mode`

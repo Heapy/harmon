@@ -666,29 +666,48 @@ Three things about that migration that were not obvious until it existed:
   list of names at generation time, so a column appended at the end is read by
   name like every other one.
 
-A migration that fails at open is answered in one of two ways, and which one
-depends on how far it got:
+A migration that fails is answered in one of two ways, and which one depends on
+the error code SQLite answered with rather than on where the failure happened:
 
-- **the file was reached and cannot be repaired** — no `process` table, an
-  `ALTER TABLE` the file refuses. That is a verdict about the file: it arrives
-  as `HistorySchemaMismatch`, `openOrNull` logs `history disabled: …` and hands
-  back no store, and the agent keeps monitoring without history rather than
-  writing into a shape its queries disagree with. Nothing retries it, because
-  the next sample would be refused in exactly the same way;
-- **the file could not be reached at all** — another process holding it across a
-  launchd restart, a stale `-shm`, a disk with no room for the journal. The
-  `PRAGMA table_info` read never answered, so nothing has been learnt about the
-  stored schema. `openOrNull` logs `history unreachable: …; retrying at the
+- **the shape is wrong** — no `process` table, or a `process` table an
+  `ALTER TABLE` cannot widen. Both fail while the statement is being compiled,
+  under the generic `SQLITE_ERROR`, and both will fail the same way on every
+  sample after this one. That is a verdict about the file: it arrives as
+  `HistorySchemaMismatch`, `history disabled: …` is logged once, no store is
+  handed back — or, if the verdict only arrives at a later write, the store
+  closes its driver and records nothing more. The agent keeps monitoring without
+  history rather than writing into a shape its queries disagree with;
+- **the moment is wrong** — another process holding the file across a launchd
+  restart, a stale `-shm`, a disk with no room for the journal, and every code
+  that carries: `SQLITE_BUSY`, `SQLITE_FULL`, `SQLITE_READONLY`, `SQLITE_IOERR`,
+  `SQLITE_CANTOPEN`. `openOrNull` logs `history unreachable: …; retrying at the
   first write` and hands back the store anyway, and `record` runs the migration
-  again on every sample until it goes through. `runForever` never returns, so a
-  store `openOrNull` declined to build is never asked for a second time — this
-  failure would otherwise cost the whole run its history for a lock that was
-  gone five minutes later.
+  again. `runForever` never returns, so a store `openOrNull` declined to build is
+  never asked for a second time — this failure would otherwise cost the whole run
+  its history for a lock that was gone five minutes later.
 
-A file that is reachable and permanently broken — corrupt, or not a database —
-reads as the second of the two and is retried on every sample. It costs a failed
-write per sample and nothing more: `HarmonService.recordSafely` reports the first
-of those failures and stays quiet about the rest.
+Where the two halves of the migration run is what makes the code the only honest
+signal. `columnNamesOf` sends its `PRAGMA` through sqldelight's reader pool and
+the `ALTER TABLE` goes through the transaction pool, so they run on two
+connections, and the second is opened for the first time at the `ALTER`. In WAL a
+reader is never blocked: a file the previous agent still holds locked answers the
+pragma normally and then fails the `ALTER` with `SQLITE_BUSY`. Classifying by
+"the read answered, so the file is at fault" would disable history for the whole
+run at exactly the start the migration is due to run at.
+
+The retry is bounded to three attempts per run — one while `openOrNull` is still
+opening and two samples after it, `MIGRATION_ATTEMPTS` in `HistoryStore`. That
+bound is what makes a file which is reachable and permanently broken — corrupt,
+not a database at all — survivable rather than merely non-fatal. It fails the
+migration exactly as a locked file does, so it takes the retry path; on the third
+failure the store logs `history disabled: …`, closes the driver and turns
+`record` into a no-op for the rest of the run. Retried on every sample instead it
+would cost more than the lost history: sqliter prints the whole stack trace of
+every statement that throws, which no logging of ours can suppress, and its
+connection factory drops a connection whose first pragma failed without closing
+it — a stack trace and a leaked descriptor every interval, for a daemon that
+never returns. Within the bound, the failed writes themselves are quiet:
+`HarmonService.recordSafely` reports the first and stays quiet about the rest.
 
 ## Checking a change against a live machine
 

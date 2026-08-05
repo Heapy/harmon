@@ -4,6 +4,8 @@ import app.cash.sqldelight.db.QueryResult
 import app.cash.sqldelight.db.SqlDriver
 import app.cash.sqldelight.driver.native.NativeSqliteDriver
 import co.touchlab.sqliter.SynchronousFlag
+import co.touchlab.sqliter.interop.SQLiteExceptionErrorCode
+import co.touchlab.sqliter.interop.SqliteErrorType
 import dev.yoda.harmon.analysis.AlertStateSnapshot
 import dev.yoda.harmon.analysis.isSnapshotFresh
 import dev.yoda.harmon.db.HarmonDatabase
@@ -60,6 +62,24 @@ private const val ADD_REPARENTED_AT =
     "ALTER TABLE $PROCESS_TABLE ADD COLUMN $REPARENTED_AT_COLUMN TEXT"
 
 /**
+ * How many times one store tries to bring the stored schema to this build's shape before it stops
+ * trying.
+ *
+ * The retry is there for the failure that is about the moment rather than about the file — a lock
+ * the previous agent still holds a second after launchd started this one, a journal that had no room
+ * — and it is bounded because retrying forever costs more than the failure it survives. sqliter
+ * prints the whole stack trace of a statement that throws, which no log level of ours can suppress;
+ * and its connection factory drops a connection whose first pragma failed without closing it, which
+ * is what a file that is not a database does. An attempt per sample would be a stack trace and a
+ * leaked descriptor every interval for the life of a daemon that never returns.
+ *
+ * Three is one attempt while [HistoryStore.openOrNull] is still opening and two samples after it —
+ * ten minutes at the shipped interval, which outlasts any restart overlap and is nowhere near a
+ * night of noise.
+ */
+private const val MIGRATION_ATTEMPTS = 3
+
+/**
  * The agent's history: the database file, the connection to it, and the generated queries over it.
  *
  * Built through [openOrNull] rather than through this constructor, because a database that cannot
@@ -86,13 +106,28 @@ class HistoryStore(
      */
     private var schemaMigrated = false
 
+    /** Attempts at that migration this store has left, out of [MIGRATION_ATTEMPTS]. */
+    private var migrationAttemptsLeft = MIGRATION_ATTEMPTS
+
+    /**
+     * Whether the store has given up on the file, which is the whole of what makes [record] write
+     * nothing at all.
+     *
+     * A flag of its own rather than a spent [migrationAttemptsLeft], because the two would only
+     * agree while the budget is what it is today: lowered to one, a store handed back by
+     * [openOrNull] would arrive with the count already spent and go quiet without ever saying why.
+     * Only [abandonHistory] sets this, and it says why first.
+     */
+    private var historyAbandoned = false
+
     /** Samples handed to [record] in this run, which is the only clock the retention pass has. */
     private var recordedSamples = 0L
 
     /**
      * Brings a file an older build wrote up to the schema this build queries, once per run and
      * before anything of this build writes into it — see [migrateSchema] for why a migration is the
-     * store's own work here.
+     * store's own work here, and which of its failures is a verdict about the file rather than
+     * about the moment.
      *
      * [openOrNull] calls this while it is still opening, which is what stops opening from being
      * lazy: sqliter connects on first use, the `PRAGMA table_info` this reads is a use, and the
@@ -101,35 +136,68 @@ class HistoryStore(
      * effect — a migration deferred to the first sample would run inside that sample's transaction,
      * and its failure would be reported as a failed write.
      *
-     * [record] calls it again because the open-time attempt is allowed to fail without costing the
-     * run its history. Two failures arrive here and they are not the same event:
-     *
-     * - the database could not be reached at all — a file another process holds locked across a
-     *   launchd restart, a stale `-shm`, a disk with no room for the journal. Nothing has been
-     *   learnt about the stored schema, the failure escapes as itself, and [schemaMigrated] stays
-     *   false so the next sample connects again. That is the behaviour this store had before it
-     *   migrated anything: the first write was the first connection, and a transient failure there
-     *   cost one sample rather than the whole run;
-     * - the file was reached and its `process` table cannot be brought to this shape. That is a
-     *   verdict about the file rather than about the moment, it arrives as [HistorySchemaMismatch],
-     *   and [openOrNull] turns it into no store at all — the agent keeps monitoring without history
-     *   rather than writing into a shape its queries disagree with.
-     *
-     * A file that is reachable and permanently broken — corrupt, or not a database at all — reads
-     * as the first of the two and is retried on every sample. That costs a failed write per sample
-     * and nothing else: `HarmonService.recordSafely` reports the first of those failures and stays
-     * quiet about the rest.
-     *
-     * A mismatch the open never got close enough to see arrives here at the first write instead. It
-     * fails that write rather than the run, and goes on failing every sample after it — the same
-     * refusal by a slower route, and still never a row written into a shape the queries disagree
-     * with.
+     * [record] calls it again through [migrateBeforeWriting], because the open-time attempt is
+     * allowed to fail without costing the run its history: a file another process holds locked
+     * across a launchd restart, a stale `-shm`, a disk with no room for the journal are all gone by
+     * the next sample. Every attempt is counted, whoever makes it — a store gets
+     * [MIGRATION_ATTEMPTS] and no more.
      */
     private fun migrateSchemaOnce() {
         if (schemaMigrated) return
 
+        migrationAttemptsLeft--
         migrateSchema(driver)
         schemaMigrated = true
+    }
+
+    /**
+     * Runs the migration the open could not, and answers whether this build may write to the file.
+     *
+     * Three outcomes rather than two, and the third is what this exists for:
+     *
+     * - the stored schema is this build's, either because it always was or because the attempt just
+     *   made it so. True, and [record] writes;
+     * - the attempt failed and the store has attempts left. The failure escapes as itself and costs
+     *   this sample its write, which `HarmonService.recordSafely` reports once and stays quiet
+     *   about afterwards; the next sample tries again;
+     * - the attempt was the last one, or it was a [HistorySchemaMismatch] — a verdict about the
+     *   file, which no number of retries improves. [abandonHistory] says so once, and every sample
+     *   after this one answers false here and records nothing.
+     *
+     * Never a row written into a shape the queries disagree with, in all three: the migration goes
+     * first and the write only happens behind a true.
+     */
+    private fun migrateBeforeWriting(): Boolean {
+        if (schemaMigrated) return true
+        if (historyAbandoned) return false
+
+        try {
+            migrateSchemaOnce()
+        } catch (failure: Throwable) {
+            if (failure is HistorySchemaMismatch || migrationAttemptsLeft <= 0) {
+                abandonHistory(failure)
+            }
+            throw failure
+        }
+        return true
+    }
+
+    /**
+     * Gives up on the file: says why once, closes the connection, and leaves [record] a no-op.
+     *
+     * The close is what makes this more than a flag. `runForever` never returns, so a driver left
+     * open over a database nothing will write to again would carry its descriptors and an
+     * un-checkpointed `-wal`/`-shm` pair for the life of the daemon — the same leak [openOrNull]
+     * closes the driver to avoid when it hands back no store at all.
+     *
+     * The flag is set before either, so that a close which throws still leaves history off, and the
+     * reason is logged before the close, so that a close which throws cannot take the one line the
+     * user needs down with it.
+     */
+    private fun abandonHistory(failure: Throwable) {
+        historyAbandoned = true
+        logError("history disabled: ${failureDescription(failure)}")
+        driver.close()
     }
 
     /**
@@ -172,15 +240,16 @@ class HistoryStore(
      * grows forever behind a green test suite.
      *
      * The migration goes first and is a no-op on every sample but the ones that reach a store whose
-     * open-time attempt at it could not reach the database; [migrateSchemaOnce] carries which
-     * failures get that retry and which one never gets a store at all.
+     * open-time attempt at it could not reach the database. A sample that arrives after the store
+     * gave up on the file writes nothing at all and says nothing either; [migrateBeforeWriting]
+     * carries which failures buy a retry, and how many.
      */
     override fun record(
         report: MonitoringReport,
         deliveries: List<DeliveryResult>,
         alertState: AlertStateSnapshot?,
     ) {
-        migrateSchemaOnce()
+        if (!migrateBeforeWriting()) return
         pruneIfDue()
 
         val usage = report.usage
@@ -368,10 +437,12 @@ class HistoryStore(
          * ever hold this store to ask about it.
          *
          * A database that merely could not be reached at this moment does not cost the run its
-         * history: the store comes back unmigrated, the reason is logged once, and every write
-         * tries the connection again. Only a schema this build cannot repair —
-         * [HistorySchemaMismatch] — hands back no store at all. [migrateSchemaOnce] carries which
-         * failure is which and why the two are answered differently.
+         * history: the store comes back unmigrated, the reason is logged once, and the next writes
+         * try again — [MIGRATION_ATTEMPTS] times over the run, after which the store says
+         * `history disabled: …` for itself and stops. Only a schema this build cannot repair —
+         * [HistorySchemaMismatch] — hands back no store at all, at the first attempt.
+         * [migrateBeforeWriting] carries which failure is which and why the two are answered
+         * differently.
          *
          * Neither of the two numbers has a default, because both belong to the caller's
          * configuration and a wrong retention is invisible: too short silently deletes history the
@@ -494,34 +565,71 @@ private fun openHistoryDriver(directory: String): SqlDriver = NativeSqliteDriver
  * empty one. Column order does not matter to anything reading it — SQLDelight expands `SELECT *`
  * into an explicit list of names at generation time, so a column appended at the end is read by
  * name like every other.
+ *
+ * Which failure of that statement is a verdict about the file is decided by [isSchemaVerdict], from
+ * the error code SQLite answered with. It cannot be decided by where the statement sits, because the
+ * read above proves nothing about the write below it: sqldelight sends a `PRAGMA` to its reader pool
+ * and an `ALTER` to its transaction pool, so the two run on two connections and the second of them
+ * is opened for the first time right there. A file the previous agent still holds locked across a
+ * launchd restart answers the read — in WAL a reader is never blocked — and then fails the write
+ * with `SQLITE_BUSY`, which is a fact about the moment and not about the schema.
  */
 private fun migrateSchema(driver: SqlDriver) {
-    /*
-     * Outside the `try` below, and that placement is the whole of the classification. This read is
-     * what establishes the connection, so a failure of it says the database could not be reached
-     * and says nothing at all about the shape of what is in it. Everything after it has read the
-     * file and is therefore a verdict on the file.
-     */
     if (REPARENTED_AT_COLUMN in columnNamesOf(driver, PROCESS_TABLE)) return
 
     try {
         driver.execute(identifier = null, sql = ADD_REPARENTED_AT, parameters = 0).value
     } catch (failure: Throwable) {
+        if (!isSchemaVerdict(failure)) throw failure
         throw HistorySchemaMismatch(failure)
     }
 }
 
 /**
+ * Whether [failure] is SQLite refusing the `ALTER TABLE` over the shape of the database rather than
+ * over the state of the machine.
+ *
+ * `no such table: process` and `duplicate column name: reparented_at` both fail while the statement
+ * is being compiled, under the generic `SQLITE_ERROR`, and both will fail the same way on the next
+ * sample and every sample after it. Everything else the write can raise says nothing about the
+ * stored schema and is worth another try: `SQLITE_BUSY` from a lock that outlived the busy timeout,
+ * `SQLITE_FULL`, `SQLITE_READONLY`, `SQLITE_IOERR`, or a `SQLITE_CANTOPEN` from the connection this
+ * statement is the first to need.
+ *
+ * Narrow on purpose rather than fail-closed. A permanent failure this reads as transient still ends
+ * in history disabled, [MIGRATION_ATTEMPTS] attempts later and by a different route; a transient one
+ * read as permanent costs the whole run its history for a lock that was gone five minutes later.
+ */
+private fun isSchemaVerdict(failure: Throwable): Boolean {
+    if (failure !is SQLiteExceptionErrorCode) return false
+
+    /*
+     * `errorType` maps the code through an enum and throws on one it does not know. Answered as
+     * "not a verdict" rather than allowed to replace the failure being classified with a stranger.
+     */
+    val type = try {
+        failure.errorType
+    } catch (unknownCode: IllegalArgumentException) {
+        return false
+    }
+    return type == SqliteErrorType.SQLITE_ERROR
+}
+
+/**
  * A database this build reached and cannot bring to the shape its queries expect.
  *
- * The one failure of [HistoryStore.openOrNull] that is a verdict about the file rather than about
- * the moment. A `process` table that is missing, or an `ALTER TABLE` the file refuses, will be
- * missing and refused again on the next sample, so retrying it would write nothing and report the
- * same thing forever; this is the failure that disables history for the whole run. Every other one
- * — a connection that could not be made — leaves the store in place to try again; see
- * `migrateSchemaOnce`.
+ * The one failure of the migration that is a verdict about the file rather than about the moment. A
+ * `process` table that is missing, or one an `ALTER TABLE` cannot widen, will be missing and refused
+ * again on the next sample, so retrying it would write nothing and report the same thing forever:
+ * this is the failure that disables history at the first attempt, whether it arrives at
+ * [HistoryStore.openOrNull] or later at a write. Every other one buys the retry
+ * [MIGRATION_ATTEMPTS] bounds.
+ *
+ * Private because nothing outside this file has ever caught it. It is a classification the store
+ * makes for itself, between two answers it gives on its own — a caller of `openOrNull` sees a store
+ * or a null either way.
  */
-class HistorySchemaMismatch(cause: Throwable) : IllegalStateException(
+private class HistorySchemaMismatch(cause: Throwable) : IllegalStateException(
     "the stored schema cannot be migrated: ${failureDescription(cause)}",
     cause,
 )
@@ -536,8 +644,9 @@ class HistorySchemaMismatch(cause: Throwable) : IllegalStateException(
  * and the [HistorySchemaMismatch] that becomes a logged `history disabled: …` is the whole of the
  * fail-closed contract.
  *
- * This read answering at all is also what tells a bad file from an unreachable one: it is the first
- * use of the connection, so a database nothing can open never gets as far as returning an empty set.
+ * This read is the first use of the connection, so it is also where a database nothing can open
+ * fails. That failure is not a verdict about the schema and is not classified as one — see
+ * [isSchemaVerdict], which reads the error code rather than the position of the statement.
  *
  * `PRAGMA table_info` answers with a row per column, so it has to go through `executeQuery` like
  * `PRAGMA incremental_vacuum` does and for the same reason — sqliter's `execute` throws on the first
