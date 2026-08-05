@@ -48,7 +48,10 @@ samples are queried through.
   `terminalApplications` treated as boundaries rather than owners of every
   command they launch;
 - alerts on crossing a threshold for CPU, memory, physical storage writes, swap
-  usage, swap-out traffic, likely battery impact, and low battery.
+  usage, swap-out traffic, likely battery impact, and low battery;
+- an alert on a process losing its parent: a process that had a live parent in
+  one sample and is handed to launchd by the next raises a warning naming both,
+  which no snapshot of `ps` can tell apart from an ordinary daemon.
 
 All local IPC and outbound JSON is encoded with `kotlinx.serialization`.
 Executable paths and detailed collection failures remain local and are omitted
@@ -236,6 +239,7 @@ Important defaults:
 collectorSocket=/var/run/harmon.collector.sock
 intervalSeconds=300
 historyRetentionDays=7
+orphanAlerts=true
 applicationCpuAlertPercent=150
 applicationMemoryAlertMiB=2048
 applicationDiskWriteAlertMiBPerSecond=50
@@ -247,7 +251,11 @@ systemNotifications=true
 notifyEverySample=false
 ```
 
-A threshold of `0` disables that rule. `applicationMemoryAlertMiB` and
+A threshold of `0` disables that rule. `orphanAlerts` is the one alert rule
+without a threshold — losing a parent is an event, not a quantity, so there is
+no number to lower until it stops matching — and `orphanAlerts=false` is how it
+is switched off. It is on by default and fires at most `maxAlertsPerCategory`
+times per sample, like every other rule. `applicationMemoryAlertMiB` and
 `swapAlertMiB` are capped at 1,048,576 MiB (1 TiB); a larger value is rejected
 and the process exits with status 2. `terminalApplications` is a
 comma-separated list of bundle names without `.app`, matched case-insensitively.
@@ -325,16 +333,37 @@ so a consumer diffing the alert list can tell a dropped alert from a cleared one
 and the count is the whole overflow. An already-firing alert pushed out of the
 top slice is demoted rather than cleared — it stays in the alert state, so its
 return to the list does not push again — while a key crossing its threshold
-below the cut is reported as suppressed without entering that state. With
-`notifyEverySample=true` the agent sends on every sample and treats the whole
-alert list as push content; nothing is deferred in that mode, so `newAlertKeys`
-there names every alert not yet confirmed as delivered, including one whose
-earlier deliveries failed.
+below the cut is reported as suppressed without entering that state.
+
+One rule sits outside all of that. The orphan alert fires on a transition — a
+process that had a live parent in the previous sample and has pid 1 as its
+parent in this one — and a transition exists for exactly one sample. Everything
+above works by carrying a key from one sample to the next and rebuilding the
+push from the alert list of the later one, and for this rule there is nothing to
+rebuild from: the next sample has no such alert, and even the message could not
+be reassembled, because the dead parent's name was read from the sample it was
+still alive in. So delivery is one-shot. A failed push of an orphan alert is not
+retried, and an orphan pushed out of the per-category slice is not demoted but
+dropped — unlike an application alert it gets no later sample to return on.
+Neither case loses the fact: the key is in the report text, in the webhook
+payload and in the `alert` table, and the transition itself is stamped in
+`process.reparented_at` in the history database. Transitions that happen while
+the agent is not running are not seen at all, since the sample they would have
+been compared against was never taken.
+
+With `notifyEverySample=true` the agent sends on every sample and treats the
+whole alert list as push content; nothing is deferred in that mode, so
+`newAlertKeys` there names every alert not yet confirmed as delivered, including
+one whose earlier deliveries failed.
 
 Edge detection across samples exists only in the long-running `harmon run`
 agent. `harmon once --notify` starts with a fresh, empty alert state, so every
 alert active in its single sample counts as new: all of them are pushed, and
-`newAlertKeys` lists all of them.
+`newAlertKeys` lists all of them. `once` and `diagnose` do compare two
+snapshots, so the orphan rule can match there, but their window is seconds
+rather than five minutes and a process that daemonizes inside it looks exactly
+like one that lost its parent. Neither command writes history, so the cost is
+one odd line in a one-off report.
 
 Notification Center delivery uses the background-only Harmon application
 bundle installed under `~/Library/Application Support/Harmon/Harmon.app`.

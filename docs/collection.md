@@ -466,10 +466,39 @@ display brightness, thermal state, or external peripherals.
 | System swap-out traffic | 25 MiB/s | 50 MiB/s |
 | Application battery-impact score | 100, on battery | 200 |
 | Low battery | 20% | 10% |
+| Orphaned process | on | never; always a warning |
 
-Zero disables a threshold. For each application rule the analyzer selects at
-most `maxAlertsPerCategory` applications by the rule's metric, and every report
-is capped at that number; the keys that did not survive the cut are named in
+The orphan rule is the only one reading a transition rather than a level, and
+the only one keyed to a process rather than to an application or to the system.
+On every sample `UsageCalculator` matches each process against the previous
+sample on `(pid, startedAt)` and records the old parent when it differs; the rule
+fires for those whose new parent is pid 1, launchd. The key is
+`orphan:process:<pid>:<startedAt>`, the severity is always a warning because an
+event has no magnitude to grade, and the message reads
+`node (pid 44559) lost its parent codex (pid 44268)` — the parent's name comes
+from the previous sample, where it was still alive, and is left out when that
+sample did not carry it.
+
+Two things follow from the signal being a transition rather than a state. An
+ordinary double-forking daemon never raises it: `tmux -L`, `ssh -f` and
+`gpg-agent --daemon` reach launchd in the milliseconds between fork and exit, so
+harmon first sees them already at pid 1 and there is no transition to record. No
+allow list or age heuristic is involved — the 300-second interval does the
+filtering, which also means it does not hold for `once` and `diagnose`, whose
+window can be as short as a second and can therefore land inside a double fork.
+Neither writes history and only `once --notify` pushes at all, so the cost there
+is an odd line in a one-off report. The other consequence is that a transition
+during a stretch when the agent was not running is invisible: the previous
+sample the comparison needs does not exist, and no later sample can tell an
+orphan from a daemon.
+
+`orphanAlerts=false` switches the rule off. Zero disables a threshold, but this
+rule has no threshold to zero, so the boolean is the whole of its configuration.
+
+Every rule is capped at `maxAlertsPerCategory` keys per report, and what the cap
+ranks by differs: an application rule keeps the applications with the highest
+value of its own metric, while orphanhood has no metric and its keys are kept in
+order of ascending pid. The keys that did not survive the cut are named in
 `suppressedAlertKeys` instead, as described below. Only an already-active one
 also stays in the alert state as firing: forgetting it there would look like the
 alert clearing, and its return to the top slice would push again as new. A key crossing its threshold for the first time below the cut was
@@ -477,6 +506,17 @@ never pushed and does not enter the state, so the next sample compares it
 against the full threshold rather than the lowered one. A push carries only the
 alerts that crossed their threshold on this sample; while the condition holds
 there is no repeat, and a key becomes pushable again only after it stops firing.
+
+For an application rule falling below the cut is a deferral: the condition is
+still there on the next sample and the key is reported as soon as the noisier
+ones subside. For an orphan it is a loss. The transition exists in exactly one
+sample, the suppressed key never entered the alert state, and the next sample
+has no edge left to report, so a supervisor dying with fifty children pushes
+`maxAlertsPerCategory` of them — three by default — and the other forty-seven
+appear as suppressed keys only. The fact survives the loss: a suppressed key is
+written to the `alert` table with `reported = 0` like any other, and the
+transition is stamped in `process.reparented_at` regardless of whether an alert
+about it was reported at all.
 
 Delivery has to succeed for a key to count as pushed, so a failed webhook or
 Telegram call is retried on the next sample instead of being silently dropped. A
@@ -486,6 +526,12 @@ thirty-two, so a channel that can never succeed cannot turn Notification Center
 into an endless banner loop, and a channel that comes back finds the alert
 waiting. Any confirmed delivery clears every deferral at once, because one
 channel answering again is evidence the outage is over.
+
+An orphan alert is outside that promise, for the same reason a suppressed one is
+lost: the retry holds a key and rebuilds the push from the next sample's alert
+list, and the next sample has no such alert in it. The message could not be
+rebuilt either — the dead parent's name was read from a sample that has already
+gone by. A failed delivery of an orphan alert is not retried.
 
 Notification Center is treated as best-effort: macOS returns no synchronous
 confirmation to a launchd agent. Its optimistic success is discounted only

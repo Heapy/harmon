@@ -171,7 +171,11 @@ repository; none are visible from the code that depends on them.
 files contribute nothing and the generated `Schema.migrate()` is a body that
 returns `QueryResult.Unit`. Adding a migration file and waiting for the driver
 to apply it fails silently. Schema evolution is hand-rolled in the store;
-`docs/history.md` has the two forms.
+`docs/history.md` has the two forms, and `migrateSchema` in `HistoryStore`'s
+`init` block is the first one written. Its `PRAGMA table_info` read is also why
+opening the store is no longer lazy: sqliter connects and creates `history.db`
+inside `openOrNull`, where a store nothing ever queried used to leave no file
+behind.
 
 **`PRAGMA auto_vacuum` belongs in `lifecycleConfig.onCreateConnection`.** That
 is the only hook sqliter runs before it applies `journal_mode`
@@ -207,10 +211,13 @@ not what this setting is: `freeCompilerArgs` does not cross a module boundary.
 separate app module and inherits neither copy. `-lsqlite3` is a system library
 in every macOS SDK, so no `-L` is needed.
 
-To see what a `.sq` file actually generated, read
-`build/tasks/_history-sqlite_generate@sqldelight-gen/dev/yoda/harmon/db/harmon/HarmonDatabaseImpl.kt`.
-That is where a named parameter, a nullable column or a missing query shows up
-as Kotlin.
+To see what a `.sq` file actually generated, read the two halves in
+`build/tasks/_history-sqlite_generate@sqldelight-gen/dev/yoda/harmon/db/`.
+`harmon/HarmonDatabaseImpl.kt` holds only `Schema` — the `CREATE TABLE` DDL and
+the version number — and carries no statement bodies at all. Every query is
+generated into `<Table>Queries.kt` beside it, so that is where a named
+parameter, a nullable column, a missing query, or the explicit column list a
+`SELECT *` expands into shows up as Kotlin.
 
 ## Layout
 

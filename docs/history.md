@@ -122,6 +122,18 @@ WHERE ps.process_id = (
 ORDER BY s.captured_at;
 ```
 
+Every process the agent watched lose its parent, and who the parent was.
+`parent_pid` is not corrected by the transition, so it still names the process
+that died:
+
+```sql
+SELECT datetime(reparented_at, 'localtime') AS local_time,
+       name, pid, parent_pid
+FROM process
+WHERE reparented_at IS NOT NULL
+ORDER BY reparented_at DESC;
+```
+
 Alerts, with the application an application alert names. The key of an
 application alert is the rule prefixed to `application.key`, so the join is a
 concatenation; a `LEFT JOIN` because not every alert is about an application, and
@@ -276,6 +288,7 @@ CREATE TABLE process (
   executable_path TEXT,
   uid             INTEGER,
   parent_pid      INTEGER NOT NULL,
+  reparented_at   TEXT,
   UNIQUE (pid, started_at)
 );
 
@@ -323,6 +336,36 @@ null when it read an empty one. `name`, `uid` and `parent_pid` freeze at first
 sighting: the insert conflicts into a no-op, so a process that renames itself
 keeps the name it was first seen under. `executable_path` is the one column a
 later sighting may still write, and only from null to non-null; see below.
+
+`reparented_at` is the other column a later sample can fill, and the freeze is
+what makes it worth reading. It holds the `captured_at` of the one sample in
+which the agent saw a live process change parent to pid 1 — `UsageCalculator`
+compares the parent of every process against the previous sample, matched on
+`(pid, started_at)` — so `parent_pid` is the parent that died and
+`reparented_at` is when it stopped being the parent. Null means no such
+transition was observed, which on an ordinary machine is true of every row in
+the table.
+
+Three choices in how it is written and typed. It is set by a statement of its
+own, `markReparented`, rather than by the lookup upsert, which runs for every
+process on every sample to record something that fires zero times a day on a
+healthy machine. That statement carries
+`WHERE reparented_at IS NULL`, so a repeated write moves nothing — the column
+records when the parent was lost, not when the loss was last noticed. And it is
+a time string rather than a `REFERENCES sample(id)` because retention deletes
+old samples: `ON DELETE CASCADE` would take the process row down with the sample
+that carried the fact and `SET NULL` would erase the fact while keeping the row.
+A timestamp outlives the window being trimmed.
+
+The column is not called `orphaned_at` because `orphan` already means something
+else here: `deleteOrphanProcesses` and `deleteOrphanApplications` call a row
+nothing references an orphan. The POSIX sense of the word survives in the alert
+key the agent emits for the same event, `orphan:process:<pid>:<startedAt>`,
+which is user-facing and is the only place the two vocabularies meet.
+
+Only `harmon run` ever writes it, and only for a transition it was running
+across: the previous sample is what the comparison needs, so a parent that died
+while the agent was down leaves no mark anywhere.
 
 `process_sample` is one row per readable process per sample — around 222 000 a
 day on a machine running several hundred processes — and every column after the
@@ -517,6 +560,12 @@ per sample — around 222 000 writes a day — to track something that almost ne
 changes, and the row would then no longer describe the moment it was written
 either.
 
+The second of the two is the one case where the stale value is the useful one.
+`reparented_at` non-null says the parent named by `parent_pid` is the parent
+that died, and a correcting `UPDATE` would have replaced it with `1` and thrown
+the culprit away. That holds only for a transition the agent was running across;
+for every other row the caveat above stands unchanged.
+
 `executable_path` is outside that freeze in one direction. Null there is not a
 value the process ever had; it is the collector saying it could not look, and the
 answer can arrive later — when a collector gains the privilege to read another
@@ -548,9 +597,9 @@ which process was refused for which reason is a `harmon diagnose` concern.
 
 ## Changing the schema
 
-Nothing here is a migration yet. The schema has exactly one version, sqliter
-maintains `user_version` from it, and the generated `Schema.migrate()` is a body
-that returns `QueryResult.Unit`.
+No migration here is a generated one. The schema has exactly one version,
+sqliter maintains `user_version` from it, and the generated `Schema.migrate()` is
+a body that returns `QueryResult.Unit`.
 
 **A `.sqm` file never runs.** `plugins/sqldelight-gen` drives the SQLDelight
 compiler with `deriveSchemaFromMigrations = false` and `verifyMigrations = false`,
@@ -568,8 +617,39 @@ SQLite allows without one:
   stack trace of a failing statement before it throws, so a swallowed exception is
   still a wall of red in the launchd log on every agent start.
 
-None of this is implemented. The first change to the schema is where it gets
-written.
+The second form is written. `reparented_at` is what it was written for, and it is
+the shape the next column should copy. `HistoryStore` has an `init` block that
+calls `migrateSchema(driver)` before anything else touches the file:
+`columnNamesOf` reads `PRAGMA table_info(process)`, and
+`ALTER TABLE process ADD COLUMN reparented_at TEXT` runs only when the name is
+not in the answer. A file this build created carries the column already, so on
+every start but the first after an upgrade the migration is one pragma read and
+nothing else.
+
+The pragma goes through `executeQuery` rather than `execute` for the same reason
+`PRAGMA incremental_vacuum` does: sqliter's `execute` throws on the first row a
+statement returns, and `table_info` answers a row per column. It is a read, so
+the reader pool serves it without a transaction of its own.
+
+Three things about that migration that were not obvious until it existed:
+
+- **sqliter will never call the generated one.** `Schema.version` is still 1 and
+  every file an older build wrote already carries `user_version = 1`, so
+  `migrateIfNeeded` sees a current database. A missing column is invisible to
+  the driver; only the store can notice it.
+- **Opening the store stopped being lazy.** The pragma is a use of the
+  connection, so sqliter connects and creates `history.db` while `openOrNull` is
+  still running, where before the file appeared at the first write. That is the
+  point of running it there: a migration deferred to the first sample would run
+  inside that sample's transaction, and its failure would be reported as a
+  failed write. Failing in `openOrNull` instead is caught, logged as
+  `history disabled: …`, and hands back no store — the agent keeps monitoring
+  without history rather than writing into a shape its queries disagree with.
+- **`ADD COLUMN` costs nothing at size.** SQLite rewrites the table header and no
+  row, so a 25 000-row `process` lookup migrates as fast as an empty one. Column
+  order does not matter either: SQLDelight expands `SELECT *` into an explicit
+  list of names at generation time, so a column appended at the end is read by
+  name like every other one.
 
 ## Checking a change against a live machine
 
