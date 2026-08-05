@@ -376,17 +376,17 @@ harmon-collector → RawSystemSnapshot (parentPid уже внутри)
 - Modify: `history-sqlite/src/dev/yoda/harmon/history/HistoryStore.kt`
 - Modify: `history-sqlite/test/HistoryProcessRowTest.kt`
 
-- [ ] добавить в `HistoryRows.kt` функцию `ProcessesQueries.markReparented(processId, capturedAt)`
-- [ ] в цикле `record` (`HistoryStore.kt:136-143`) вынести id процесса в локальную переменную — сейчас он вычисляется инлайн внутри вызова, а отметке он нужен отдельно
-- [ ] вызвать `markReparented` в той же транзакции при условии `reparentedFrom != null && parentPid == 1`
-- [ ] использовать `usage.capturedAt.toSqlTimestamp()` — то же представление времени, что у `sample.captured_at`
-- [ ] обновить чтение строки процесса под новую колонку
-- [ ] написать тест: сэмпл с переходом к `ppid=1` ставит `reparented_at`, равный `captured_at` этого сэмпла
-- [ ] написать тест: переход к родителю, отличному от 1, отметки **не** ставит
-- [ ] написать тест: сэмпл без перехода оставляет `reparented_at` равным null
-- [ ] написать тест: `parent_pid` остаётся прежним — виновник не затирается переходом
-- [ ] написать тест: повторный сэмпл с тем же переходом не перезаписывает уже проставленную отметку
-- [ ] `./kotlin build && ./kotlin test` — должны пройти до задачи 7
+- [x] добавить в `HistoryRows.kt` функцию `ProcessesQueries.markReparented(processId, capturedAt)`
+- [x] в цикле `record` (`HistoryStore.kt:136-143`) вынести id процесса в локальную переменную — сейчас он вычисляется инлайн внутри вызова, а отметке он нужен отдельно
+- [x] вызвать `markReparented` в той же транзакции при условии `reparentedFrom != null && parentPid == 1`
+- [x] использовать `usage.capturedAt.toSqlTimestamp()` — то же представление времени, что у `sample.captured_at`
+- [x] обновить чтение строки процесса под новую колонку — правки не потребовалось: сгенерированный `Process` уже несёт `reparented_at` (`selectProcesses` разворачивает `SELECT *` по именам), а в `src/` эту строку никто не читает — `selectProcesses()` вызывается только из тестов, доменного маппинга у `process` нет
+- [x] написать тест: сэмпл с переходом к `ppid=1` ставит `reparented_at`, равный `captured_at` этого сэмпла
+- [x] написать тест: переход к родителю, отличному от 1, отметки **не** ставит
+- [x] написать тест: сэмпл без перехода оставляет `reparented_at` равным null
+- [x] написать тест: `parent_pid` остаётся прежним — виновник не затирается переходом
+- [x] написать тест: повторный сэмпл с тем же переходом не перезаписывает уже проставленную отметку
+- [x] `./kotlin build && ./kotlin test` — должны пройти до задачи 7
 
 ### Task 7: Ключ конфигурации для правила
 

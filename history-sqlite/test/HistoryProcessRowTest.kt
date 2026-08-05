@@ -1,11 +1,30 @@
+import dev.yoda.harmon.history.HistoryStore
 import dev.yoda.harmon.history.insertProcessUsage
 import dev.yoda.harmon.history.upsertProcess
+import dev.yoda.harmon.model.MonitoringReport
 import dev.yoda.harmon.model.ProcessIdentity
 import dev.yoda.harmon.model.ProcessUsage
+import dev.yoda.harmon.model.ReparentedFrom
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertNotEquals
 import kotlin.test.assertNull
+import kotlin.time.Instant
+
+/** The pid of the process that loses its parent, and the pid of the parent it loses. */
+private const val ORPHANED_PID = 11
+
+private const val LOST_PARENT_PID = 4241
+
+/** A parent that is not launchd, so a change to it is a reparenting the store must not stamp. */
+private const val OTHER_PARENT_PID = 4242
+
+private const val LAUNCHD_PID = 1
+
+/** The two moments [reparentedReport] samples at, as `captured_at` stores them. */
+private const val FIRST_SAMPLE_AT = "1970-01-01T00:01:40Z"
+
+private const val SECOND_SAMPLE_AT = "1970-01-01T00:06:40Z"
 
 /**
  * Round-trips the `process` lookup and every column of `process_sample` through a real SQLite.
@@ -14,6 +33,10 @@ import kotlin.test.assertNull
  * the fixture sets `userCpuPercent == cpuPercent`, `residentBytes == physicalFootprintBytes` and
  * zero in most rates, so a transposed pair of same-typed columns would round-trip through it
  * looking correct. Here every field carries a value no other field carries.
+ *
+ * `reparented_at` is the one column with no round trip to test, because nothing writes it from a
+ * `ProcessUsage` field. It is written by `record`, for the processes it decides are worth stamping,
+ * so the tests for it go through a store over a scratch home rather than through the driver here.
  */
 class HistoryProcessRowTest {
 
@@ -181,7 +204,147 @@ class HistoryProcessRowTest {
         assertNull(stored.compressed_or_paged_out_bytes)
         assertNull(stored.virtual_memory_region_count)
     }
+
+    /**
+     * The stamp is the sample's own moment rather than a clock read at the statement, which is what
+     * lets a row in `process` be lined up with the sample that produced it — the two are the same
+     * string, and the assertion says so rather than repeating the literal twice.
+     */
+    @Test
+    fun aProcessHandedToLaunchdIsStampedWithItsSample() = withScratchHome { home ->
+        withHistoryStore(home) { store ->
+            store.record(reparentedReport(parentPid = LAUNCHD_PID, lostParent = lostParent()))
+
+            val lookup = store.storedProcess()
+            assertEquals(FIRST_SAMPLE_AT, lookup.reparented_at)
+            assertEquals(
+                store.samples().single().captured_at,
+                lookup.reparented_at,
+                "the mark and the sample that carried it must be the same moment",
+            )
+        }
+    }
+
+    /**
+     * `reparentedFrom` says the parent changed and nothing more. Only a change to launchd is a
+     * process that lost its parent; a change to any other pid is a reparenting the store has no
+     * reason to record, and the gate that decides so lives in `record` rather than in the
+     * calculator.
+     */
+    @Test
+    fun aChangeToAnyOtherParentIsNotStamped() = withScratchHome { home ->
+        withHistoryStore(home) { store ->
+            store.record(reparentedReport(parentPid = OTHER_PARENT_PID, lostParent = lostParent()))
+
+            assertNull(store.storedProcess().reparented_at)
+        }
+    }
+
+    /**
+     * The other half of that gate, and the half that keeps every daemon on the machine out of the
+     * column: a process first seen already under launchd has `parentPid == 1` and no transition to
+     * go with it. A stamp written off the parent alone would mark hundreds of rows a day.
+     */
+    @Test
+    fun aProcessThatWasAlwaysUnderLaunchdIsNotStamped() = withScratchHome { home ->
+        withHistoryStore(home) { store ->
+            store.record(reparentedReport(parentPid = LAUNCHD_PID, lostParent = null))
+
+            assertNull(store.storedProcess().reparented_at)
+        }
+    }
+
+    /**
+     * `parent_pid` freezes at first sighting because the lookup insert conflicts into a no-op, and
+     * here that freeze is the feature: the column keeps the parent that died while the new column
+     * records that it did. Stamping through the upsert instead — the obvious shortcut — would
+     * replace the culprit with pid 1 and leave nothing pointing at what went away.
+     */
+    @Test
+    fun theStampLeavesTheParentThatDiedInPlace() = withScratchHome { home ->
+        withHistoryStore(home) { store ->
+            store.record(reparentedReport(parentPid = LOST_PARENT_PID, lostParent = null))
+            store.record(
+                reparentedReport(
+                    parentPid = LAUNCHD_PID,
+                    lostParent = lostParent(),
+                    capturedAt = Instant.fromEpochSeconds(400),
+                ),
+            )
+
+            val lookup = store.storedProcess()
+            assertEquals(LOST_PARENT_PID.toLong(), lookup.parent_pid, "the culprit was overwritten")
+            assertEquals(SECOND_SAMPLE_AT, lookup.reparented_at)
+        }
+    }
+
+    /**
+     * What is stored is when the parent was lost, not when the loss was last noticed, so a second
+     * sighting must not move the stamp. `reparented_at IS NULL` in the statement is what holds it
+     * still; the second sample is deliberately taken five minutes later than the first, or an
+     * unguarded write would land the same string and the test would prove nothing.
+     */
+    @Test
+    fun aSecondSightingDoesNotMoveTheStamp() = withScratchHome { home ->
+        withHistoryStore(home) { store ->
+            val transition = reparentedReport(parentPid = LAUNCHD_PID, lostParent = lostParent())
+            store.record(transition)
+            store.record(
+                transition.copy(
+                    usage = transition.usage.copy(capturedAt = Instant.fromEpochSeconds(400)),
+                ),
+            )
+
+            assertEquals(
+                listOf(FIRST_SAMPLE_AT, SECOND_SAMPLE_AT),
+                store.samples().map { it.captured_at },
+                "the second sample has to carry a different moment for the assertion below to bite",
+            )
+            assertEquals(
+                FIRST_SAMPLE_AT,
+                store.storedProcess().reparented_at,
+            )
+        }
+    }
 }
+
+/**
+ * The one row the stamping tests write to `process`, which is also all of it they read back.
+ */
+private fun HistoryStore.storedProcess() =
+    database.processesQueries.selectProcesses().executeAsOne()
+
+/** The parent the calculator reports as lost, named the way it was named while it was alive. */
+private fun lostParent(): ReparentedFrom =
+    ReparentedFrom(pid = LOST_PARENT_PID, name = "supervisor")
+
+/**
+ * A report of the one process this file's stamping tests are about, sampled at [capturedAt] with
+ * [parentPid] as its parent and [lostParent] as the change the calculator saw — null for a process
+ * whose parent did not change at all.
+ *
+ * One process rather than a realistic set, because the assertions read `selectProcesses` as a single
+ * row: what is under test is which of the two conditions a stamp needs, and a second process would
+ * only add a row to filter out of the answer.
+ */
+private fun reparentedReport(
+    parentPid: Int,
+    lostParent: ReparentedFrom?,
+    capturedAt: Instant = Instant.fromEpochSeconds(100),
+): MonitoringReport = MonitoringReport(
+    usage = systemUsage(
+        processes = listOf(
+            processUsage(
+                pid = ORPHANED_PID,
+                name = "abandoned",
+                parentPid = parentPid,
+                reparentedFrom = lostParent,
+            ),
+        ),
+    ).copy(capturedAt = capturedAt),
+    alerts = emptyList(),
+    topProcessCount = 1,
+)
 
 /**
  * A `ProcessUsage` in which no two columns of `process` or `process_sample` share a value.

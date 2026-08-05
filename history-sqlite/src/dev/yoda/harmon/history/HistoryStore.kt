@@ -58,6 +58,9 @@ private const val REPARENTED_AT_COLUMN = "reparented_at"
 private const val ADD_REPARENTED_AT =
     "ALTER TABLE $PROCESS_TABLE ADD COLUMN $REPARENTED_AT_COLUMN TEXT"
 
+/** launchd, the parent a process whose own parent died is handed to on Darwin. */
+private const val INIT_PID = 1
+
 /**
  * The agent's history: the database file, the connection to it, and the generated queries over it.
  *
@@ -123,6 +126,15 @@ class HistoryStore(
      * Left out, the tables holding it keep whatever a previous run wrote — the callers with no
      * alert state to speak of, `once` and `diagnose`, are also the ones that must not overwrite it.
      *
+     * A process the calculator saw change parent to [INIT_PID] is stamped in the same pass, through
+     * a statement of its own rather than through another column of the lookup upsert: that upsert
+     * runs for every process on every sample, and this event fires zero times a day on a machine
+     * where nothing died. The `parentPid == INIT_PID` half of the condition is repeated here rather
+     * than shared with the alert rule that also applies it. `ProcessUsage.reparentedFrom` reports a
+     * change of parent and says nothing about whether it was a loss; each of its two consumers
+     * decides that for itself, and a store that trusted the calculator to have filtered already
+     * would record whatever a future rule decided to report.
+     *
      * This is also where retention runs from, about once an hour — every twelfth sample at the
      * default interval, and a different count at any other; see `pruneIfDue` and [shouldPrune].
      * Hanging it off the write path is deliberate — a retention nothing calls is a database that
@@ -162,12 +174,19 @@ class HistoryStore(
             }
 
             for (process in usage.processes) {
+                val processId = processes.upsertProcess(process)
                 processes.insertProcessUsage(
                     sampleId = sampleId,
-                    processId = processes.upsertProcess(process),
+                    processId = processId,
                     applicationId = applicationIdByPid[process.identity.pid],
                     usage = process,
                 )
+                if (process.reparentedFrom != null && process.parentPid == INIT_PID) {
+                    processes.markReparented(
+                        processId = processId,
+                        capturedAt = usage.capturedAt.toSqlTimestamp(),
+                    )
+                }
             }
 
             report.alerts.forEach { alerts.insertReportedAlert(sampleId, it) }
