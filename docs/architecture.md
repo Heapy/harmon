@@ -161,10 +161,9 @@ Each sample is one transaction: the system row, every process, every
 application group that has a bundle, the alerts, the delivery results, the alert
 state the next sample starts from, and the `process.reparented_at` stamp for any
 process the calculator saw handed to launchd in this sample. Groups without a
-bundle are left out
-on purpose — `ApplicationGrouper` gives every such process a group of its own,
-and writing it would duplicate the process row it already wrote, line for line,
-several hundred times a sample.
+bundle are left out on purpose — `ApplicationGrouper` gives every such process a
+group of its own, and writing it would duplicate the process row it already
+wrote, line for line, several hundred times a sample.
 
 History is an addition to monitoring rather than a precondition for it. A
 database that cannot be opened costs the run its history and is reported once. A
@@ -305,12 +304,13 @@ paths and detailed collection failures.
 
 That metadata is no longer transient. The agent writes every sample to
 `~/Library/Application Support/Harmon/history.db` and keeps it for
-`historyRetentionDays` — seven by default — so process names, uids, parent pids,
-executable paths, and the moment any of those processes was handed to launchd
-sit on disk for a week rather than for the length of one report. The protection is `0700` on the containing directory, not a mode on the
-file: SQLite recreates `history.db-wal` and `history.db-shm` beside it on every
-open, both carry the same metadata, and any mode set on those would be gone the
-next time they were created. `historyRetentionDays=0` is how a user opts out of
+`historyRetentionDays` — seven by default — so process names, uids, parent
+pids, executable paths, and the moment any of those processes was handed to
+launchd sit on disk for a week rather than for the length of one report. The
+protection is `0700` on the containing directory, not a mode on the file:
+SQLite recreates `history.db-wal` and `history.db-shm` beside it on every open,
+both carry the same metadata, and any mode set on those would be gone the next
+time they were created. `historyRetentionDays=0` is how a user opts out of
 persistence entirely; the file is then never created.
 
 The root process is the separate `harmon-collector` image. It contains neither

@@ -6,9 +6,6 @@ import app.cash.sqldelight.db.SqlSchema
 import app.cash.sqldelight.driver.native.NativeSqliteDriver
 import dev.yoda.harmon.db.HarmonDatabase
 import dev.yoda.harmon.history.HistoryStore
-import dev.yoda.harmon.model.INIT_PID
-import dev.yoda.harmon.model.MonitoringReport
-import dev.yoda.harmon.model.ReparentedFrom
 import kotlinx.cinterop.ExperimentalForeignApi
 import platform.Foundation.NSFileManager
 import platform.posix.S_IRUSR
@@ -22,13 +19,11 @@ import kotlin.test.assertNotNull
 import kotlin.test.assertNull
 import kotlin.test.assertTrue
 import kotlin.test.fail
-import kotlin.time.Instant
-
-private const val HISTORY_DIRECTORY = "Library/Application Support/Harmon"
-
-private const val HISTORY_DATABASE_NAME = "history.db"
 
 private const val REPARENTED_AT = "reparented_at"
+
+/** The column `PRAGMA table_info` answers a column's name in: cid, **name**, type, … */
+private const val TABLE_INFO_NAME_COLUMN = 1
 
 /** The pid the pre-migration row is written under, and the parent it was written with. */
 private const val STORED_PID = 44_559L
@@ -36,11 +31,6 @@ private const val STORED_PID = 44_559L
 private const val STORED_PARENT_PID = 44_268L
 
 private const val STORED_NAME = "written-before-the-column-existed"
-
-/** The process the post-migration sample stamps, and the moment that sample is taken at. */
-private const val ORPHANED_PID = 44_560L
-
-private const val SAMPLE_AT = "1970-01-01T00:01:40Z"
 
 /**
  * Covers the one thing `Schema.create()` can never be asked about: what happens to a database file
@@ -153,9 +143,9 @@ class HistoryMigrationTest {
 
             val written = store.database.processesQueries.selectProcesses().executeAsOne()
 
-            assertEquals(ORPHANED_PID, written.pid)
+            assertEquals(ORPHANED_PID.toLong(), written.pid)
             assertEquals(
-                SAMPLE_AT,
+                FIRST_SAMPLE_AT,
                 written.reparented_at,
                 "a migrated file has to take the write the new column exists for",
             )
@@ -241,7 +231,7 @@ class HistoryMigrationTest {
                         "${store.driver.processColumns()}",
                 )
                 assertEquals(
-                    SAMPLE_AT,
+                    FIRST_SAMPLE_AT,
                     store.database.processesQueries.selectProcesses().executeAsOne().reparented_at,
                     "and then take the sample into the widened table",
                 )
@@ -289,7 +279,7 @@ class HistoryMigrationTest {
                         "${driver.processColumns()}",
                 )
                 assertEquals(
-                    SAMPLE_AT,
+                    FIRST_SAMPLE_AT,
                     store.database.processesQueries.selectProcesses().executeAsOne().reparented_at,
                     "and then take the sample into the widened table",
                 )
@@ -336,7 +326,7 @@ class HistoryMigrationTest {
                     "and the column stays the one column it is: ${driver.processColumns()}",
                 )
                 assertEquals(
-                    SAMPLE_AT,
+                    FIRST_SAMPLE_AT,
                     store.database.processesQueries.selectProcesses().executeAsOne().reparented_at,
                     "the sample has to land in the column the other writer added",
                 )
@@ -510,7 +500,7 @@ private fun withStoreOver(
     body: (HistoryStore) -> Unit,
 ) = body(
     HistoryStore(
-        directory = "$home/$HISTORY_DIRECTORY",
+        directory = historyDirectory(home),
         driver = driver,
         retentionDays = 7,
         intervalSeconds = 300,
@@ -532,7 +522,7 @@ private fun withStoreOver(
  */
 @OptIn(ExperimentalForeignApi::class)
 private fun <T> withUnopenableDatabase(home: String, body: () -> T): T {
-    val path = "$home/$HISTORY_DIRECTORY/$HISTORY_DATABASE_NAME"
+    val path = historyDatabasePath(home)
     if (chmod(path, 0u) != 0) {
         fail("cannot take the mode off $path")
     }
@@ -697,7 +687,7 @@ private fun productionShapedDriver(home: String, schema: SqlSchema<QueryResult.V
             configuration.copy(
                 extendedConfig = configuration.extendedConfig.copy(
                     foreignKeyConstraints = true,
-                    basePath = "$home/$HISTORY_DIRECTORY".also {
+                    basePath = historyDirectory(home).also {
                         NSFileManager.defaultManager
                             .createDirectoryAtPath(it, true, null, null)
                     },
@@ -711,22 +701,6 @@ private fun productionShapedDriver(home: String, schema: SqlSchema<QueryResult.V
         },
     )
 
-/** One sample carrying a process that lost its parent, taken after the migration has run. */
-private fun orphanReport(): MonitoringReport = MonitoringReport(
-    usage = systemUsage(
-        processes = listOf(
-            processUsage(
-                pid = ORPHANED_PID.toInt(),
-                name = "abandoned",
-                parentPid = INIT_PID,
-                reparentedFrom = ReparentedFrom(pid = 44_268, name = "supervisor"),
-            ),
-        ),
-    ).copy(capturedAt = Instant.fromEpochSeconds(100)),
-    alerts = emptyList(),
-    topProcessCount = 1,
-)
-
 /**
  * The column names of `process`, read the way the migration itself reads them.
  *
@@ -739,7 +713,7 @@ private fun SqlDriver.processColumns(): List<String> = executeQuery(
     mapper = { cursor ->
         val names = mutableListOf<String>()
         while (cursor.next().value) {
-            cursor.getString(1)?.let(names::add)
+            cursor.getString(TABLE_INFO_NAME_COLUMN)?.let(names::add)
         }
         QueryResult.Value(names)
     },

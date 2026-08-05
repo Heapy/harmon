@@ -22,6 +22,11 @@ private const val EXAMPLE_CONFIG_KEY = "HARMON_EXAMPLE_CONFIG"
  * has changed nothing. Nothing else in the suite reads this file: every other config test writes its
  * own lines, which is precisely how a typo in the shipped one stays green.
  *
+ * The other direction is the one the loader cannot fail on at all. A key the example forgets parses
+ * perfectly, so completeness is asserted against `ConfigLoader.configurableKeys` — the set the
+ * loader itself accepts by — rather than key by key: a rule added to the agent and not to the
+ * example is a documented setting no shipped file names, and this is where that shows up.
+ *
  * The environment is passed empty rather than read, because `parse` lets `HARMON_WEBHOOK_URL` and
  * friends override what the file says — a developer with one exported would otherwise be testing
  * their shell rather than the example.
@@ -32,7 +37,7 @@ private const val EXAMPLE_CONFIG_KEY = "HARMON_EXAMPLE_CONFIG"
  */
 class ExampleConfigTest {
     @Test
-    fun theShippedExampleParsesWithEveryKeyItNames() {
+    fun theShippedExampleParsesAndNamesEveryConfigurableKey() {
         val path = absolutePath(
             readEnvironment(EXAMPLE_CONFIG_KEY)?.takeIf { it.isNotBlank() } ?: EXAMPLE_CONFIG,
         )
@@ -50,9 +55,10 @@ class ExampleConfigTest {
         )
 
         assertEquals(emptyList(), warnings, "the shipped example must not name a retired key")
-        assertTrue(
-            lines.any { it.startsWith("orphanAlerts=") },
-            "the example is expected to carry every key documented as configurable",
+        assertEquals(
+            emptySet(),
+            ConfigLoader.configurableKeys - lines.mapNotNullTo(mutableSetOf()) { it.keyOrNull() },
+            "the example has to carry every key documented as configurable",
         )
         assertTrue(config.orphanAlerts, "the example ships the rule on, as the README says it does")
     }
@@ -61,3 +67,16 @@ class ExampleConfigTest {
 @OptIn(ExperimentalForeignApi::class)
 private fun exampleConfigLines(path: String): List<String>? =
     NSString.stringWithContentsOfFile(path, NSUTF8StringEncoding, null)?.lines()
+
+/**
+ * The key this line assigns, or null for the comments and blanks the loader skips.
+ *
+ * Read here rather than through the parsed config, which cannot answer the question: every value
+ * has a default, so a key the example never names comes back from `parse` looking exactly like one
+ * it names and leaves empty.
+ */
+private fun String.keyOrNull(): String? = trim()
+    .takeUnless { it.isEmpty() || it.startsWith("#") }
+    ?.substringBefore('=', missingDelimiterValue = "")
+    ?.trim()
+    ?.takeIf { it.isNotEmpty() }

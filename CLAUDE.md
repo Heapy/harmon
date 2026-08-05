@@ -235,7 +235,7 @@ core/         kmp/lib with model, protocol, policy, config, reports, and runtime
   src/        no project cinterop and no SQLDelight types
   test/       pure/core tests and module-local TestFixtures.kt
 history-sqlite/
-  src/        HistoryStore, row mappings, and retention
+  src/        HistoryStore, the schema migration, row mappings, and retention
   sqldelight/ schema and queries; generated code goes to the build tree
   test/       real-sqlite tests and its own duplicated model fixtures
 harmon-collector/

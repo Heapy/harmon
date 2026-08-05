@@ -260,7 +260,7 @@ class AlertAnalyzer {
 
         if (config.orphanAlerts) {
             addAll(
-                orphanAlerts(
+                orphanAlertsFor(
                     processes = usage.processes,
                     maxPerCategory = config.maxAlertsPerCategory,
                     suppressed = suppressed,
@@ -291,7 +291,7 @@ class AlertAnalyzer {
      * The key says `orphan` while the history column recording the same fact is `reparented_at`;
      * `Processes.sq` carries why the two vocabularies differ.
      */
-    private fun orphanAlerts(
+    private fun orphanAlertsFor(
         processes: List<ProcessUsage>,
         maxPerCategory: Int,
         suppressed: MutableSet<String>,

@@ -32,7 +32,7 @@ class UsageCalculator(
         val elapsedNanoseconds = current.monotonicTimeNs - previous.monotonicTimeNs
         val elapsedSeconds = elapsedNanoseconds.toDouble() / NANOSECONDS_PER_SECOND
         val previousByIdentity = previous.processes.associateBy { it.identity }
-        val previousNameByPid = previousNameByPid(previous)
+        val previousNameByPid = buildNamesByPid(previous)
 
         val processes = current.processes.map { currentProcess ->
             val previousProcess = previousByIdentity[currentProcess.identity]
@@ -40,7 +40,7 @@ class UsageCalculator(
                 previousProcess,
                 currentProcess,
                 elapsedSeconds,
-                reparentedFrom(previousProcess, currentProcess, previousNameByPid),
+                detectReparenting(previousProcess, currentProcess, previousNameByPid),
             )
         }
 
@@ -75,7 +75,7 @@ class UsageCalculator(
      * parent tends to be — a supervisor whose `proc_pid_rusage` was refused would otherwise
      * make the alert about it name a bare pid, in the case where naming it matters most.
      */
-    private fun previousNameByPid(previous: RawSystemSnapshot): Map<Int, String> = buildMap {
+    private fun buildNamesByPid(previous: RawSystemSnapshot): Map<Int, String> = buildMap {
         for (issue in previous.processIssues) {
             issue.name?.let { put(issue.pid, it) }
         }
@@ -94,19 +94,22 @@ class UsageCalculator(
      * the lookup key is the whole identity — a different process wearing a recycled pid has
      * a different `startedAt` and simply misses.
      *
-     * A parent pid of zero on either side is not a pid at all. The collector pre-sets the
-     * field to 0 and leaves it there whenever `proc_pidinfo(PROC_PIDTBSDINFO)` does not
-     * return a whole struct, while still emitting the sample — the sample is decided by
-     * `proc_pid_rusage` alone. So a process whose metadata read failed in one sample and
+     * A parent pid that is not positive on either side is not a pid at all. The collector
+     * pre-sets the field to 0 and leaves it there whenever `proc_pidinfo(PROC_PIDTBSDINFO)`
+     * does not return a whole struct, while still emitting the sample — the sample is decided
+     * by `proc_pid_rusage` alone. So a process whose metadata read failed in one sample and
      * succeeded in the next would otherwise read as a `0 -> 1` transition and be reported as
-     * having lost a parent that never existed. `DarwinSystemCollector` takes the same reading
-     * of 0 on the issue path, where it maps it to a null parent.
+     * having lost a parent that never existed. Zero is the only such value the collector
+     * produces; the guard is written for every non-positive one because that is the reading
+     * `DarwinSystemCollector` already takes on the issue path, where `takeIf { it > 0 }` maps
+     * anything else to a null parent, and a guard narrower than that one would disagree with
+     * it the day a kernel answered with something stranger.
      *
      * The result says the parent changed, nothing more. Whether the new parent being pid 1
      * makes this an orphan worth reporting is left to the consumer, so this calculator stays
      * a pure function of the two snapshots.
      */
-    private fun reparentedFrom(
+    private fun detectReparenting(
         previous: RawProcessSample?,
         current: RawProcessSample,
         previousNameByPid: Map<Int, String>,

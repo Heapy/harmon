@@ -55,6 +55,3 @@ private fun configuredHistory(config: HarmonConfig, home: String): HistoryStore?
             homeDirectory = home,
         )
     }
-
-private fun historyDatabasePath(home: String): String =
-    "$home/Library/Application Support/Harmon/history.db"

@@ -27,7 +27,7 @@
 -- The type is a time string, not REFERENCES sample(id). Retention deletes old samples, so an
 -- ON DELETE CASCADE would take the process row with them and a SET NULL would erase the fact itself
 -- once the sample that carried it left the window. A timestamp survives the pruning of the sample it
--- was written in -- which is all it claims: once the last process_sample naming the process leaves
+-- was written in — which is all it claims: once the last process_sample naming the process leaves
 -- the window, deleteOrphanProcesses below takes the row and the stamp with it. It is written in the
 -- same ISO-8601 representation as sample.captured_at.
 CREATE TABLE process (

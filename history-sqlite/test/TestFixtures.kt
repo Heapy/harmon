@@ -8,6 +8,7 @@ import dev.yoda.harmon.history.HistoryStore
 import dev.yoda.harmon.history.insertSample
 import dev.yoda.harmon.model.Alert
 import dev.yoda.harmon.model.DeliveryResult
+import dev.yoda.harmon.model.INIT_PID
 import dev.yoda.harmon.model.LoadAverages
 import dev.yoda.harmon.model.MonitoringReport
 import dev.yoda.harmon.model.NotificationPayload
@@ -349,6 +350,65 @@ fun alert(
     title = title,
     message = message,
 )
+
+/** The process that loses its parent in [orphanReport], and the parent it loses. */
+const val ORPHANED_PID = 11
+
+const val LOST_PARENT_PID = 4_241
+
+/** The parent the calculator reports as lost, named the way it was named while it was alive. */
+val LOST_PARENT: ReparentedFrom = ReparentedFrom(pid = LOST_PARENT_PID, name = "supervisor")
+
+/** The moment [orphanReport] samples at by default, and the string `captured_at` stores it as. */
+val FIRST_SAMPLE: Instant = Instant.fromEpochSeconds(100)
+
+const val FIRST_SAMPLE_AT = "1970-01-01T00:01:40Z"
+
+/**
+ * Five minutes later, for the tests that take a second sample: an unguarded second write of the
+ * same moment would land the same string and prove nothing.
+ */
+val SECOND_SAMPLE: Instant = Instant.fromEpochSeconds(400)
+
+const val SECOND_SAMPLE_AT = "1970-01-01T00:06:40Z"
+
+/**
+ * One sample of a single process, sampled at [capturedAt] with [parentPid] as its parent and
+ * [lostParent] as the change the calculator saw — null for a process whose parent did not change.
+ *
+ * One process rather than a realistic set, because every test that reaches for this reads
+ * `selectProcesses` as a single row: what they ask is which of the two conditions a stamp needs, or
+ * what becomes of the one lookup row that two samples both name, and a second process would only be
+ * something to filter back out of the answer. That the stamp reaches the row it is about rather
+ * than every row is the separate question `sampleAroundOneOrphan` in `HistoryProcessRowTest` exists
+ * for, and that is why the wider shape stays local to it.
+ */
+fun orphanReport(
+    capturedAt: Instant = FIRST_SAMPLE,
+    parentPid: Int = INIT_PID,
+    lostParent: ReparentedFrom? = LOST_PARENT,
+): MonitoringReport = MonitoringReport(
+    usage = systemUsage(
+        processes = listOf(
+            processUsage(
+                pid = ORPHANED_PID,
+                name = "abandoned",
+                parentPid = parentPid,
+                reparentedFrom = lostParent,
+            ),
+        ),
+    ).copy(capturedAt = capturedAt),
+    alerts = emptyList(),
+    topProcessCount = 1,
+)
+
+/** The database file `HistoryStore.openOrNull` opens under a home directory. */
+const val HISTORY_DATABASE_NAME = "history.db"
+
+/** The directory that store keeps it in, named once for every test that has to reach the file. */
+fun historyDirectory(home: String): String = "$home/Library/Application Support/Harmon"
+
+fun historyDatabasePath(home: String): String = "${historyDirectory(home)}/$HISTORY_DATABASE_NAME"
 
 /**
  * Runs [body] against a home directory created for this test alone and removed afterwards.

@@ -360,16 +360,16 @@ freeze doing its job.
 Three choices in how it is written and typed. It is set by a statement of its
 own, `markReparented`, rather than by the lookup upsert, which runs for every
 process on every sample to record something that fires zero times a day on a
-healthy machine. That statement carries
-`WHERE reparented_at IS NULL`, so a repeated write moves nothing — the column
-records when the parent was lost, not when the loss was last noticed. And it is
-a time string rather than a `REFERENCES sample(id)` because retention deletes
-old samples: `ON DELETE CASCADE` would take the process row down with the sample
-that carried the fact and `SET NULL` would erase the fact while keeping the row.
-What the timestamp buys is precisely that — it outlives the pruning of the
-sample it was written in. It does not outlive retention as such: once the last
-`process_sample` naming the process leaves the window, `deleteOrphanProcesses`
-takes the whole row, stamp included.
+healthy machine. That statement carries `WHERE reparented_at IS NULL`, so a
+repeated write moves nothing — the column records when the parent was lost, not
+when the loss was last noticed. And it is a time string rather than a
+`REFERENCES sample(id)` because retention deletes old samples: `ON DELETE
+CASCADE` would take the process row down with the sample that carried the fact
+and `SET NULL` would erase the fact while keeping the row. What the timestamp
+buys is precisely that — it outlives the pruning of the sample it was written
+in. It does not outlive retention as such: once the last `process_sample`
+naming the process leaves the window, `deleteOrphanProcesses` takes the whole
+row, stamp included.
 
 The column is not called `orphaned_at` because `orphan` already means something
 else here: `deleteOrphanProcesses` and `deleteOrphanApplications` call a row
@@ -625,8 +625,9 @@ an oversight — it is what those two flags produce. Adding a migration file and
 expecting the driver to apply it is the one mistake this section exists to
 prevent.
 
-Schema evolution therefore belongs in `HistoryStore` itself, in the two forms
-SQLite allows without one:
+Schema evolution therefore belongs to whoever opens the store, which here is
+`SchemaMigration.kt` beside `HistoryStore`, in the two forms SQLite allows
+without one:
 
 - a new table as `CREATE TABLE IF NOT EXISTS` when the store opens;
 - a new column as an `ALTER TABLE … ADD COLUMN` guarded by a read of
@@ -708,17 +709,17 @@ pragma normally and then fails the `ALTER` with `SQLITE_BUSY`. Classifying by
 run at exactly the start the migration is due to run at.
 
 The retry is bounded to three attempts per run — one while `openOrNull` is still
-opening and two samples after it, `MIGRATION_ATTEMPTS` in `HistoryStore`. That
-bound is what makes a file which is reachable and permanently broken — corrupt,
-not a database at all — survivable rather than merely non-fatal. It fails the
-migration exactly as a locked file does, so it takes the retry path; on the third
-failure the store logs `history disabled: …`, closes the driver and turns
-`record` into a no-op for the rest of the run. Retried on every sample instead it
-would leak: `NativeDatabaseManager.createConnection` closes a connection whose
-`migrateIfNeeded` threw and nothing else, so a connection whose
+opening and two samples after it, `MIGRATION_ATTEMPTS` in `SchemaMigration.kt`.
+That bound is what makes a file which is reachable and permanently broken —
+corrupt, not a database at all — survivable rather than merely non-fatal. It
+fails the migration exactly as a locked file does, so it takes the retry path;
+on the third failure the store logs `history disabled: …`, closes the driver
+and turns `record` into a no-op for the rest of the run. Retried on every
+sample instead it would leak: `NativeDatabaseManager.createConnection` closes a
+connection whose `migrateIfNeeded` threw and nothing else, so a connection whose
 `onCreateConnection` pragma threw — which is what a file that is not a database
-does to `PRAGMA auto_vacuum` — is dropped still open. That is a leaked descriptor
-every interval, for a daemon that never returns.
+does to `PRAGMA auto_vacuum` — is dropped still open. That is a leaked
+descriptor every interval, for a daemon that never returns.
 
 The stack trace sqliter prints beside it is noise rather than a second reason for
 the bound, and it is noise this project could switch off:

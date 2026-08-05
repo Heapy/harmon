@@ -3,9 +3,7 @@ import dev.yoda.harmon.history.retentionCutoff
 import dev.yoda.harmon.history.shouldPrune
 import dev.yoda.harmon.history.toSqlTimestamp
 import dev.yoda.harmon.model.DeliveryResult
-import dev.yoda.harmon.model.INIT_PID
 import dev.yoda.harmon.model.MonitoringReport
-import dev.yoda.harmon.model.ReparentedFrom
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertTrue
@@ -209,8 +207,8 @@ class RetentionTest {
     fun theReparentingStampOutlivesTheSampleThatWroteItButNotTheProcess() =
         withScratchHome { home ->
             withHistoryStore(home) { store ->
-                store.record(orphanReport(capturedAt = ANCIENT, lostItsParent = true))
-                store.record(orphanReport(capturedAt = RECENT, lostItsParent = false))
+                store.record(orphanReport(capturedAt = ANCIENT))
+                store.record(orphanReport(capturedAt = RECENT, lostParent = null))
 
                 store.prune(retentionCutoff(RECENT, retentionDays = 7))
 
@@ -402,26 +400,3 @@ private fun reportOf(
 private fun deliveries(): List<DeliveryResult> = listOf(
     DeliveryResult(channel = "notification-center", successful = true, detail = "posted"),
 )
-
-/**
- * One sample of a single process, which lost its parent in it when [lostItsParent] says so.
- *
- * Its own builder rather than [reportOf], because the retention question here is about one lookup
- * row that two samples both name, and a second process would only have to be filtered back out.
- */
-private fun orphanReport(capturedAt: Instant, lostItsParent: Boolean): MonitoringReport =
-    MonitoringReport(
-        usage = systemUsage(
-            processes = listOf(
-                processUsage(
-                    pid = 11,
-                    name = "abandoned",
-                    parentPid = INIT_PID,
-                    reparentedFrom = ReparentedFrom(pid = 4_241, name = "supervisor")
-                        .takeIf { lostItsParent },
-                ),
-            ),
-        ).copy(capturedAt = capturedAt),
-        alerts = emptyList(),
-        topProcessCount = 1,
-    )

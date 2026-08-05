@@ -159,7 +159,16 @@ object ConfigLoader {
      */
     private const val DEPRECATED_COOLDOWN_KEY = "alertCooldownSeconds"
 
-    private val knownKeys = setOf(
+    /**
+     * Every key a config file may name that is still the way to name it.
+     *
+     * Public because it is the only enumeration of them: `ExampleConfigTest` reads it to assert
+     * that the shipped `config/harmon.conf.example` carries the lot, which is a check nothing else
+     * performs — a key added here and forgotten there ships a documented setting no example names.
+     * [legacyKeyAliases] is deliberately outside it: those spellings are accepted so an existing
+     * file keeps working, and the example must not teach them to a new one.
+     */
+    val configurableKeys = setOf(
         "intervalSeconds",
         "collectorSocket",
         "onceSampleSeconds",
@@ -182,7 +191,9 @@ object ConfigLoader {
         "webhookBearerToken",
         "telegramBotToken",
         "telegramChatId",
-    ) + legacyKeyAliases.keys
+    )
+
+    private val knownKeys = configurableKeys + legacyKeyAliases.keys
 
     @OptIn(ExperimentalForeignApi::class)
     fun defaultPath(): String {
