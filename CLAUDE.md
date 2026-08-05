@@ -179,8 +179,11 @@ to leave no file behind. What that read cannot do is tell the two failures
 apart. It goes to the reader pool and the `ALTER TABLE` after it goes to the
 transaction pool, so they are two connections and in WAL a locked file answers
 the first and refuses the second — the classification is therefore SQLite's
-error code (`SQLITE_ERROR` is a wrong shape and disables history; a busy, full
-or unopenable file is retried), bounded to three attempts a run.
+error code (a busy, full or unopenable file is retried, bounded to three attempts
+a run; `SQLITE_ERROR` is a wrong shape and disables history). That code alone is
+not enough for the verdict: `duplicate column name` carries it too and means the
+column is already there, so the store reads the table a second time and takes a
+column another writer added as a migration that succeeded.
 
 **`PRAGMA auto_vacuum` belongs in `lifecycleConfig.onCreateConnection`.** That
 is the only hook sqliter runs before it applies `journal_mode`

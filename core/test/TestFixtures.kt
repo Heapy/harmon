@@ -152,10 +152,9 @@ fun rawSnapshot(
 fun rawProcessIssue(
     pid: Int,
     name: String?,
-    parentPid: Int? = null,
 ): ProcessCollectionIssue = ProcessCollectionIssue(
     pid = pid,
-    parentPid = parentPid,
+    parentPid = null,
     uid = 501u,
     name = name,
     executablePath = null,

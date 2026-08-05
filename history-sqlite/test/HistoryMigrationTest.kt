@@ -1,6 +1,7 @@
 import app.cash.sqldelight.db.AfterVersion
 import app.cash.sqldelight.db.QueryResult
 import app.cash.sqldelight.db.SqlDriver
+import app.cash.sqldelight.db.SqlPreparedStatement
 import app.cash.sqldelight.db.SqlSchema
 import app.cash.sqldelight.driver.native.NativeSqliteDriver
 import dev.yoda.harmon.db.HarmonDatabase
@@ -162,7 +163,7 @@ class HistoryMigrationTest {
     }
 
     /**
-     * The failure the store's `init` KDoc promises, exercised rather than described.
+     * The failure the store's `openOrNull` KDoc promises, exercised rather than described.
      *
      * A file stamped `user_version = 1` with no `process` table in it is what a corrupted or
      * hand-edited database looks like from sqliter's side: it runs no `create`, the migration finds
@@ -297,6 +298,53 @@ class HistoryMigrationTest {
     }
 
     /**
+     * The other thing those two connections can do to each other, and the one that looks like a
+     * verdict without being one.
+     *
+     * `duplicate column name: reparented_at` fails while the statement is being compiled, under the
+     * same `SQLITE_ERROR` as `no such table: process`, so the error code cannot tell them apart. The
+     * event behind it is the opposite one: some other writer — a second agent, an overlapping
+     * launchd restart — widened the table between this store's `PRAGMA table_info` and its
+     * `ALTER TABLE`, which means the column the migration exists to add is already there. Read as a
+     * verdict it would hand back no store, or close the driver mid-run, over a database that is
+     * exactly the shape the queries want.
+     *
+     * The other writer is [RacedMigrationDriver] rather than a second process, because the race has
+     * to land inside a single `ALTER TABLE` call and nothing outside the store can time it there.
+     * What reaches the store is the same statement failing the same way; `raced` is asserted so that
+     * a migration that stopped issuing this SQL cannot pass here by never racing at all.
+     */
+    @Test
+    fun aColumnAnotherWriterAddedFirstIsAMigrationThatSucceeded() = withScratchHome { home ->
+        writePreMigrationDatabase(home)
+        val logged = mutableListOf<String>()
+
+        withPreMigrationDriver(home) { driver ->
+            val racing = RacedMigrationDriver(driver)
+            withStoreOver(racing, home, logged) { store ->
+                store.record(orphanReport())
+
+                assertTrue(racing.raced, "the fixture has to have widened the table under the ALTER")
+                assertEquals(
+                    emptyList(),
+                    logged,
+                    "a database another writer already migrated is not a broken one: $logged",
+                )
+                assertEquals(
+                    1,
+                    driver.processColumns().count { it == REPARENTED_AT },
+                    "and the column stays the one column it is: ${driver.processColumns()}",
+                )
+                assertEquals(
+                    SAMPLE_AT,
+                    store.database.processesQueries.selectProcesses().executeAsOne().reparented_at,
+                    "the sample has to land in the column the other writer added",
+                )
+            }
+        }
+    }
+
+    /**
      * The bound on that retry, which is the other half of it being survivable.
      *
      * A file that is reachable and permanently broken — corrupt, not a database at all — fails the
@@ -340,6 +388,85 @@ class HistoryMigrationTest {
                 }
             }
         }
+    }
+
+    /**
+     * What that bound is, which the test above deliberately does not say and nothing else pins.
+     *
+     * Three attempts a run — one inside `openOrNull` and two writes — is what `MIGRATION_ATTEMPTS`,
+     * `docs/history.md` and `CLAUDE.md` all state, and the only test that counts attempts builds its
+     * store through the constructor, where every attempt is a write. So the open's share of the
+     * budget is asserted here or nowhere: were it to stop spending an attempt, or spend two, the
+     * store would quietly get three writes or one and both documents would go stale against a green
+     * suite.
+     *
+     * The database stays unopenable for the whole run, so every attempt fails the same way and the
+     * count is the only variable. The log is what marks the boundary: silence while the budget
+     * lasts, one `history disabled: …` as the last attempt is spent, and silence again afterwards
+     * from a store that no longer tries.
+     */
+    @Test
+    fun theMigrationBudgetIsOneAttemptAtOpenAndTwoWrites() = withScratchHome { home ->
+        writePreMigrationDatabase(home)
+        val logged = mutableListOf<String>()
+
+        withUnopenableDatabase(home) {
+            val store = HistoryStore.openOrNull(
+                retentionDays = 7,
+                intervalSeconds = 300,
+                homeDirectory = home,
+                logError = { logged += it },
+            ) ?: fail("a database that is only unreachable must not cost the run history")
+
+            assertEquals(1, logged.size, "opening spends the first attempt and says so: $logged")
+            assertFalse(
+                logged.single().startsWith("history disabled: "),
+                "an unreachable database is not a disabled one: ${logged.single()}",
+            )
+
+            assertFails("the first write spends the second attempt") { store.record(orphanReport()) }
+            assertEquals(1, logged.size, "which is not the end of the budget: $logged")
+
+            assertFails("the second write spends the last one") { store.record(orphanReport()) }
+            assertEquals(2, logged.size, "and that one ends it, once: $logged")
+            assertTrue(
+                logged.last().startsWith("history disabled: "),
+                "the reason has to name history rather than the sample: ${logged.last()}",
+            )
+
+            store.record(orphanReport())
+
+            assertEquals(2, logged.size, "a store that gave up neither tries nor says so again")
+        }
+    }
+}
+
+/**
+ * The pre-migration [delegate] with another writer inside it: the first
+ * `ALTER TABLE … ADD COLUMN` it is handed is run twice, so the caller's own attempt meets a column
+ * that already exists.
+ *
+ * Interface delegation rather than a hand-written driver — the store reaches for transactions,
+ * queries and `close` through the same object, and every one of them has to be the real thing for
+ * the sample after the migration to be written at all.
+ */
+private class RacedMigrationDriver(private val delegate: SqlDriver) : SqlDriver by delegate {
+
+    /** Whether the race has been run, so that a test can assert it happened rather than assume it. */
+    var raced = false
+        private set
+
+    override fun execute(
+        identifier: Int?,
+        sql: String,
+        parameters: Int,
+        binders: (SqlPreparedStatement.() -> Unit)?,
+    ): QueryResult<Long> {
+        if (!raced && sql.startsWith("ALTER TABLE process ADD COLUMN")) {
+            raced = true
+            delegate.execute(identifier = null, sql = sql, parameters = parameters).value
+        }
+        return delegate.execute(identifier, sql, parameters, binders)
     }
 }
 

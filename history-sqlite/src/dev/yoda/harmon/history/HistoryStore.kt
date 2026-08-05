@@ -67,11 +67,19 @@ private const val ADD_REPARENTED_AT =
  *
  * The retry is there for the failure that is about the moment rather than about the file — a lock
  * the previous agent still holds a second after launchd started this one, a journal that had no room
- * — and it is bounded because retrying forever costs more than the failure it survives. sqliter
- * prints the whole stack trace of a statement that throws, which no log level of ours can suppress;
- * and its connection factory drops a connection whose first pragma failed without closing it, which
- * is what a file that is not a database does. An attempt per sample would be a stack trace and a
+ * — and it is bounded because retrying forever leaks a connection per attempt. sqliter's
+ * `NativeDatabaseManager.createConnection` closes a connection whose `migrateIfNeeded` threw and
+ * nothing else; one whose `onCreateConnection` pragma threw — which is what a file that is not a
+ * database does to [AUTO_VACUUM_PRAGMA] — is dropped still open. An attempt per sample would be a
  * leaked descriptor every interval for the life of a daemon that never returns.
+ *
+ * The stack trace sqliter prints beside it is noise rather than a second reason, and it is noise
+ * this code could switch off: `DatabaseConfiguration.Logging` is a public data class over a public
+ * `Logger`, the default `WarningLogger` prints only because its `eActive` is true, and
+ * [openHistoryDriver] already owns the `onConfiguration` hook that would replace it. It is left in
+ * place on purpose. Bounded at three attempts it is three traces a run, it is the only thing that
+ * says which call of ours the failure came out of, and switching it off would also silence every
+ * write failure later in the run — those are not bounded by anything.
  *
  * Three is one attempt while [HistoryStore.openOrNull] is still opening and two samples after it —
  * ten minutes at the shipped interval, which outlasts any restart overlap and is nowhere near a
@@ -567,12 +575,13 @@ private fun openHistoryDriver(directory: String): SqlDriver = NativeSqliteDriver
  * name like every other.
  *
  * Which failure of that statement is a verdict about the file is decided by [isSchemaVerdict], from
- * the error code SQLite answered with. It cannot be decided by where the statement sits, because the
- * read above proves nothing about the write below it: sqldelight sends a `PRAGMA` to its reader pool
- * and an `ALTER` to its transaction pool, so the two run on two connections and the second of them
- * is opened for the first time right there. A file the previous agent still holds locked across a
- * launchd restart answers the read — in WAL a reader is never blocked — and then fails the write
- * with `SQLITE_BUSY`, which is a fact about the moment and not about the schema.
+ * the error code SQLite answered with, and then by [schemaAlreadyMigrated], from the table itself.
+ * It cannot be decided by where the statement sits, because the read above proves nothing about the
+ * write below it: sqldelight sends a `PRAGMA` to its reader pool and an `ALTER` to its transaction
+ * pool, so the two run on two connections and the second of them is opened for the first time right
+ * there. A file the previous agent still holds locked across a launchd restart answers the read — in
+ * WAL a reader is never blocked — and then fails the write with `SQLITE_BUSY`, which is a fact about
+ * the moment and not about the schema.
  */
 private fun migrateSchema(driver: SqlDriver) {
     if (REPARENTED_AT_COLUMN in columnNamesOf(driver, PROCESS_TABLE)) return
@@ -581,20 +590,44 @@ private fun migrateSchema(driver: SqlDriver) {
         driver.execute(identifier = null, sql = ADD_REPARENTED_AT, parameters = 0).value
     } catch (failure: Throwable) {
         if (!isSchemaVerdict(failure)) throw failure
+        if (schemaAlreadyMigrated(driver)) return
         throw HistorySchemaMismatch(failure)
     }
 }
+
+/**
+ * Whether the column is on the table after all, asked once before a failed `ALTER TABLE` is called a
+ * verdict about the file.
+ *
+ * `duplicate column name: reparented_at` and `no such table: process` reach [isSchemaVerdict] as one
+ * error code and are opposite events. The first says the column this migration exists to add is
+ * already there — the shape the queries want, which makes it a migration that succeeded rather than
+ * one that failed. So the question the code asks is the one it actually cares about, read off the
+ * table, rather than the wording of a message.
+ *
+ * The race that produces it is the same two connections the migration is built around. The guard
+ * read goes to the reader pool and the `ALTER` to the transaction pool, so any other writer — a
+ * second agent, an overlapping launchd restart — that widens the table between the two leaves this
+ * one holding a stale answer. Without this second read, losing that race would disable history for
+ * the whole run over a database that is already correct.
+ *
+ * A read that throws answers false. The file has stopped answering by then, and the failure that
+ * came out of the `ALTER` is the better one to report.
+ */
+private fun schemaAlreadyMigrated(driver: SqlDriver): Boolean =
+    runCatching { REPARENTED_AT_COLUMN in columnNamesOf(driver, PROCESS_TABLE) }.getOrDefault(false)
 
 /**
  * Whether [failure] is SQLite refusing the `ALTER TABLE` over the shape of the database rather than
  * over the state of the machine.
  *
  * `no such table: process` and `duplicate column name: reparented_at` both fail while the statement
- * is being compiled, under the generic `SQLITE_ERROR`, and both will fail the same way on the next
- * sample and every sample after it. Everything else the write can raise says nothing about the
- * stored schema and is worth another try: `SQLITE_BUSY` from a lock that outlived the busy timeout,
- * `SQLITE_FULL`, `SQLITE_READONLY`, `SQLITE_IOERR`, or a `SQLITE_CANTOPEN` from the connection this
- * statement is the first to need.
+ * is being compiled, under the generic `SQLITE_ERROR`, and the code alone cannot tell the two apart
+ * — which is why this answers "the schema decides" rather than "history is over", and
+ * [schemaAlreadyMigrated] asks the table which of the two it was. Everything else the write can
+ * raise says nothing about the stored schema and is worth another try: `SQLITE_BUSY` from a lock
+ * that outlived the busy timeout, `SQLITE_FULL`, `SQLITE_READONLY`, `SQLITE_IOERR`, or a
+ * `SQLITE_CANTOPEN` from the connection this statement is the first to need.
  *
  * Narrow on purpose rather than fail-closed. A permanent failure this reads as transient still ends
  * in history disabled, [MIGRATION_ATTEMPTS] attempts later and by a different route; a transient one
@@ -619,9 +652,10 @@ private fun isSchemaVerdict(failure: Throwable): Boolean {
  * A database this build reached and cannot bring to the shape its queries expect.
  *
  * The one failure of the migration that is a verdict about the file rather than about the moment. A
- * `process` table that is missing, or one an `ALTER TABLE` cannot widen, will be missing and refused
- * again on the next sample, so retrying it would write nothing and report the same thing forever:
- * this is the failure that disables history at the first attempt, whether it arrives at
+ * `process` table that is missing, or one an `ALTER TABLE` cannot widen and that still lacks the
+ * column afterwards, will be missing and refused again on the next sample, so retrying it would
+ * write nothing and report the same thing forever: this is the failure that disables history at the
+ * first attempt, whether it arrives at
  * [HistoryStore.openOrNull] or later at a write. Every other one buys the retry
  * [MIGRATION_ATTEMPTS] bounds.
  *

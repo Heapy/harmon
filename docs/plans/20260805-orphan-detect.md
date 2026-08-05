@@ -369,7 +369,7 @@ harmon-collector → RawSystemSnapshot (parentPid уже внутри)
 
 - [x] добавить приватную функцию, читающую `PRAGMA table_info(process)` и возвращающую набор имён колонок
 - [x] добавить выполнение `ALTER TABLE process ADD COLUMN reparented_at TEXT`, когда колонки нет
-- [x] вызвать миграцию в новом `init` блоке `HistoryStore` (сегодня его нет), после создания `database`
+- [x] вызвать миграцию в новом `init` блоке `HistoryStore` (сегодня его нет), после создания `database` — сделано **иначе**: `init` не появился. Ревью показало, что миграция в `init` делает недостижимую базу фатальной для всего прогона, поэтому вызов живёт в `HistoryStore.openOrNull` (`HistoryStore.kt:466`) и повторяется из `record` через `migrateBeforeWriting` (`HistoryStore.kt:252`). Коммиты `9ca8472` и `d104f9a`
 - [x] **не** оборачивать в `runCatching`: sqliter печатает полный стектрейс до броска, проглоченное исключение всё равно даст стену красного в launchd-логе на каждом старте агента
 - [x] написать KDoc **на английском**: это первая миграция в проекте и почему `.sqm` для неё непригоден
 - [x] написать хелпер, создающий базу **старой** формы: таблицу `process` построить сырым SQL по прежнему определению — это документирует дошаговую форму схемы там, где её больше нигде не видно
@@ -379,16 +379,18 @@ harmon-collector → RawSystemSnapshot (parentPid уже внутри)
 - [x] написать тест: данные, записанные до миграции, уцелели и читаются
 - [x] написать тест идемпотентности: повторное открытие не пытается добавить колонку снова и не бросает
 - [x] написать тест: открытие пустой директории создаёт базу сразу с колонкой (путь `Schema.create`, без миграции)
+- [x] ➕ по итогам трёх раундов ревью задача выросла за первоначальные рамки; фактически в `HistoryStore.kt` появились ещё: `MIGRATION_ATTEMPTS` (бюджет в три попытки на прогон), `isSchemaVerdict` (классификация по коду ошибки SQLite), `schemaAlreadyMigrated` (второе чтение таблицы: `duplicate column name` — это гонка с другим писателем, а не приговор), `HistorySchemaMismatch` и `abandonHistory` (лог один раз, закрытие драйвера, `record` дальше молчит)
+- [x] ➕ и ещё семь тестов в `HistoryMigrationTest.kt` сверх четырёх запланированных: сэмпл после миграции ложится в расширенную таблицу; неремонтируемая схема даёт null-store и одну строку лога; недостижимая при открытии база сохраняет store и мигрирует на первой записи; `ALTER`, упавший на моменте, ретраится; постоянно падающая миграция сдаётся; колонка, добавленная другим писателем, считается успешной миграцией; бюджет — ровно одна попытка в `openOrNull` и две записи
 - [x] `./kotlin build && ./kotlin test` — должны пройти до задачи 6
 
 ### Task 6: Запись отметки в HistoryRows и HistoryStore
 
 **Files:**
-- Modify: `history-sqlite/src/dev/yoda/harmon/history/HistoryRows.kt`
 - Modify: `history-sqlite/src/dev/yoda/harmon/history/HistoryStore.kt`
 - Modify: `history-sqlite/test/HistoryProcessRowTest.kt`
+- ~~Modify: `history-sqlite/src/dev/yoda/harmon/history/HistoryRows.kt`~~ — не потребовался, см. первый пункт
 
-- [x] добавить в `HistoryRows.kt` функцию `ProcessesQueries.markReparented(processId, capturedAt)`
+- [x] добавить в `HistoryRows.kt` функцию `ProcessesQueries.markReparented(processId, capturedAt)` — обёртка была написана и **удалена** в `934a30a` по замечанию ревью: она ничего не добавляла к сгенерированному запросу. `HistoryRows.kt` байт в байт совпадает с базовой веткой, `record` зовёт `processes.markReparented(...)` напрямую (`HistoryStore.kt:290`)
 - [x] в цикле `record` (`HistoryStore.kt:136-143`) вынести id процесса в локальную переменную — сейчас он вычисляется инлайн внутри вызова, а отметке он нужен отдельно
 - [x] вызвать `markReparented` в той же транзакции при условии `reparentedFrom != null && parentPid == 1`
 - [x] использовать `usage.capturedAt.toSqlTimestamp()` — то же представление времени, что у `sample.captured_at`
@@ -425,15 +427,15 @@ harmon-collector → RawSystemSnapshot (parentPid уже внутри)
   - родителя не было в предыдущем снимке — `UsageCalculatorTest.leavesTheParentNameNullWhenThePreviousSnapshotDidNotCarryIt` и `AlertAnalyzerTest.namesTheParentByPidAloneWhenThePreviousSampleDidNotHoldItsName`
   - переход к родителю, отличному от 1 — `UsageCalculatorTest.reportsATransitionToAParentOtherThanPidOne`, `AlertAnalyzerTest.raisesNoAlertWhenTheNewParentIsNotPidOne`, `HistoryProcessRowTest.aChangeToAnyOtherParentIsNotStamped`
   - ⚠️ каскад — покрыт на пяти сиротах при `maxAlertsPerCategory = 3` (`AlertAnalyzerTest.capsOrphanAlertsByPidAndSuppressesTheRest`, `.doesNotKeepASuppressedOrphanFiringForALaterSample`), а не на «десятках». `take`/`drop` от размера не зависят, так что поведение то же; теста именно на десятки нет
-- [x] убедиться, что `bridge-probe`, IPC-протокол и `harmon-collector` не изменены — `git diff --stat feat/split-collector-binary...HEAD` показывает 18 файлов, ни одного под `bridge-*/`, `harmon-collector/` или `core/src/dev/yoda/harmon/ipc/`. `test/native/`, `scripts/test-native.sh`, `selftest/` и оба драйвера харнессов тоже не тронуты
-- [x] прогнать полный набор: `./kotlin build && ./kotlin test` — `Build successful`; 5 + 63 + 179 + 75 = 322 теста, `PASSED`, exit 0
+- [x] убедиться, что `bridge-probe`, IPC-протокол и `harmon-collector` не изменены — `git diff --stat feat/split-collector-binary` показывает 27 файлов (18 на момент первого прогона задачи; остальные добавили раунды ревью), ни одного под `bridge-*/`, `harmon-collector/` или `core/src/dev/yoda/harmon/ipc/`. `test/native/`, `scripts/test-native.sh`, `selftest/` и оба драйвера харнессов тоже не тронуты
+- [x] прогнать полный набор: `./kotlin build && ./kotlin test` — `Build successful`; 5 + 72 + 182 + 76 = 335 тестов, `PASSED`, exit 0 (322 на момент первого прогона задачи)
 - [x] прогнать релизную сборку: `./kotlin build --variant release` — `Build successful`, exit 0. Строки `'+zcm' is not a recognized feature for this target (ignoring feature)` — шум тулчейна при линковке модулей с `-lsqlite3`, к правкам ветки отношения не имеет и сборку не валит
 - [x] прогнать нативные харнессы: `scripts/test-native.sh` — 90 проверок `ok`, exit 0, исходники харнессов относительно базовой ветки без изменений
 
 ### Task 9: [Final] Update documentation
 
 - [x] `docs/history.md`: описать колонку `reparented_at` в разделе про `process`, рядом с объяснением, почему `parent_pid` замерзает — колонка добавлена в DDL-листинг, три абзаца после объяснения заморозки (кем пишется, почему отдельным запросом, почему TEXT, откуда имя), плюс абзац в «Three things the schema does not carry»: для этой строки замороженный `parent_pid` — единственный случай, где устаревшее значение полезно. ➕ добавлен готовый запрос в раздел «Queries»: без него колонку нечем достать, а весь документ построен как интерфейс для `sqlite3`
-- [x] `docs/history.md:571`: переписать концовку раздела «Changing the schema» — «None of this is implemented» больше не соответствует действительности; заменить описанием реализованной миграции как образца для следующих — описан `migrateSchema` в `init`, чтение `PRAGMA table_info` через `executeQuery`, и три неочевидных следствия: sqliter не вызовет сгенерированную миграцию (`user_version` уже 1), открытие store перестало быть ленивым, `ADD COLUMN` не переписывает строки. Вводная фраза раздела «Nothing here is a migration yet» тоже поправлена
+- [x] `docs/history.md:571`: переписать концовку раздела «Changing the schema» — «None of this is implemented» больше не соответствует действительности; заменить описанием реализованной миграции как образца для следующих — описан `migrateSchema`, который зовёт `openOrNull` (не `init`: его нет, см. задачу 5), чтение `PRAGMA table_info` через `executeQuery`, и три неочевидных следствия: sqliter не вызовет сгенерированную миграцию (`user_version` уже 1), открытие store перестало быть ленивым, `ADD COLUMN` не переписывает строки. Вводная фраза раздела «Nothing here is a migration yet» тоже поправлена
 - [x] `docs/collection.md:471`: исправить утверждение, что cap оставляет «не более `maxAlertsPerCategory` **приложений** по метрике правила» — с этим правилом оно неверно; описать инлайн-cap по pid и то, что подавленный orphan теряется навсегда — cap переформулирован как «у каждого правила свой порядок ранжирования», добавлен абзац «для приложения это отсрочка, для сироты потеря» с оговоркой, что сам факт уцелевает в `alert` (`reported = 0`) и в `reparented_at`
 - [x] `docs/collection.md` (раздел «Alerts», от `:458`): добавить правило в перечень — строка в таблице (`Orphaned process | on | never; always a warning`) и два абзаца: механика перехода, ключ, текст сообщения, фильтрация демонизации интервалом и её неприменимость к `once`/`diagnose`, слепое пятно рестарта
 - [x] `README.md:50`: добавить сиротство в список того, на что harmon поднимает алерты

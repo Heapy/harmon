@@ -666,17 +666,19 @@ Three things about that migration that were not obvious until it existed:
   list of names at generation time, so a column appended at the end is read by
   name like every other one.
 
-A migration that fails is answered in one of two ways, and which one depends on
-the error code SQLite answered with rather than on where the failure happened:
+A migration that fails is answered in one of three ways. The error code SQLite
+answered with picks between the first two, and where the failure happened picks
+nothing at all:
 
 - **the shape is wrong** — no `process` table, or a `process` table an
-  `ALTER TABLE` cannot widen. Both fail while the statement is being compiled,
-  under the generic `SQLITE_ERROR`, and both will fail the same way on every
-  sample after this one. That is a verdict about the file: it arrives as
-  `HistorySchemaMismatch`, `history disabled: …` is logged once, no store is
-  handed back — or, if the verdict only arrives at a later write, the store
-  closes its driver and records nothing more. The agent keeps monitoring without
-  history rather than writing into a shape its queries disagree with;
+  `ALTER TABLE` cannot widen and which still has no `reparented_at` afterwards.
+  Both fail while the statement is being compiled, under the generic
+  `SQLITE_ERROR`, and both will fail the same way on every sample after this one.
+  That is a verdict about the file: it arrives as `HistorySchemaMismatch`,
+  `history disabled: …` is logged once, no store is handed back — or, if the
+  verdict only arrives at a later write, the store closes its driver and records
+  nothing more. The agent keeps monitoring without history rather than writing
+  into a shape its queries disagree with;
 - **the moment is wrong** — another process holding the file across a launchd
   restart, a stale `-shm`, a disk with no room for the journal, and every code
   that carries: `SQLITE_BUSY`, `SQLITE_FULL`, `SQLITE_READONLY`, `SQLITE_IOERR`,
@@ -684,7 +686,17 @@ the error code SQLite answered with rather than on where the failure happened:
   first write` and hands back the store anyway, and `record` runs the migration
   again. `runForever` never returns, so a store `openOrNull` declined to build is
   never asked for a second time — this failure would otherwise cost the whole run
-  its history for a lock that was gone five minutes later.
+  its history for a lock that was gone five minutes later;
+- **someone else already did it** — `duplicate column name: reparented_at`,
+  which is the same `SQLITE_ERROR` as the first case and the opposite event. It
+  means another writer widened the table between this store's `PRAGMA table_info`
+  and its `ALTER TABLE` — a second agent, an overlapping launchd restart — so the
+  column the migration exists to add is there, which is a migration that
+  succeeded. The error code cannot tell it from a missing table, so the store
+  reads `PRAGMA table_info(process)` a second time before it pronounces the
+  verdict: column present, the migration is done, nothing is logged and the
+  sample is written; column still absent, it is the first case. Nothing is
+  matched against the message text.
 
 Where the two halves of the migration run is what makes the code the only honest
 signal. `columnNamesOf` sends its `PRAGMA` through sqldelight's reader pool and
@@ -702,12 +714,22 @@ not a database at all — survivable rather than merely non-fatal. It fails the
 migration exactly as a locked file does, so it takes the retry path; on the third
 failure the store logs `history disabled: …`, closes the driver and turns
 `record` into a no-op for the rest of the run. Retried on every sample instead it
-would cost more than the lost history: sqliter prints the whole stack trace of
-every statement that throws, which no logging of ours can suppress, and its
-connection factory drops a connection whose first pragma failed without closing
-it — a stack trace and a leaked descriptor every interval, for a daemon that
-never returns. Within the bound, the failed writes themselves are quiet:
-`HarmonService.recordSafely` reports the first and stays quiet about the rest.
+would leak: `NativeDatabaseManager.createConnection` closes a connection whose
+`migrateIfNeeded` threw and nothing else, so a connection whose
+`onCreateConnection` pragma threw — which is what a file that is not a database
+does to `PRAGMA auto_vacuum` — is dropped still open. That is a leaked descriptor
+every interval, for a daemon that never returns.
+
+The stack trace sqliter prints beside it is noise rather than a second reason for
+the bound, and it is noise this project could switch off:
+`DatabaseConfiguration.Logging` is a public data class over a public `Logger`, the
+default `WarningLogger` prints only because its `eActive` is true, and
+`openHistoryDriver`'s `onConfiguration` hook is where a quiet one would go. It is
+left in place — three attempts is three traces, the trace is the only thing that
+says which call the failure came out of, and a logger of ours would silence every
+write failure later in the run too. Within the bound, the failed writes
+themselves are quiet on our side: `HarmonService.recordSafely` reports the first
+and stays quiet about the rest.
 
 ## Checking a change against a live machine
 
