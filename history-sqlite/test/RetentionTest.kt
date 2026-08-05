@@ -3,7 +3,9 @@ import dev.yoda.harmon.history.retentionCutoff
 import dev.yoda.harmon.history.shouldPrune
 import dev.yoda.harmon.history.toSqlTimestamp
 import dev.yoda.harmon.model.DeliveryResult
+import dev.yoda.harmon.model.INIT_PID
 import dev.yoda.harmon.model.MonitoringReport
+import dev.yoda.harmon.model.ReparentedFrom
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertTrue
@@ -193,6 +195,42 @@ class RetentionTest {
     }
 
     /**
+     * The reparenting stamp is a time string rather than a `REFERENCES sample(id)` for exactly one
+     * reason, and this is it: the sample that carried the fact leaves the window, and the fact does
+     * not go with it. A foreign key would have taken the whole process row down by cascade, or, set
+     * to null, erased the moment while keeping the row.
+     *
+     * What the stamp does not outlive is the process itself. Once the last `process_sample` naming
+     * it is gone, `deleteOrphanProcesses` takes the lookup row and everything on it — so the second
+     * half of the test back-dates the remaining sample too and finds nothing left. That is the
+     * boundary the design accepts, and it is the one `docs/history.md` states.
+     */
+    @Test
+    fun theReparentingStampOutlivesTheSampleThatWroteItButNotTheProcess() =
+        withScratchHome { home ->
+            withHistoryStore(home) { store ->
+                store.record(orphanReport(capturedAt = ANCIENT, lostItsParent = true))
+                store.record(orphanReport(capturedAt = RECENT, lostItsParent = false))
+
+                store.prune(retentionCutoff(RECENT, retentionDays = 7))
+
+                val survivor = store.database.processesQueries.selectProcesses().executeAsOne()
+                assertEquals(
+                    ANCIENT.toSqlTimestamp(),
+                    survivor.reparented_at,
+                    "the sample that carried the transition is gone; the transition is not",
+                )
+
+                store.prune(AFTER_EVERY_SAMPLE)
+
+                assertTrue(
+                    store.database.processesQueries.selectProcesses().executeAsList().isEmpty(),
+                    "a process whose last sample left the window is dead weight, stamp and all",
+                )
+            }
+        }
+
+    /**
      * `alert_state` and `agent_state` are what the agent knows about itself, not what it saw.
      * Sweeping them out with the history would push an alert that was already firing a second time
      * after every restart and reset the backoff a broken channel earned.
@@ -364,3 +402,26 @@ private fun reportOf(
 private fun deliveries(): List<DeliveryResult> = listOf(
     DeliveryResult(channel = "notification-center", successful = true, detail = "posted"),
 )
+
+/**
+ * One sample of a single process, which lost its parent in it when [lostItsParent] says so.
+ *
+ * Its own builder rather than [reportOf], because the retention question here is about one lookup
+ * row that two samples both name, and a second process would only have to be filtered back out.
+ */
+private fun orphanReport(capturedAt: Instant, lostItsParent: Boolean): MonitoringReport =
+    MonitoringReport(
+        usage = systemUsage(
+            processes = listOf(
+                processUsage(
+                    pid = 11,
+                    name = "abandoned",
+                    parentPid = INIT_PID,
+                    reparentedFrom = ReparentedFrom(pid = 4_241, name = "supervisor")
+                        .takeIf { lostItsParent },
+                ),
+            ),
+        ).copy(capturedAt = capturedAt),
+        alerts = emptyList(),
+        topProcessCount = 1,
+    )

@@ -255,7 +255,9 @@ A threshold of `0` disables that rule. `orphanAlerts` is the one alert rule
 without a threshold — losing a parent is an event, not a quantity, so there is
 no number to lower until it stops matching — and `orphanAlerts=false` is how it
 is switched off. It is on by default and fires at most `maxAlertsPerCategory`
-times per sample, like every other rule. `applicationMemoryAlertMiB` and
+times per sample, like every other rule. It switches off the alert and nothing
+else: `harmon run` still records the transition in the history database, in
+`process.reparented_at`. `applicationMemoryAlertMiB` and
 `swapAlertMiB` are capped at 1,048,576 MiB (1 TiB); a larger value is rejected
 and the process exits with status 2. `terminalApplications` is a
 comma-separated list of bundle names without `.app`, matched case-insensitively.
@@ -328,7 +330,8 @@ The push text names only the alerts that fired on this sample. The attached HTML
 report and the JSON webhook payload both carry the sample's whole reported alert
 list, and the payload adds `newAlertKeys` listing the ones the push was about.
 That list is capped at `maxAlertsPerCategory` alerts per rule, and
-`suppressedAlertKeys` names every key over its threshold that the cap left out,
+`suppressedAlertKeys` names every key the cap left out — over its threshold for
+the rules that have one, matching at all for the orphan rule, which has none —
 so a consumer diffing the alert list can tell a dropped alert from a cleared one
 and the count is the whole overflow. An already-firing alert pushed out of the
 top slice is demoted rather than cleared — it stays in the alert state, so its
@@ -345,11 +348,16 @@ be reassembled, because the dead parent's name was read from the sample it was
 still alive in. So delivery is one-shot. A failed push of an orphan alert is not
 retried, and an orphan pushed out of the per-category slice is not demoted but
 dropped — unlike an application alert it gets no later sample to return on.
-Neither case loses the fact: the key is in the report text, in the webhook
-payload and in the `alert` table, and the transition itself is stamped in
-`process.reparented_at` in the history database. Transitions that happen while
-the agent is not running are not seen at all, since the sample they would have
-been compared against was never taken.
+
+Neither case loses the fact, though what is left of it differs. A suppressed
+orphan is in the report text, in the webhook payload and in the `alert` table
+with `reported = 0`. A failed push is in the report text and the `alert` table
+only — the payload is exactly what did not arrive. Both are stamped in
+`process.reparented_at` in the history database, which keeps the transition for
+as long as retention keeps the process: once the last sample naming it leaves
+the window, the row goes with it. Transitions that happen while the agent is not
+running are not seen at all, since the sample they would have been compared
+against was never taken.
 
 With `notifyEverySample=true` the agent sends on every sample and treats the
 whole alert list as push content; nothing is deferred in that mode, so
@@ -362,8 +370,10 @@ alert active in its single sample counts as new: all of them are pushed, and
 `newAlertKeys` lists all of them. `once` and `diagnose` do compare two
 snapshots, so the orphan rule can match there, but their window is seconds
 rather than five minutes and a process that daemonizes inside it looks exactly
-like one that lost its parent. Neither command writes history, so the cost is
-one odd line in a one-off report.
+like one that lost its parent. Neither command writes history, so nothing is
+stored — but `once --notify` does deliver, and a false orphan raised under it
+reaches the webhook, Telegram and Notification Center like any other alert.
+`orphanAlerts=false` is the way out for an installation that runs it often.
 
 Notification Center delivery uses the background-only Harmon application
 bundle installed under `~/Library/Application Support/Harmon/Harmon.app`.

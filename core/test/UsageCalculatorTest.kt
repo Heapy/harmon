@@ -1,3 +1,4 @@
+import dev.yoda.harmon.model.ProcessUsage
 import dev.yoda.harmon.model.ReparentedFrom
 import dev.yoda.harmon.monitor.CollectionException
 import dev.yoda.harmon.monitor.UsageCalculator
@@ -306,4 +307,103 @@ class UsageCalculatorTest {
 
         assertNull(process.reparentedFrom)
     }
+
+    /**
+     * Parent pid 0 is the collector's "could not read the metadata" sentinel, not a pid: the
+     * bridge pre-sets the field to 0 and leaves it there when `proc_pidinfo` returns a short
+     * struct, while the sample itself is still emitted. A read that failed in one sample and
+     * succeeded in the next must not surface as a process handed to launchd — that alert would
+     * name a parent that never existed, and the stamp it writes to history is permanent.
+     */
+    @Test
+    fun reportsNothingWhenEitherSampleCouldNotReadTheParent() {
+        val recovered = transition(previousParentPid = 0, currentParentPid = 1)
+        val lost = transition(previousParentPid = 44268, currentParentPid = 0)
+
+        assertNull(recovered.reparentedFrom, "0 -> 1 is a metadata read that recovered")
+        assertNull(lost.reparentedFrom, "n -> 0 is a metadata read that failed")
+    }
+
+    /**
+     * The parent is the process most likely to be one the collector could not measure — a
+     * supervisor whose `proc_pid_rusage` was refused arrives as an issue rather than as a sample —
+     * and that is exactly the case where naming it matters. A full sample still wins over an issue
+     * for the same pid.
+     */
+    @Test
+    fun namesAParentThePreviousSnapshotCouldOnlyRecordAsAnIssue() {
+        val previous = rawSnapshot(
+            monotonicNs = 1_000_000_000u,
+            processes = listOf(
+                rawProcess(pid = 44559, startedAt = 20u, name = "node", parentPid = 44268),
+            ),
+            processIssues = listOf(rawProcessIssue(pid = 44268, name = "supervisord")),
+        )
+        val current = rawSnapshot(
+            monotonicNs = 2_000_000_000u,
+            processes = listOf(
+                rawProcess(pid = 44559, startedAt = 20u, name = "node", parentPid = 1),
+            ),
+        )
+
+        val process = UsageCalculator().calculate(previous, current).processes.single()
+
+        assertEquals(ReparentedFrom(pid = 44268, name = "supervisord"), process.reparentedFrom)
+    }
+
+    /**
+     * `previousNameByPid` is built once and shared across the loop, which is the shape that would
+     * let one process's answer be applied to every other. Two processes losing two different
+     * parents in one sample are what says it is not.
+     */
+    @Test
+    fun resolvesEachProcessAgainstItsOwnParent() {
+        val previous = rawSnapshot(
+            monotonicNs = 1_000_000_000u,
+            processes = listOf(
+                rawProcess(pid = 300, startedAt = 3u, name = "codex", parentPid = 1),
+                rawProcess(pid = 400, startedAt = 4u, name = "make", parentPid = 1),
+                rawProcess(pid = 44559, startedAt = 20u, name = "node", parentPid = 300),
+                rawProcess(pid = 44560, startedAt = 21u, name = "cc", parentPid = 400),
+                rawProcess(pid = 44561, startedAt = 22u, name = "sshd", parentPid = 1),
+            ),
+        )
+        val current = rawSnapshot(
+            monotonicNs = 2_000_000_000u,
+            processes = listOf(
+                rawProcess(pid = 44559, startedAt = 20u, name = "node", parentPid = 1),
+                rawProcess(pid = 44560, startedAt = 21u, name = "cc", parentPid = 1),
+                rawProcess(pid = 44561, startedAt = 22u, name = "sshd", parentPid = 1),
+            ),
+        )
+
+        val byPid = UsageCalculator().calculate(previous, current)
+            .processes
+            .associateBy { it.identity.pid }
+
+        assertEquals(ReparentedFrom(pid = 300, name = "codex"), byPid.getValue(44559).reparentedFrom)
+        assertEquals(ReparentedFrom(pid = 400, name = "make"), byPid.getValue(44560).reparentedFrom)
+        assertNull(byPid.getValue(44561).reparentedFrom)
+    }
+}
+
+/**
+ * The one process of a two-sample pair, seen under [previousParentPid] and then under
+ * [currentParentPid].
+ */
+private fun transition(previousParentPid: Int, currentParentPid: Int): ProcessUsage {
+    fun snapshot(monotonicNs: ULong, parentPid: Int) = rawSnapshot(
+        monotonicNs = monotonicNs,
+        processes = listOf(
+            rawProcess(pid = 44559, startedAt = 20u, name = "node", parentPid = parentPid),
+        ),
+    )
+
+    return UsageCalculator()
+        .calculate(
+            snapshot(1_000_000_000u, previousParentPid),
+            snapshot(2_000_000_000u, currentParentPid),
+        )
+        .processes
+        .single()
 }

@@ -140,6 +140,12 @@ class HarmonService(
      * The history write joins it there, after the commit rather than before it, so that the state
      * stored beside the sample is the one the sample after it starts from — a snapshot taken
      * earlier would restore a restarted agent to the moment before its last sample.
+     *
+     * The deferral is logged as conditional on the alert still firing rather than as a promise to
+     * retry, because for one rule it is not one. An orphan alert reads a transition that exists in a
+     * single sample, so its key leaves the firing set on the next one and the deferral expires
+     * against nothing; the delivery is lost rather than postponed. `docs/collection.md` carries what
+     * survives that loss.
      */
     fun handleSample(previous: RawSystemSnapshot, current: RawSystemSnapshot) {
         val sampled = createSample(previous, current)
@@ -154,7 +160,7 @@ class HarmonService(
                 .forEach { (key, delaySamples) ->
                     logError(
                         "${Clock.System.now()} delivery of alert $key keeps failing; " +
-                            "retrying it in $delaySamples samples",
+                            "retrying it in $delaySamples samples if it is still firing then",
                     )
                 }
             recordSafely(sampled.report, outcome.results)

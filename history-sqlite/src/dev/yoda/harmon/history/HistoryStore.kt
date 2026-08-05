@@ -8,6 +8,7 @@ import dev.yoda.harmon.analysis.AlertStateSnapshot
 import dev.yoda.harmon.analysis.isSnapshotFresh
 import dev.yoda.harmon.db.HarmonDatabase
 import dev.yoda.harmon.model.DeliveryResult
+import dev.yoda.harmon.model.INIT_PID
 import dev.yoda.harmon.model.MonitoringReport
 import dev.yoda.harmon.util.failureDescription
 import dev.yoda.harmon.util.printError
@@ -58,9 +59,6 @@ private const val REPARENTED_AT_COLUMN = "reparented_at"
 private const val ADD_REPARENTED_AT =
     "ALTER TABLE $PROCESS_TABLE ADD COLUMN $REPARENTED_AT_COLUMN TEXT"
 
-/** launchd, the parent a process whose own parent died is handed to on Darwin. */
-private const val INIT_PID = 1
-
 /**
  * The agent's history: the database file, the connection to it, and the generated queries over it.
  *
@@ -95,6 +93,14 @@ class HistoryStore(
      * A migration that throws therefore leaves [openOrNull] to catch it, log it and hand back no
      * store — the agent keeps monitoring without history rather than writing into a shape its
      * queries disagree with.
+     *
+     * That verdict is fail-closed and does not distinguish a genuinely mismatched schema from a
+     * momentary one: a database another process holds locked fails the same way, and costs the
+     * whole run its history where a failure at the first write used to cost one sample and be
+     * retried. The trade is accepted rather than overlooked. A retry loop here would run on agent
+     * start, where nothing is waiting to observe it, and the only writer this file is designed for
+     * is the single `harmon run` launchd installs — two agents over one file would also race on the
+     * `ALTER TABLE` itself, which no amount of retrying makes safe.
      */
     init {
         migrateSchema(driver)
@@ -127,13 +133,15 @@ class HistoryStore(
      * alert state to speak of, `once` and `diagnose`, are also the ones that must not overwrite it.
      *
      * A process the calculator saw change parent to [INIT_PID] is stamped in the same pass, through
-     * a statement of its own rather than through another column of the lookup upsert: that upsert
-     * runs for every process on every sample, and this event fires zero times a day on a machine
-     * where nothing died. The `parentPid == INIT_PID` half of the condition is repeated here rather
-     * than shared with the alert rule that also applies it. `ProcessUsage.reparentedFrom` reports a
-     * change of parent and says nothing about whether it was a loss; each of its two consumers
-     * decides that for itself, and a store that trusted the calculator to have filtered already
-     * would record whatever a future rule decided to report.
+     * `markReparented` rather than through another column of the lookup upsert; `Processes.sq`
+     * carries why that is a statement of its own. The `parentPid == INIT_PID` half of the condition
+     * is repeated here rather than shared with the alert rule that also applies it.
+     * `ProcessUsage.reparentedFrom` reports a change of parent and says nothing about whether it was
+     * a loss; each of its two consumers decides that for itself, and a store that trusted the
+     * calculator to have filtered already would record whatever a future rule decided to report.
+     * `orphanAlerts=false` is one consumer switching itself off and does not reach this one: the
+     * stamp is history rather than a notification, and a user who silenced the alert has not asked
+     * to stop recording what happened.
      *
      * This is also where retention runs from, about once an hour — every twelfth sample at the
      * default interval, and a different count at any other; see `pruneIfDue` and [shouldPrune].
@@ -183,8 +191,8 @@ class HistoryStore(
                 )
                 if (process.reparentedFrom != null && process.parentPid == INIT_PID) {
                     processes.markReparented(
-                        processId = processId,
-                        capturedAt = usage.capturedAt.toSqlTimestamp(),
+                        reparented_at = usage.capturedAt.toSqlTimestamp(),
+                        id = processId,
                     )
                 }
             }
@@ -345,13 +353,27 @@ class HistoryStore(
             val home = homeDirectory ?: error("HOME is not set")
             val directory = "$home/$HISTORY_DIRECTORY"
             createPrivateDirectory(directory)
-            HistoryStore(
-                directory = directory,
-                driver = openHistoryDriver(directory),
-                retentionDays = retentionDays,
-                intervalSeconds = intervalSeconds,
-                logError = logError,
-            )
+            /*
+             * The driver is built into a local first so that it can be closed if the constructor
+             * throws. Its `init` block migrates, which is a use of the connection, so by then the
+             * file is open: passed straight as a constructor argument, a failing migration would
+             * be caught below with nothing left holding the driver to close it, and `harmon run`
+             * would carry the file descriptor and an un-checkpointed -wal/-shm pair for the life
+             * of the daemon.
+             */
+            val driver = openHistoryDriver(directory)
+            try {
+                HistoryStore(
+                    directory = directory,
+                    driver = driver,
+                    retentionDays = retentionDays,
+                    intervalSeconds = intervalSeconds,
+                    logError = logError,
+                )
+            } catch (failure: Throwable) {
+                driver.close()
+                throw failure
+            }
         } catch (failure: Throwable) {
             logError("history disabled: ${failureDescription(failure)}")
             null
@@ -401,8 +423,12 @@ private fun openHistoryDriver(directory: String): SqlDriver = NativeSqliteDriver
 )
 
 /**
- * Adds every column the current schema has and the open file does not, and does nothing at all to a
+ * Adds `reparented_at` to a `process` table that does not have it yet, and does nothing at all to a
  * file that already matches — which is every file this build itself created.
+ *
+ * One column, named here rather than diffed out of a table of column-to-DDL pairs, because one is
+ * how many the project has. The next migration either adds its own guarded statement beside this one
+ * or turns the pair into that table; what it must not do is assume this function already generalises.
  *
  * This is the first migration the project has, and it is hand-written because the generated one
  * cannot run. `plugins/sqldelight-gen` drives the SQLDelight compiler with
@@ -432,7 +458,14 @@ private fun migrateSchema(driver: SqlDriver) {
 }
 
 /**
- * The names of [table]'s columns as the open database has them, empty when there is no such table.
+ * The names of [table]'s columns as the open database has them.
+ *
+ * A table that is not there answers with no rows and is therefore indistinguishable from one with no
+ * columns — the empty set. [migrateSchema] then runs its `ALTER TABLE` against a table that does not
+ * exist and throws `no such table`, which is the intended outcome rather than an oversight: a file
+ * carrying `user_version = 1` and no `process` table is not a database this build can write into,
+ * and [HistoryStore.openOrNull] turning that into a logged `history disabled: …` is the whole of the
+ * fail-closed contract.
  *
  * `PRAGMA table_info` answers with a row per column, so it has to go through `executeQuery` like
  * `PRAGMA incremental_vacuum` does and for the same reason — sqliter's `execute` throws on the first

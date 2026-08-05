@@ -112,22 +112,6 @@ fun ProcessesQueries.upsertProcess(process: ProcessUsage): Long {
 }
 
 /**
- * Records [capturedAt] as the moment the process [processId] identifies was seen to lose its parent,
- * and leaves a row that already carries such a moment exactly as it is.
- *
- * The timestamp is non-null here while the generated statement takes a `String?` — SQLDelight reads
- * that nullability off the nullable column. Null would not record anything: it would clear the mark,
- * and `reparented_at IS NULL` would then let the next sample write a later time over the fact. No
- * caller wants either, so the wrapper refuses to express them.
- *
- * Whether a change of parent is worth recording at all is decided before the call, in
- * `HistoryStore.record`, next to the process the decision is about.
- */
-fun ProcessesQueries.markReparented(processId: Long, capturedAt: String) {
-    markReparented(reparented_at = capturedAt, id = processId)
-}
-
-/**
  * Writes [usage] as one `process_sample` row against an already-written sample and lookup row.
  *
  * [applicationId] is null for a process that runs outside an `.app` bundle: `ApplicationGrouper`

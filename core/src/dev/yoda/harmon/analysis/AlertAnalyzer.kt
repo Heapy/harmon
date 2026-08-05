@@ -3,6 +3,7 @@ package dev.yoda.harmon.analysis
 import dev.yoda.harmon.config.HarmonConfig
 import dev.yoda.harmon.model.Alert
 import dev.yoda.harmon.model.ApplicationUsage
+import dev.yoda.harmon.model.INIT_PID
 import dev.yoda.harmon.model.ProcessUsage
 import dev.yoda.harmon.model.Severity
 import dev.yoda.harmon.model.SystemUsage
@@ -286,9 +287,8 @@ class AlertAnalyzer {
      * [analyze] keeps a suppressed key firing only when it was already active, a brand-new orphan
      * never was, so it never enters the alert state and its edge does not occur a second time.
      *
-     * The key says `orphan` while the history column recording the same fact is `reparented_at`.
-     * The two words are aimed at different readers: the key is user-facing and speaks POSIX, the
-     * column lives in a schema where `orphan` already means a row nothing references.
+     * The key says `orphan` while the history column recording the same fact is `reparented_at`;
+     * `Processes.sq` carries why the two vocabularies differ.
      */
     private fun orphanAlerts(
         processes: List<ProcessUsage>,
@@ -297,9 +297,9 @@ class AlertAnalyzer {
     ): List<Alert> {
         val orphaned = processes
             .mapNotNull { process ->
-                process.reparentedFrom
-                    ?.takeIf { process.parentPid == INIT_PID }
-                    ?.let { parent -> process to parent }
+                if (process.parentPid != INIT_PID) return@mapNotNull null
+                val lostParent = process.reparentedFrom ?: return@mapNotNull null
+                process to lostParent
             }
             .sortedBy { (process, _) -> process.identity.pid }
         orphaned.asSequence()
@@ -394,9 +394,6 @@ class AlertAnalyzer {
     private companion object {
         const val BYTES_PER_MEBIBYTE: ULong = 1_048_576u
         const val BYTES_PER_MEBIBYTE_DOUBLE = 1_048_576.0
-
-        /** launchd, the parent every orphaned process is handed to on Darwin. */
-        const val INIT_PID = 1
 
         /**
          * The hysteresis factor, as a fraction so the integer and the floating-point form cannot

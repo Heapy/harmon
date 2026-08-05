@@ -260,7 +260,7 @@ class ReportFormatterTest {
 
         assertContains(
             output,
-            "- 2 more over threshold, past maxAlertsPerCategory: memory:one, memory:two",
+            "- 2 more matching, past maxAlertsPerCategory: memory:one, memory:two",
         )
     }
 

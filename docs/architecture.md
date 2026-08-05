@@ -124,7 +124,7 @@ sequenceDiagram
     A->>C: Connect for current snapshot
     C-->>A: Versioned JSON frame
     A->>A: Calculate rates and application totals
-    A->>D: Push only the alerts that just crossed a threshold
+    A->>D: Push only the alerts that just started firing
 ```
 
 The collector is request-driven rather than continuously polling. One accepted
@@ -136,7 +136,10 @@ stretch or collapse a sampling window.
 Notification is edge-triggered, not scheduled. The agent keeps the set of alert
 keys that were firing on the previous sample and the set whose delivery was
 confirmed; a push is built from the keys missing from the latter. The attached
-report and the JSON payload still describe the whole sample.
+report and the JSON payload still describe the whole sample. Most rules fire on
+a level crossing its threshold and go on firing while it holds; the orphan rule
+fires on a transition that exists in one sample only, which is what makes its
+delivery one-shot — see `docs/collection.md`.
 
 ## Sample history
 
@@ -155,8 +158,10 @@ in a kernel panic for not fsyncing on a 300-second interval, and with
 file system without a full `VACUUM`.
 
 Each sample is one transaction: the system row, every process, every
-application group that has a bundle, the alerts, the delivery results, and the
-alert state the next sample starts from. Groups without a bundle are left out
+application group that has a bundle, the alerts, the delivery results, the alert
+state the next sample starts from, and the `process.reparented_at` stamp for any
+process the calculator saw handed to launchd in this sample. Groups without a
+bundle are left out
 on purpose — `ApplicationGrouper` gives every such process a group of its own,
 and writing it would duplicate the process row it already wrote, line for line,
 several hundred times a sample.
@@ -260,13 +265,22 @@ intended only for a socket under `/tmp` and does not improve process access.
   sample and resumed on restart, unless it is older than two sampling intervals,
   unreadable, or history is turned off, in which case the agent starts from an
   empty state.
+- The orphan rule is outside every promise in the bullet above. Its condition is
+  a transition rather than a level, so the key stops firing on the next sample
+  and the deferred delivery expires against nothing: a failed push of an orphan
+  alert is lost rather than retried. What is not lost is the fact — the key is
+  in the report text, in the `alert` table, and the transition is stamped in
+  `process.reparented_at`.
 - Reports carry at most `maxAlertsPerCategory` alerts per rule and name every
   key the cap left out in `suppressedAlertKeys`, so a dropped alert is
   distinguishable from a cleared one and the count is the whole overflow. The
   alert state keeps the already-firing ones among those keys, so a demoted alert
   does not push again on its return; a key crossing its threshold below the cut
   is reported as suppressed but stays out of the state, and so out of
-  hysteresis.
+  hysteresis. For an orphan the cap is not a deferral either: it crossed no
+  threshold, its key never enters the state, and the next sample has no edge
+  left to report — a supervisor dying with fifty children pushes
+  `maxAlertsPerCategory` of them and names the rest as suppressed only.
 - With `notifyEverySample`, the push goes out whether or not a key's retry is
   deferred, so nothing is deferred in that mode and `newAlertKeys` names every
   alert no channel has confirmed yet.
@@ -291,9 +305,9 @@ paths and detailed collection failures.
 
 That metadata is no longer transient. The agent writes every sample to
 `~/Library/Application Support/Harmon/history.db` and keeps it for
-`historyRetentionDays` — seven by default — so process names, uids, parent pids
-and executable paths sit on disk for a week rather than for the length of one
-report. The protection is `0700` on the containing directory, not a mode on the
+`historyRetentionDays` — seven by default — so process names, uids, parent pids,
+executable paths, and the moment any of those processes was handed to launchd
+sit on disk for a week rather than for the length of one report. The protection is `0700` on the containing directory, not a mode on the
 file: SQLite recreates `history.db-wal` and `history.db-shm` beside it on every
 open, both carry the same metadata, and any mode set on those would be gone the
 next time they were created. `historyRetentionDays=0` is how a user opts out of

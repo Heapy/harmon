@@ -1,6 +1,7 @@
 import dev.yoda.harmon.history.HistoryStore
 import dev.yoda.harmon.history.insertProcessUsage
 import dev.yoda.harmon.history.upsertProcess
+import dev.yoda.harmon.model.INIT_PID
 import dev.yoda.harmon.model.MonitoringReport
 import dev.yoda.harmon.model.ProcessIdentity
 import dev.yoda.harmon.model.ProcessUsage
@@ -19,7 +20,10 @@ private const val LOST_PARENT_PID = 4241
 /** A parent that is not launchd, so a change to it is a reparenting the store must not stamp. */
 private const val OTHER_PARENT_PID = 4242
 
-private const val LAUNCHD_PID = 1
+/** The two processes sampled beside the orphan, which nothing must stamp. */
+private const val QUIET_PID_BEFORE = 10
+
+private const val QUIET_PID_AFTER = 12
 
 /** The two moments [reparentedReport] samples at, as `captured_at` stores them. */
 private const val FIRST_SAMPLE_AT = "1970-01-01T00:01:40Z"
@@ -213,7 +217,7 @@ class HistoryProcessRowTest {
     @Test
     fun aProcessHandedToLaunchdIsStampedWithItsSample() = withScratchHome { home ->
         withHistoryStore(home) { store ->
-            store.record(reparentedReport(parentPid = LAUNCHD_PID, lostParent = lostParent()))
+            store.record(reparentedReport(parentPid = INIT_PID, lostParent = lostParent()))
 
             val lookup = store.storedProcess()
             assertEquals(FIRST_SAMPLE_AT, lookup.reparented_at)
@@ -248,7 +252,7 @@ class HistoryProcessRowTest {
     @Test
     fun aProcessThatWasAlwaysUnderLaunchdIsNotStamped() = withScratchHome { home ->
         withHistoryStore(home) { store ->
-            store.record(reparentedReport(parentPid = LAUNCHD_PID, lostParent = null))
+            store.record(reparentedReport(parentPid = INIT_PID, lostParent = null))
 
             assertNull(store.storedProcess().reparented_at)
         }
@@ -266,7 +270,7 @@ class HistoryProcessRowTest {
             store.record(reparentedReport(parentPid = LOST_PARENT_PID, lostParent = null))
             store.record(
                 reparentedReport(
-                    parentPid = LAUNCHD_PID,
+                    parentPid = INIT_PID,
                     lostParent = lostParent(),
                     capturedAt = Instant.fromEpochSeconds(400),
                 ),
@@ -287,7 +291,7 @@ class HistoryProcessRowTest {
     @Test
     fun aSecondSightingDoesNotMoveTheStamp() = withScratchHome { home ->
         withHistoryStore(home) { store ->
-            val transition = reparentedReport(parentPid = LAUNCHD_PID, lostParent = lostParent())
+            val transition = reparentedReport(parentPid = INIT_PID, lostParent = lostParent())
             store.record(transition)
             store.record(
                 transition.copy(
@@ -306,6 +310,32 @@ class HistoryProcessRowTest {
             )
         }
     }
+
+    /**
+     * The stamp has to find the row of the process it is about, and one process cannot say that it
+     * does: with a single row in `process`, a `record` that stamped every process it wrote, or
+     * reused one id for all of them, passes every assertion above.
+     *
+     * Three processes, all under launchd, of which only the middle one carries a transition. The
+     * two quiet ones are ordinary daemons — the state a machine is in a few hundred times over —
+     * and they are placed on either side so that neither "the first row" nor "the last row" is the
+     * answer by accident.
+     */
+    @Test
+    fun onlyTheOrphanAmongItsNeighboursIsStamped() = withScratchHome { home ->
+        withHistoryStore(home) { store ->
+            store.record(sampleAroundOneOrphan())
+
+            val byPid = store.database.processesQueries.selectProcesses()
+                .executeAsList()
+                .associateBy { it.pid }
+
+            assertEquals(3, byPid.size, "all three processes must reach the lookup")
+            assertNull(byPid.getValue(QUIET_PID_BEFORE.toLong()).reparented_at)
+            assertEquals(FIRST_SAMPLE_AT, byPid.getValue(ORPHANED_PID.toLong()).reparented_at)
+            assertNull(byPid.getValue(QUIET_PID_AFTER.toLong()).reparented_at)
+        }
+    }
 }
 
 /**
@@ -313,6 +343,24 @@ class HistoryProcessRowTest {
  */
 private fun HistoryStore.storedProcess() =
     database.processesQueries.selectProcesses().executeAsOne()
+
+/** One sample holding the orphan of this file between two daemons that never lost anything. */
+private fun sampleAroundOneOrphan(): MonitoringReport = MonitoringReport(
+    usage = systemUsage(
+        processes = listOf(
+            processUsage(pid = QUIET_PID_BEFORE, name = "quiet-before", parentPid = INIT_PID),
+            processUsage(
+                pid = ORPHANED_PID,
+                name = "abandoned",
+                parentPid = INIT_PID,
+                reparentedFrom = lostParent(),
+            ),
+            processUsage(pid = QUIET_PID_AFTER, name = "quiet-after", parentPid = INIT_PID),
+        ),
+    ).copy(capturedAt = Instant.fromEpochSeconds(100)),
+    alerts = emptyList(),
+    topProcessCount = 3,
+)
 
 /** The parent the calculator reports as lost, named the way it was named while it was alive. */
 private fun lostParent(): ReparentedFrom =
@@ -324,8 +372,9 @@ private fun lostParent(): ReparentedFrom =
  * whose parent did not change at all.
  *
  * One process rather than a realistic set, because the assertions read `selectProcesses` as a single
- * row: what is under test is which of the two conditions a stamp needs, and a second process would
- * only add a row to filter out of the answer.
+ * row: what is under test here is which of the two conditions a stamp needs, and a second process
+ * would only add a row to filter out of the answer. That the stamp reaches the row it is about
+ * rather than every row is the separate question `sampleAroundOneOrphan` exists for.
  */
 private fun reparentedReport(
     parentPid: Int,

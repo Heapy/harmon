@@ -408,11 +408,21 @@ class AlertAnalyzerTest {
     /**
      * The pid order is what makes the cut deterministic: orphanhood has no metric to rank by, so
      * without it the two processes that lose their notification would depend on sample order.
+     *
+     * Every second process in the list is an ordinary one, and it is there so that the cap is seen
+     * to count orphans rather than processes: a rule that ranked or took over `usage.processes`
+     * would keep the wrong three, and one that paired a process with someone else's
+     * `reparentedFrom` would name the wrong pid.
      */
     @Test
     fun capsOrphanAlertsByPidAndSuppressesTheRest() {
         val usage = systemUsage(
-            processes = listOf(50, 30, 10, 40, 20).map { pid -> orphan(pid = pid) },
+            processes = listOf(50, 30, 10, 40, 20).flatMap { pid ->
+                listOf(
+                    orphan(pid = pid),
+                    processUsage(pid = pid + 1, name = "ordinary", parentPid = 1),
+                )
+            },
         )
 
         val outcome = AlertAnalyzer()
@@ -428,21 +438,44 @@ class AlertAnalyzerTest {
         )
     }
 
-    /** A suppressed orphan never joins the firing set, so its edge is gone for good. */
+    /**
+     * A suppressed orphan never joins the firing set, so its edge is gone for good — and the only
+     * way to say that is to run the sample after it.
+     *
+     * The second sample carries the same five processes, still under launchd, with no transition:
+     * that is what the next sample of a real supervisor collapse looks like. The suppressed keys
+     * are handed in as `activeKeys` anyway, to state that even a caller who kept them would get no
+     * alert back — `analyze` re-admits a suppressed key only when the rule suppressed it again,
+     * and there is nothing left for the rule to suppress.
+     */
     @Test
     fun doesNotKeepASuppressedOrphanFiringForALaterSample() {
-        val usage = systemUsage(
-            processes = (1..5).map { pid -> orphan(pid = pid) },
-        )
+        val analyzer = AlertAnalyzer()
+        val config = HarmonConfig(maxAlertsPerCategory = 3)
+        val transitionSample = systemUsage(processes = (1..5).map { pid -> orphan(pid = pid) })
 
-        val outcome = AlertAnalyzer()
-            .analyze(usage, HarmonConfig(maxAlertsPerCategory = 3), activeKeys = emptySet())
+        val firstSample = analyzer.analyze(transitionSample, config, activeKeys = emptySet())
 
-        assertEquals(3, outcome.firingKeys.size)
+        assertEquals(3, firstSample.alerts.size)
+        assertEquals(2, firstSample.suppressedKeys.size)
         assertTrue(
-            outcome.suppressedKeys.none { it in outcome.firingKeys },
-            outcome.firingKeys.toString(),
+            firstSample.suppressedKeys.none { it in firstSample.firingKeys },
+            "a suppressed orphan must not enter the state: ${firstSample.firingKeys}",
         )
+
+        val stillOrphanedSample = systemUsage(
+            processes = (1..5).map { pid -> processUsage(pid = pid, name = "node", parentPid = 1) },
+        )
+
+        val secondSample = analyzer.analyze(
+            stillOrphanedSample,
+            config,
+            activeKeys = firstSample.firingKeys + firstSample.suppressedKeys,
+        )
+
+        assertEquals(emptyList(), secondSample.alerts)
+        assertEquals(emptySet(), secondSample.suppressedKeys)
+        assertEquals(emptySet(), secondSample.firingKeys)
     }
 
     @Test

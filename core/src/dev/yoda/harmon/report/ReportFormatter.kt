@@ -109,8 +109,13 @@ object ReportFormatter {
                 appendLine("- ${alert.severity.name.lowercase()}: ${alert.message}")
             }
             if (report.suppressedAlertKeys.isNotEmpty()) {
+                /*
+                 * "matching" rather than "over threshold": the orphan rule has no threshold to be
+                 * over, and printing that one of its keys crossed one would name a number the user
+                 * cannot find in the configuration.
+                 */
                 appendLine(
-                    "- ${report.suppressedAlertKeys.size} more over threshold, " +
+                    "- ${report.suppressedAlertKeys.size} more matching, " +
                         "past maxAlertsPerCategory: " +
                         report.suppressedAlertKeys.joinToString(),
                 )

@@ -11,7 +11,8 @@ import kotlin.test.assertTrue
 class HistoryConfigurationTest {
     /**
      * A null retention is a store that is never opened, and only an opened store ever creates the
-     * database file. The enabled half is the control that pins the path and lazy connection.
+     * database file. The enabled half is the control that pins the path — and, since the migration
+     * runs in the constructor, the moment the file appears.
      */
     @Test
     fun aDisabledHistoryLeavesNoDatabaseFileBehind() = withScratchHome { home ->
@@ -24,10 +25,18 @@ class HistoryConfigurationTest {
         val store = assertNotNull(
             configuredHistory(historyConfig("historyRetentionDays=1"), home),
         )
+
         /*
-         * The file is already there by now: sqliter connects on first use, and the schema migration
-         * the store runs while opening is a use. Recording is what puts a sample into it.
+         * Asserted before anything is recorded, because "opening the store is no longer lazy" is a
+         * fact two knowledge files state and nothing else pins. sqliter connects on first use and
+         * the schema migration the constructor runs is a use, so the file is already here; before
+         * the migration existed, a store nothing ever queried left nothing behind.
          */
+        assertTrue(
+            NSFileManager.defaultManager.fileExistsAtPath(historyDatabasePath(home)),
+            "openOrNull must have created the database, not deferred it to the first write",
+        )
+
         store.record(rankingReport())
         store.close()
 

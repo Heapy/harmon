@@ -5,6 +5,8 @@ import dev.yoda.harmon.model.LoadAverages
 import dev.yoda.harmon.model.MonitoringReport
 import dev.yoda.harmon.model.NotificationPayload
 import dev.yoda.harmon.model.PowerState
+import dev.yoda.harmon.model.ProcessCollectionIssue
+import dev.yoda.harmon.model.ProcessCollectionIssueReason
 import dev.yoda.harmon.model.ProcessorCounters
 import dev.yoda.harmon.model.ProcessorUsage
 import dev.yoda.harmon.model.ProcessIdentity
@@ -76,6 +78,7 @@ fun rawSnapshot(
     monotonicNs: ULong,
     processes: List<RawProcessSample>,
     swapUsed: ULong = 0u,
+    processIssues: List<ProcessCollectionIssue> = emptyList(),
 ): RawSystemSnapshot = RawSystemSnapshot(
     capturedAt = Instant.fromEpochSeconds(monotonicNs.toLong() / 1_000_000_000),
     monotonicTimeNs = monotonicNs,
@@ -142,7 +145,22 @@ fun rawSnapshot(
     },
     compressedAttributionFailureCount = 0,
     processes = processes,
-    processIssues = emptyList(),
+    processIssues = processIssues,
+)
+
+/** A process the collector could name but could not measure, which is all a snapshot keeps of it. */
+fun rawProcessIssue(
+    pid: Int,
+    name: String?,
+    parentPid: Int? = null,
+): ProcessCollectionIssue = ProcessCollectionIssue(
+    pid = pid,
+    parentPid = parentPid,
+    uid = 501u,
+    name = name,
+    executablePath = null,
+    reason = ProcessCollectionIssueReason.RESOURCE_USAGE_UNAVAILABLE,
+    errorCode = null,
 )
 
 fun processUsage(

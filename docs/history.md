@@ -122,9 +122,12 @@ WHERE ps.process_id = (
 ORDER BY s.captured_at;
 ```
 
-Every process the agent watched lose its parent, and who the parent was.
-`parent_pid` is not corrected by the transition, so it still names the process
-that died:
+Every process the agent watched lose its parent **and has still sampled inside
+the retention window**, and who the parent was. `parent_pid` is not corrected by
+the transition, so it still names the process that died. The window bound is not
+incidental: once the last sample naming a process leaves it, retention deletes
+the whole `process` row, so this answers about live and recently-live processes
+rather than about the history of the machine:
 
 ```sql
 SELECT datetime(reparented_at, 'localtime') AS local_time,
@@ -346,6 +349,14 @@ compares the parent of every process against the previous sample, matched on
 transition was observed, which on an ordinary machine is true of every row in
 the table.
 
+One case breaks that reading of `parent_pid`, and it is the first sample of a
+run. A process that lost its parent between the agent's baseline capture and its
+first recorded sample is new to the lookup, so the row is inserted with the
+parent it has by then — pid 1 — and stamped in the same pass. The transition is
+recorded; the culprit is not, for that row alone. Every later transition writes
+against a row inserted while the real parent was still there, which is the
+freeze doing its job.
+
 Three choices in how it is written and typed. It is set by a statement of its
 own, `markReparented`, rather than by the lookup upsert, which runs for every
 process on every sample to record something that fires zero times a day on a
@@ -355,7 +366,10 @@ records when the parent was lost, not when the loss was last noticed. And it is
 a time string rather than a `REFERENCES sample(id)` because retention deletes
 old samples: `ON DELETE CASCADE` would take the process row down with the sample
 that carried the fact and `SET NULL` would erase the fact while keeping the row.
-A timestamp outlives the window being trimmed.
+What the timestamp buys is precisely that — it outlives the pruning of the
+sample it was written in. It does not outlive retention as such: once the last
+`process_sample` naming the process leaves the window, `deleteOrphanProcesses`
+takes the whole row, stamp included.
 
 The column is not called `orphaned_at` because `orphan` already means something
 else here: `deleteOrphanProcesses` and `deleteOrphanApplications` call a row
@@ -365,7 +379,10 @@ which is user-facing and is the only place the two vocabularies meet.
 
 Only `harmon run` ever writes it, and only for a transition it was running
 across: the previous sample is what the comparison needs, so a parent that died
-while the agent was down leaves no mark anywhere.
+while the agent was down leaves no mark anywhere. `orphanAlerts=false` does not
+stop the write — that key silences the notification, and the column is history
+rather than a notification, so a user who does not want to be told still gets
+the record.
 
 `process_sample` is one row per readable process per sample — around 222 000 a
 day on a machine running several hundred processes — and every column after the

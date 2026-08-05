@@ -213,8 +213,9 @@ in every macOS SDK, so no `-L` is needed.
 
 To see what a `.sq` file actually generated, read the two halves in
 `build/tasks/_history-sqlite_generate@sqldelight-gen/dev/yoda/harmon/db/`.
-`harmon/HarmonDatabaseImpl.kt` holds only `Schema` — the `CREATE TABLE` DDL and
-the version number — and carries no statement bodies at all. Every query is
+`harmon/HarmonDatabaseImpl.kt` holds `Schema` — the `CREATE TABLE` DDL and the
+version number — beside the database implementation and its `*Queries` wiring,
+and carries no statement bodies at all. Every query is
 generated into `<Table>Queries.kt` beside it, so that is where a named
 parameter, a nullable column, a missing query, or the explicit column list a
 `SELECT *` expands into shows up as Kotlin.

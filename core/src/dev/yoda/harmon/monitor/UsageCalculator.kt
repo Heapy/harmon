@@ -32,10 +32,7 @@ class UsageCalculator(
         val elapsedNanoseconds = current.monotonicTimeNs - previous.monotonicTimeNs
         val elapsedSeconds = elapsedNanoseconds.toDouble() / NANOSECONDS_PER_SECOND
         val previousByIdentity = previous.processes.associateBy { it.identity }
-        // Built once per call, not per process: the only place a dead parent can still be
-        // named is the previous snapshot, and every process in this loop resolves against
-        // the same map.
-        val previousNameByPid = previous.processes.associate { it.identity.pid to it.name }
+        val previousNameByPid = previousNameByPid(previous)
 
         val processes = current.processes.map { currentProcess ->
             val previousProcess = previousByIdentity[currentProcess.identity]
@@ -68,6 +65,26 @@ class UsageCalculator(
     }
 
     /**
+     * Every pid the previous snapshot could put a name to, built once per call rather than
+     * per process: the only place a dead parent can still be named is that snapshot, and
+     * every process in the loop resolves against the same map.
+     *
+     * `processIssues` is read as well as `processes`, and it is read first so a full sample
+     * wins over an issue for the same pid. A process the collector could not measure still
+     * arrives with its pid and, usually, its name, and it is exactly the kind of process a
+     * parent tends to be — a supervisor whose `proc_pid_rusage` was refused would otherwise
+     * make the alert about it name a bare pid, in the case where naming it matters most.
+     */
+    private fun previousNameByPid(previous: RawSystemSnapshot): Map<Int, String> = buildMap {
+        for (issue in previous.processIssues) {
+            issue.name?.let { put(issue.pid, it) }
+        }
+        for (process in previous.processes) {
+            put(process.identity.pid, process.name)
+        }
+    }
+
+    /**
      * Reports the parent a process had one sample ago when this sample shows a different
      * one, and null otherwise.
      *
@@ -77,6 +94,14 @@ class UsageCalculator(
      * the lookup key is the whole identity — a different process wearing a recycled pid has
      * a different `startedAt` and simply misses.
      *
+     * A parent pid of zero on either side is not a pid at all. The collector pre-sets the
+     * field to 0 and leaves it there whenever `proc_pidinfo(PROC_PIDTBSDINFO)` does not
+     * return a whole struct, while still emitting the sample — the sample is decided by
+     * `proc_pid_rusage` alone. So a process whose metadata read failed in one sample and
+     * succeeded in the next would otherwise read as a `0 -> 1` transition and be reported as
+     * having lost a parent that never existed. `DarwinSystemCollector` takes the same reading
+     * of 0 on the issue path, where it maps it to a null parent.
+     *
      * The result says the parent changed, nothing more. Whether the new parent being pid 1
      * makes this an orphan worth reporting is left to the consumer, so this calculator stays
      * a pure function of the two snapshots.
@@ -85,9 +110,15 @@ class UsageCalculator(
         previous: RawProcessSample?,
         current: RawProcessSample,
         previousNameByPid: Map<Int, String>,
-    ): ReparentedFrom? = previous
-        ?.takeIf { it.parentPid != current.parentPid }
-        ?.let { ReparentedFrom(it.parentPid, previousNameByPid[it.parentPid]) }
+    ): ReparentedFrom? {
+        if (previous == null || previous.parentPid <= 0 || current.parentPid <= 0) {
+            return null
+        }
+        if (previous.parentPid == current.parentPid) {
+            return null
+        }
+        return ReparentedFrom(previous.parentPid, previousNameByPid[previous.parentPid])
+    }
 
     private fun calculateProcessUsage(
         previous: RawProcessSample?,

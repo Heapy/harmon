@@ -171,6 +171,15 @@ object InstantAsStringSerializer : KSerializer<Instant> {
 }
 
 /**
+ * launchd, the parent every process whose own parent died is handed to on Darwin.
+ *
+ * Named once and shared rather than repeated, because it is a fact about the platform and not a
+ * policy either consumer of [ReparentedFrom] gets to hold an opinion about. What each of them
+ * still decides for itself is whether to act on a transition to it at all.
+ */
+const val INIT_PID = 1
+
+/**
  * The parent a process had before it changed, together with that parent's name when it is
  * known.
  *

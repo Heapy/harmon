@@ -195,7 +195,7 @@ class HarmonServiceAlertFlowTest {
         // earlier report to be demoted from
         assertContains(
             reports.last { it.startsWith("Harmon sample") },
-            "1 more over threshold, past maxAlertsPerCategory: memory:process:13:100",
+            "1 more matching, past maxAlertsPerCategory: memory:process:13:100",
         )
         assertEquals(
             listOf("memory:process:13:100"),
@@ -208,7 +208,7 @@ class HarmonServiceAlertFlowTest {
 
         assertContains(
             reports.last { it.startsWith("Harmon sample") },
-            "1 more over threshold, past maxAlertsPerCategory: memory:process:12:100",
+            "1 more matching, past maxAlertsPerCategory: memory:process:12:100",
         )
         assertEquals(
             listOf("memory:process:12:100"),

@@ -486,14 +486,21 @@ harmon first sees them already at pid 1 and there is no transition to record. No
 allow list or age heuristic is involved — the 300-second interval does the
 filtering, which also means it does not hold for `once` and `diagnose`, whose
 window can be as short as a second and can therefore land inside a double fork.
-Neither writes history and only `once --notify` pushes at all, so the cost there
-is an odd line in a one-off report. The other consequence is that a transition
-during a stretch when the agent was not running is invisible: the previous
-sample the comparison needs does not exist, and no later sample can tell an
-orphan from a daemon.
+Neither writes history, so a false orphan there costs no stored row — but
+`once --notify` does deliver, and a false orphan raised under it reaches the
+webhook, Telegram and Notification Center like any other alert. That is the
+fourth accepted limitation of the rule, alongside the three below: on the short
+window of a one-off command the interval no longer filters daemonization, and
+the report or push says so anyway. `orphanAlerts=false` is the way out for an
+installation that runs `once --notify` often enough to care. The other
+consequence is that a transition during a stretch when the agent was not running
+is invisible: the previous sample the comparison needs does not exist, and no
+later sample can tell an orphan from a daemon.
 
 `orphanAlerts=false` switches the rule off. Zero disables a threshold, but this
 rule has no threshold to zero, so the boolean is the whole of its configuration.
+It is alert-only: `process.reparented_at` is still stamped on every transition
+the agent sees, because the column is history rather than a notification.
 
 Every rule is capped at `maxAlertsPerCategory` keys per report, and what the cap
 ranks by differs: an application rule keeps the applications with the highest
@@ -517,6 +524,12 @@ appear as suppressed keys only. The fact survives the loss: a suppressed key is
 written to the `alert` table with `reported = 0` like any other, and the
 transition is stamped in `process.reparented_at` regardless of whether an alert
 about it was reported at all.
+
+The text report prints the overflow as `N more matching, past
+maxAlertsPerCategory` followed by the keys. "Matching" rather than "over
+threshold" because this rule has none, and a report naming a threshold a
+suppressed orphan crossed would send the reader looking for a number that is not
+in the configuration.
 
 Delivery has to succeed for a key to count as pushed, so a failed webhook or
 Telegram call is retried on the next sample instead of being silently dropped. A
@@ -628,8 +641,15 @@ Harmon does not collect:
 - per-process network destinations;
 - file-level write paths;
 - GPU utilization;
-- temperature or fan sensors;
-- persistent history.
+- temperature or fan sensors.
+
+`harmon run` does keep persistent history. Every sample it takes is written to
+`~/Library/Application Support/Harmon/history.db` and kept for
+`historyRetentionDays` — seven by default — including per-process names, uids,
+parent pids, executable paths and the moment a process was handed to launchd.
+`historyRetentionDays=0` is how that is switched off, and then no database file
+is created at all; `docs/history.md` is the reference for what a stored sample
+holds. `once` and `diagnose` write nothing.
 
 No network request occurs unless Telegram or a webhook is configured and a
 notification is due.
