@@ -10,10 +10,16 @@ import dev.yoda.harmon.model.MonitoringReport
 import dev.yoda.harmon.model.ReparentedFrom
 import kotlinx.cinterop.ExperimentalForeignApi
 import platform.Foundation.NSFileManager
+import platform.posix.S_IRUSR
+import platform.posix.S_IWUSR
+import platform.posix.chmod
 import kotlin.test.Test
 import kotlin.test.assertEquals
+import kotlin.test.assertFalse
+import kotlin.test.assertNotNull
 import kotlin.test.assertNull
 import kotlin.test.assertTrue
+import kotlin.test.fail
 import kotlin.time.Instant
 
 private const val HISTORY_DIRECTORY = "Library/Application Support/Harmon"
@@ -183,6 +189,91 @@ class HistoryMigrationTest {
                 "the failure has to name history rather than the sample: ${logged.single()}",
             )
         }
+
+    /**
+     * The other half of that verdict, and the reason it is two verdicts rather than one.
+     *
+     * A database that cannot be opened at all has told the migration nothing about the schema in it,
+     * so answering it the way a mismatch is answered would cost `harmon run` every sample of the
+     * rest of its life — `runForever` never returns, and a store `openOrNull` declined to build is
+     * never asked for again. A locked file, a stale `-shm` or a disk that had no room for the
+     * journal all arrive here, and all of them are gone by the next sample.
+     *
+     * So the store comes back unmigrated and the first write finishes the job. Asserted through a
+     * pre-migration file rather than a fresh one because a fresh file would be created by
+     * `Schema.create()` at the first connection and prove only that a write can happen — the old
+     * shape is what makes "the migration ran, late" visible.
+     */
+    @Test
+    fun aDatabaseUnreachableAtOpenKeepsTheStoreAndMigratesAtTheFirstWrite() =
+        withScratchHome { home ->
+            writePreMigrationDatabase(home)
+            val logged = mutableListOf<String>()
+
+            val store = withUnopenableDatabase(home) {
+                HistoryStore.openOrNull(
+                    retentionDays = 7,
+                    intervalSeconds = 300,
+                    homeDirectory = home,
+                    logError = { logged += it },
+                )
+            }
+
+            assertNotNull(store, "a database that is only unreachable must not cost the run history")
+            try {
+                assertEquals(1, logged.size, "the reason is reported once: $logged")
+                assertFalse(
+                    logged.single().startsWith("history disabled: "),
+                    "an unreachable database is not a disabled one: ${logged.single()}",
+                )
+                assertFalse(
+                    REPARENTED_AT in store.driver.processColumns(),
+                    "the file must still be pre-migration here, or the retry proves nothing",
+                )
+
+                store.record(orphanReport())
+
+                assertTrue(
+                    REPARENTED_AT in store.driver.processColumns(),
+                    "the write has to run the migration the open could not: " +
+                        "${store.driver.processColumns()}",
+                )
+                assertEquals(
+                    SAMPLE_AT,
+                    store.database.processesQueries.selectProcesses().executeAsOne().reparented_at,
+                    "and then take the sample into the widened table",
+                )
+            } finally {
+                store.close()
+            }
+        }
+}
+
+/**
+ * Runs [body] with the database file in place and impossible to open, and puts its mode back
+ * afterwards.
+ *
+ * `chmod 0` rather than a real lock or a real full disk, because it is the only one of them a test
+ * can undo exactly. What it stands in for is every reason a connection cannot be made at this
+ * moment, and the store cannot tell those apart anyway: each of them reaches it as a throw from the
+ * first read of the connection.
+ *
+ * The mode goes on the file rather than on the directory it sits in, so that `createPrivateDirectory`
+ * — which chmods that directory on every open — cannot undo it while `openOrNull` is running.
+ */
+@OptIn(ExperimentalForeignApi::class)
+private fun <T> withUnopenableDatabase(home: String, body: () -> T): T {
+    val path = "$home/$HISTORY_DIRECTORY/$HISTORY_DATABASE_NAME"
+    if (chmod(path, 0u) != 0) {
+        fail("cannot take the mode off $path")
+    }
+    return try {
+        body()
+    } finally {
+        if (chmod(path, (S_IRUSR or S_IWUSR).toUShort()) != 0) {
+            fail("cannot give $path its mode back")
+        }
+    }
 }
 
 /**

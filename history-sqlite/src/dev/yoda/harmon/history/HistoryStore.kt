@@ -81,33 +81,56 @@ class HistoryStore(
     val database: HarmonDatabase = HarmonDatabase(driver)
 
     /**
-     * Brings a file an older build wrote up to the schema this build queries, before anything reads
-     * it — see [migrateSchema] for why a migration is the store's own work here.
-     *
-     * Opening stops being lazy because of this. sqliter connects on first use, and a store nothing
-     * ever queried used to leave no file behind; the `PRAGMA table_info` below is a use, so the
-     * database is now created and connected to while [openOrNull] is still running. That is the
-     * point rather than a side effect: a migration that ran at the first write would run inside the
-     * transaction of the first sample, and its failure would be reported as a failed write.
-     *
-     * A migration that throws therefore leaves [openOrNull] to catch it, log it and hand back no
-     * store — the agent keeps monitoring without history rather than writing into a shape its
-     * queries disagree with.
-     *
-     * That verdict is fail-closed and does not distinguish a genuinely mismatched schema from a
-     * momentary one: a database another process holds locked fails the same way, and costs the
-     * whole run its history where a failure at the first write used to cost one sample and be
-     * retried. The trade is accepted rather than overlooked. A retry loop here would run on agent
-     * start, where nothing is waiting to observe it, and the only writer this file is designed for
-     * is the single `harmon run` launchd installs — two agents over one file would also race on the
-     * `ALTER TABLE` itself, which no amount of retrying makes safe.
+     * Whether [migrateSchema] has run through against this database, which is the whole of what
+     * makes an unreachable database survivable — see [migrateSchemaOnce].
      */
-    init {
-        migrateSchema(driver)
-    }
+    private var schemaMigrated = false
 
     /** Samples handed to [record] in this run, which is the only clock the retention pass has. */
     private var recordedSamples = 0L
+
+    /**
+     * Brings a file an older build wrote up to the schema this build queries, once per run and
+     * before anything of this build writes into it — see [migrateSchema] for why a migration is the
+     * store's own work here.
+     *
+     * [openOrNull] calls this while it is still opening, which is what stops opening from being
+     * lazy: sqliter connects on first use, the `PRAGMA table_info` this reads is a use, and the
+     * database is therefore created and connected to before [openOrNull] returns, where a store
+     * nothing ever queried used to leave no file behind. That is the point rather than a side
+     * effect — a migration deferred to the first sample would run inside that sample's transaction,
+     * and its failure would be reported as a failed write.
+     *
+     * [record] calls it again because the open-time attempt is allowed to fail without costing the
+     * run its history. Two failures arrive here and they are not the same event:
+     *
+     * - the database could not be reached at all — a file another process holds locked across a
+     *   launchd restart, a stale `-shm`, a disk with no room for the journal. Nothing has been
+     *   learnt about the stored schema, the failure escapes as itself, and [schemaMigrated] stays
+     *   false so the next sample connects again. That is the behaviour this store had before it
+     *   migrated anything: the first write was the first connection, and a transient failure there
+     *   cost one sample rather than the whole run;
+     * - the file was reached and its `process` table cannot be brought to this shape. That is a
+     *   verdict about the file rather than about the moment, it arrives as [HistorySchemaMismatch],
+     *   and [openOrNull] turns it into no store at all — the agent keeps monitoring without history
+     *   rather than writing into a shape its queries disagree with.
+     *
+     * A file that is reachable and permanently broken — corrupt, or not a database at all — reads
+     * as the first of the two and is retried on every sample. That costs a failed write per sample
+     * and nothing else: `HarmonService.recordSafely` reports the first of those failures and stays
+     * quiet about the rest.
+     *
+     * A mismatch the open never got close enough to see arrives here at the first write instead. It
+     * fails that write rather than the run, and goes on failing every sample after it — the same
+     * refusal by a slower route, and still never a row written into a shape the queries disagree
+     * with.
+     */
+    private fun migrateSchemaOnce() {
+        if (schemaMigrated) return
+
+        migrateSchema(driver)
+        schemaMigrated = true
+    }
 
     /**
      * Writes one whole sample — the system row, every process, the applications that have a bundle,
@@ -147,12 +170,17 @@ class HistoryStore(
      * default interval, and a different count at any other; see `pruneIfDue` and [shouldPrune].
      * Hanging it off the write path is deliberate — a retention nothing calls is a database that
      * grows forever behind a green test suite.
+     *
+     * The migration goes first and is a no-op on every sample but the ones that reach a store whose
+     * open-time attempt at it could not reach the database; [migrateSchemaOnce] carries which
+     * failures get that retry and which one never gets a store at all.
      */
     override fun record(
         report: MonitoringReport,
         deliveries: List<DeliveryResult>,
         alertState: AlertStateSnapshot?,
     ) {
+        migrateSchemaOnce()
         pruneIfDue()
 
         val usage = report.usage
@@ -335,9 +363,15 @@ class HistoryStore(
          * The store under [homeDirectory], keeping [retentionDays] of samples taken every
          * [intervalSeconds], or null when the database cannot be opened.
          *
-         * Never throws. A directory the user has locked down, a full disk or an unset `HOME` costs
-         * the run its history and nothing else, and the reason is logged here because nothing
-         * downstream will ever hold this store to ask about it.
+         * Never throws. A directory the user has locked down or an unset `HOME` costs the run its
+         * history and nothing else, and the reason is logged here because nothing downstream will
+         * ever hold this store to ask about it.
+         *
+         * A database that merely could not be reached at this moment does not cost the run its
+         * history: the store comes back unmigrated, the reason is logged once, and every write
+         * tries the connection again. Only a schema this build cannot repair —
+         * [HistorySchemaMismatch] — hands back no store at all. [migrateSchemaOnce] carries which
+         * failure is which and why the two are answered differently.
          *
          * Neither of the two numbers has a default, because both belong to the caller's
          * configuration and a wrong retention is invisible: too short silently deletes history the
@@ -353,27 +387,37 @@ class HistoryStore(
             val home = homeDirectory ?: error("HOME is not set")
             val directory = "$home/$HISTORY_DIRECTORY"
             createPrivateDirectory(directory)
-            /*
-             * The driver is built into a local first so that it can be closed if the constructor
-             * throws. Its `init` block migrates, which is a use of the connection, so by then the
-             * file is open: passed straight as a constructor argument, a failing migration would
-             * be caught below with nothing left holding the driver to close it, and `harmon run`
-             * would carry the file descriptor and an un-checkpointed -wal/-shm pair for the life
-             * of the daemon.
-             */
             val driver = openHistoryDriver(directory)
+            val store = HistoryStore(
+                directory = directory,
+                driver = driver,
+                retentionDays = retentionDays,
+                intervalSeconds = intervalSeconds,
+                logError = logError,
+            )
             try {
-                HistoryStore(
-                    directory = directory,
-                    driver = driver,
-                    retentionDays = retentionDays,
-                    intervalSeconds = intervalSeconds,
-                    logError = logError,
-                )
-            } catch (failure: Throwable) {
+                store.migrateSchemaOnce()
+            } catch (mismatch: HistorySchemaMismatch) {
+                /*
+                 * Closed here because the caller is about to be handed null and will have nothing
+                 * left to close it with. The migration reached the file, so by now the driver holds
+                 * a connection: leaked, `harmon run` would carry that file descriptor and an
+                 * un-checkpointed -wal/-shm pair for the life of the daemon.
+                 */
                 driver.close()
-                throw failure
+                throw mismatch
+            } catch (failure: Throwable) {
+                /*
+                 * Kept open rather than closed. A connection that was never established leaves no
+                 * descriptor to leak, and the pool builds a fresh one on the next borrow — which is
+                 * the retry the store's first write depends on.
+                 */
+                logError(
+                    "history unreachable: ${failureDescription(failure)}; " +
+                        "retrying at the first write",
+                )
             }
+            store
         } catch (failure: Throwable) {
             logError("history disabled: ${failureDescription(failure)}")
             null
@@ -452,10 +496,35 @@ private fun openHistoryDriver(directory: String): SqlDriver = NativeSqliteDriver
  * name like every other.
  */
 private fun migrateSchema(driver: SqlDriver) {
+    /*
+     * Outside the `try` below, and that placement is the whole of the classification. This read is
+     * what establishes the connection, so a failure of it says the database could not be reached
+     * and says nothing at all about the shape of what is in it. Everything after it has read the
+     * file and is therefore a verdict on the file.
+     */
     if (REPARENTED_AT_COLUMN in columnNamesOf(driver, PROCESS_TABLE)) return
 
-    driver.execute(identifier = null, sql = ADD_REPARENTED_AT, parameters = 0).value
+    try {
+        driver.execute(identifier = null, sql = ADD_REPARENTED_AT, parameters = 0).value
+    } catch (failure: Throwable) {
+        throw HistorySchemaMismatch(failure)
+    }
 }
+
+/**
+ * A database this build reached and cannot bring to the shape its queries expect.
+ *
+ * The one failure of [HistoryStore.openOrNull] that is a verdict about the file rather than about
+ * the moment. A `process` table that is missing, or an `ALTER TABLE` the file refuses, will be
+ * missing and refused again on the next sample, so retrying it would write nothing and report the
+ * same thing forever; this is the failure that disables history for the whole run. Every other one
+ * — a connection that could not be made — leaves the store in place to try again; see
+ * `migrateSchemaOnce`.
+ */
+class HistorySchemaMismatch(cause: Throwable) : IllegalStateException(
+    "the stored schema cannot be migrated: ${failureDescription(cause)}",
+    cause,
+)
 
 /**
  * The names of [table]'s columns as the open database has them.
@@ -464,8 +533,11 @@ private fun migrateSchema(driver: SqlDriver) {
  * columns — the empty set. [migrateSchema] then runs its `ALTER TABLE` against a table that does not
  * exist and throws `no such table`, which is the intended outcome rather than an oversight: a file
  * carrying `user_version = 1` and no `process` table is not a database this build can write into,
- * and [HistoryStore.openOrNull] turning that into a logged `history disabled: …` is the whole of the
+ * and the [HistorySchemaMismatch] that becomes a logged `history disabled: …` is the whole of the
  * fail-closed contract.
+ *
+ * This read answering at all is also what tells a bad file from an unreachable one: it is the first
+ * use of the connection, so a database nothing can open never gets as far as returning an empty set.
  *
  * `PRAGMA table_info` answers with a row per column, so it has to go through `executeQuery` like
  * `PRAGMA incremental_vacuum` does and for the same reason — sqliter's `execute` throws on the first

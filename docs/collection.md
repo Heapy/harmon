@@ -588,12 +588,12 @@ reported as new again on return.
 Every key the cap leaves out is named in `suppressedAlertKeys` — the demoted
 ones and the ones that crossed their threshold below the cut alike — in the text
 and HTML reports as well as in the webhook payload. A consumer diffing the alert
-list therefore cannot read a dropped alert as a cleared one, and the "N more
-over threshold" line of a text report counts everything the cap held back, not
-just the keys reported before. Being named there is not the same as being in the
-alert state: a key that was never reported is not firing, gets no lowered clear
-threshold on the next sample, and is pushed as new if it later reaches the top
-slice.
+list therefore cannot read a dropped alert as a cleared one, and the
+`N more matching, past maxAlertsPerCategory` line of a text report counts
+everything the cap held back, not just the keys reported before. Being named
+there is not the same as being in the alert state: a key that was never reported
+is not firing, gets no lowered clear threshold on the next sample, and is pushed
+as new if it later reaches the top slice.
 
 ## Access failures
 

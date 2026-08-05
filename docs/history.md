@@ -635,9 +635,9 @@ SQLite allows without one:
   still a wall of red in the launchd log on every agent start.
 
 The second form is written. `reparented_at` is what it was written for, and it is
-the shape the next column should copy. `HistoryStore` has an `init` block that
-calls `migrateSchema(driver)` before anything else touches the file:
-`columnNamesOf` reads `PRAGMA table_info(process)`, and
+the shape the next column should copy. `HistoryStore.openOrNull` runs
+`migrateSchemaOnce` before it hands the store over, so nothing of this build
+touches the file first: `columnNamesOf` reads `PRAGMA table_info(process)`, and
 `ALTER TABLE process ADD COLUMN reparented_at TEXT` runs only when the name is
 not in the answer. A file this build created carries the column already, so on
 every start but the first after an upgrade the migration is one pragma read and
@@ -659,14 +659,36 @@ Three things about that migration that were not obvious until it existed:
   still running, where before the file appeared at the first write. That is the
   point of running it there: a migration deferred to the first sample would run
   inside that sample's transaction, and its failure would be reported as a
-  failed write. Failing in `openOrNull` instead is caught, logged as
-  `history disabled: …`, and hands back no store — the agent keeps monitoring
-  without history rather than writing into a shape its queries disagree with.
+  failed write.
 - **`ADD COLUMN` costs nothing at size.** SQLite rewrites the table header and no
   row, so a 25 000-row `process` lookup migrates as fast as an empty one. Column
   order does not matter either: SQLDelight expands `SELECT *` into an explicit
   list of names at generation time, so a column appended at the end is read by
   name like every other one.
+
+A migration that fails at open is answered in one of two ways, and which one
+depends on how far it got:
+
+- **the file was reached and cannot be repaired** — no `process` table, an
+  `ALTER TABLE` the file refuses. That is a verdict about the file: it arrives
+  as `HistorySchemaMismatch`, `openOrNull` logs `history disabled: …` and hands
+  back no store, and the agent keeps monitoring without history rather than
+  writing into a shape its queries disagree with. Nothing retries it, because
+  the next sample would be refused in exactly the same way;
+- **the file could not be reached at all** — another process holding it across a
+  launchd restart, a stale `-shm`, a disk with no room for the journal. The
+  `PRAGMA table_info` read never answered, so nothing has been learnt about the
+  stored schema. `openOrNull` logs `history unreachable: …; retrying at the
+  first write` and hands back the store anyway, and `record` runs the migration
+  again on every sample until it goes through. `runForever` never returns, so a
+  store `openOrNull` declined to build is never asked for a second time — this
+  failure would otherwise cost the whole run its history for a lock that was
+  gone five minutes later.
+
+A file that is reachable and permanently broken — corrupt, or not a database —
+reads as the second of the two and is retried on every sample. It costs a failed
+write per sample and nothing more: `HarmonService.recordSafely` reports the first
+of those failures and stays quiet about the rest.
 
 ## Checking a change against a live machine
 

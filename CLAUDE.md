@@ -171,11 +171,14 @@ repository; none are visible from the code that depends on them.
 files contribute nothing and the generated `Schema.migrate()` is a body that
 returns `QueryResult.Unit`. Adding a migration file and waiting for the driver
 to apply it fails silently. Schema evolution is hand-rolled in the store;
-`docs/history.md` has the two forms, and `migrateSchema` in `HistoryStore`'s
-`init` block is the first one written. Its `PRAGMA table_info` read is also why
-opening the store is no longer lazy: sqliter connects and creates `history.db`
-inside `openOrNull`, where a store nothing ever queried used to leave no file
-behind.
+`docs/history.md` has the two forms, and the `migrateSchema` that
+`HistoryStore.openOrNull` runs is the first one written. Its `PRAGMA table_info`
+read is also why opening the store is no longer lazy: sqliter connects and
+creates `history.db` inside `openOrNull`, where a store nothing ever queried used
+to leave no file behind. That read is what tells the two open-time failures
+apart — a file it reached and cannot repair disables history for the run, a file
+it could not reach at all still hands back a store, which migrates at its first
+write.
 
 **`PRAGMA auto_vacuum` belongs in `lifecycleConfig.onCreateConnection`.** That
 is the only hook sqliter runs before it applies `journal_mode`
