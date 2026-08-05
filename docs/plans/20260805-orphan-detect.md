@@ -407,12 +407,16 @@ harmon-collector → RawSystemSnapshot (parentPid уже внутри)
 
 ### Task 8: Verify acceptance criteria
 
-- [ ] проверить, что все требования из Overview реализованы
-- [ ] проверить граничные случаи: процесс исчез между сэмплами; родителя не было в предыдущем снимке; переход к родителю, отличному от 1; каскад из десятков сирот
-- [ ] убедиться, что `bridge-probe`, IPC-протокол и `harmon-collector` не изменены — `git diff --stat` не показывает эти пути
-- [ ] прогнать полный набор: `./kotlin build && ./kotlin test`
-- [ ] прогнать релизную сборку: `./kotlin build --variant release`
-- [ ] прогнать нативные харнессы: `scripts/test-native.sh` — должны быть зелёными и без изменений
+- [x] проверить, что все требования из Overview реализованы — детект в `UsageCalculator.reparentedFrom` (`UsageCalculator.kt:70-90`), питается циклом `run`, который переносит `previous` между сэмплами (`HarmonService.kt:102-106,118-126,195-199`); алерт в `AlertAnalyzer.orphanAlerts`; запись в `HistoryStore.record` → `markReparented` → `process.reparented_at`. Условие `reparentedFrom != null && parentPid == 1` продублировано ровно у двух потребителей, как и задумано. `ProcessUsage` и `ReparentedFrom` не `@Serializable`, в `core/src/.../ipc/` ни одного упоминания
+- [x] проверить граничные случаи: процесс исчез между сэмплами; родителя не было в предыдущем снимке; переход к родителю, отличному от 1; каскад из десятков сирот
+  - исчез между сэмплами — покрыт неявно, через `.processes.single()` в `UsageCalculatorTest.reportsThePreviousParentWhenItChanged` и `.reportsATransitionToAParentOtherThanPidOne`: в обоих `previous` несёт процесс, которого в `current` уже нет, и ассерт требует ровно одну строку на выходе. Отдельного теста с этим именем нет
+  - родителя не было в предыдущем снимке — `UsageCalculatorTest.leavesTheParentNameNullWhenThePreviousSnapshotDidNotCarryIt` и `AlertAnalyzerTest.namesTheParentByPidAloneWhenThePreviousSampleDidNotHoldItsName`
+  - переход к родителю, отличному от 1 — `UsageCalculatorTest.reportsATransitionToAParentOtherThanPidOne`, `AlertAnalyzerTest.raisesNoAlertWhenTheNewParentIsNotPidOne`, `HistoryProcessRowTest.aChangeToAnyOtherParentIsNotStamped`
+  - ⚠️ каскад — покрыт на пяти сиротах при `maxAlertsPerCategory = 3` (`AlertAnalyzerTest.capsOrphanAlertsByPidAndSuppressesTheRest`, `.doesNotKeepASuppressedOrphanFiringForALaterSample`), а не на «десятках». `take`/`drop` от размера не зависят, так что поведение то же; теста именно на десятки нет
+- [x] убедиться, что `bridge-probe`, IPC-протокол и `harmon-collector` не изменены — `git diff --stat feat/split-collector-binary...HEAD` показывает 18 файлов, ни одного под `bridge-*/`, `harmon-collector/` или `core/src/dev/yoda/harmon/ipc/`. `test/native/`, `scripts/test-native.sh`, `selftest/` и оба драйвера харнессов тоже не тронуты
+- [x] прогнать полный набор: `./kotlin build && ./kotlin test` — `Build successful`; 5 + 63 + 179 + 75 = 322 теста, `PASSED`, exit 0
+- [x] прогнать релизную сборку: `./kotlin build --variant release` — `Build successful`, exit 0. Строки `'+zcm' is not a recognized feature for this target (ignoring feature)` — шум тулчейна при линковке модулей с `-lsqlite3`, к правкам ветки отношения не имеет и сборку не валит
+- [x] прогнать нативные харнессы: `scripts/test-native.sh` — 90 проверок `ok`, exit 0, исходники харнессов относительно базовой ветки без изменений
 
 ### Task 9: [Final] Update documentation
 
