@@ -455,6 +455,27 @@ class AlertAnalyzerTest {
         assertEquals(emptySet(), outcome.suppressedKeys)
     }
 
+    /**
+     * The rule has no threshold to set to zero, so `orphanAlerts=false` is the only way a user
+     * can silence it. Off means nothing at all, not even a suppressed key in the report.
+     */
+    @Test
+    fun raisesNoAlertForAnOrphanWhenTheRuleIsSwitchedOff() {
+        val usage = systemUsage(
+            processes = (1..5).map { pid -> orphan(pid = pid) },
+        )
+
+        val outcome = AlertAnalyzer().analyze(
+            usage,
+            HarmonConfig(orphanAlerts = false, maxAlertsPerCategory = 3),
+            activeKeys = emptySet(),
+        )
+
+        assertEquals(emptyList(), outcome.alerts)
+        assertEquals(emptySet(), outcome.suppressedKeys)
+        assertEquals(emptySet(), outcome.firingKeys)
+    }
+
     private companion object {
         const val CPU_KEY = "cpu:process:42:42"
 

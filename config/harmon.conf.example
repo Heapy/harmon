@@ -15,6 +15,11 @@ historyRetentionDays=7
 # charged to it. Replaces the built-in list; an empty value disables the rule.
 terminalApplications=terminal,iterm2,iterm,alacritty,wezterm,kitty,ghostty,warp,hyper,tabby,agterm
 
+# Alert when a live process loses its parent and is handed to launchd. The
+# event has no magnitude to threshold, so this rule is switched off with false
+# rather than with a zero.
+orphanAlerts=true
+
 # A zero disables the corresponding alert.
 applicationCpuAlertPercent=150
 applicationMemoryAlertMiB=2048

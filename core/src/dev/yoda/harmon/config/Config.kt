@@ -69,6 +69,19 @@ data class HarmonConfig(
     val topProcessCount: Int = 8,
     val maxAlertsPerCategory: Int = 3,
     /**
+     * Whether a process losing its parent raises an alert.
+     *
+     * Every other rule is switched off by setting its threshold to zero, and this one has no
+     * threshold to zero: orphanhood is an event, not a quantity, so there is no number a user
+     * could lower until the rule stops matching. A boolean is the honest spelling of the same
+     * promise — the rule stays on unless it is turned off explicitly.
+     *
+     * It lives here rather than in [AlertThresholds] because that type is a set of nullable
+     * numbers a value is compared against, which this is not. [maxAlertsPerCategory] is the
+     * precedent: alert-shaping, but not a threshold, so it sits at the top level too.
+     */
+    val orphanAlerts: Boolean = true,
+    /**
      * Days of samples kept in the history database, or null for no history at all.
      *
      * Null rather than zero because the two answers are different actions and not two values of
@@ -86,6 +99,7 @@ data class HarmonConfig(
         appendLine("onceSampleSeconds=$onceSampleSeconds")
         appendLine("topProcessCount=$topProcessCount")
         appendLine("maxAlertsPerCategory=$maxAlertsPerCategory")
+        appendLine("orphanAlerts=$orphanAlerts")
         appendLine("historyRetentionDays=${historyRetentionDays ?: 0}")
         appendLine("terminalApplications=${terminalApplications.joinToString(",")}")
         appendLine("applicationCpuAlertPercent=${thresholds.applicationCpuPercent ?: 0}")
@@ -151,6 +165,7 @@ object ConfigLoader {
         "onceSampleSeconds",
         "topProcessCount",
         "maxAlertsPerCategory",
+        "orphanAlerts",
         "historyRetentionDays",
         "terminalApplications",
         "applicationCpuAlertPercent",
@@ -246,6 +261,10 @@ object ConfigLoader {
             maxAlertsPerCategory = values.positiveInt(
                 "maxAlertsPerCategory",
                 defaults.maxAlertsPerCategory,
+            ),
+            orphanAlerts = values.boolean(
+                "orphanAlerts",
+                defaults.orphanAlerts,
             ),
             historyRetentionDays = values.optionalPositiveLong(
                 "historyRetentionDays",

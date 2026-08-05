@@ -214,6 +214,30 @@ class ConfigLoaderTest {
         )
     }
 
+    /**
+     * The one rule with no threshold to zero out. Every other one is disabled by setting its
+     * number to zero, so this key is what keeps that promise for orphan alerts.
+     */
+    @Test
+    fun readsTheOrphanAlertSwitchAndLeavesItOnByDefault() {
+        assertEquals(true, parseConfig().orphanAlerts)
+        assertEquals(false, parseConfig("orphanAlerts=off").orphanAlerts)
+        assertEquals(false, parseConfig("orphanAlerts=FALSE").orphanAlerts)
+        assertEquals(true, parseConfig("orphanAlerts=yes").orphanAlerts)
+        assertContains(parseConfig().redactedDescription(), "orphanAlerts=true")
+        assertContains(
+            parseConfig("orphanAlerts=0").redactedDescription(),
+            "orphanAlerts=false",
+        )
+    }
+
+    @Test
+    fun rejectsAnOrphanAlertSwitchThatIsNotABoolean() {
+        val failure = assertFailsWith<ConfigException> { parseConfig("orphanAlerts=sometimes") }
+
+        assertContains(assertNotNull(failure.message), "orphanAlerts must be true or false")
+    }
+
     /** `check-config` is where a user finds out history is off, so the key has to appear disabled. */
     @Test
     fun reportsTheHistoryRetentionEvenWhenItIsDisabled() {

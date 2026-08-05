@@ -256,13 +256,15 @@ class AlertAnalyzer {
             }
         }
 
-        addAll(
-            orphanAlerts(
-                processes = usage.processes,
-                maxPerCategory = config.maxAlertsPerCategory,
-                suppressed = suppressed,
-            ),
-        )
+        if (config.orphanAlerts) {
+            addAll(
+                orphanAlerts(
+                    processes = usage.processes,
+                    maxPerCategory = config.maxAlertsPerCategory,
+                    suppressed = suppressed,
+                ),
+            )
+        }
     }
 
     /**
