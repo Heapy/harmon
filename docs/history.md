@@ -502,7 +502,7 @@ CREATE INDEX alert_delivery_sample_id ON alert_delivery(sample_id);
 
 `reported = 1` is an alert the report carried, with its `Alert.severity`,
 `.title` and `.message`. `reported = 0` is a key from
-`MonitoringReport.suppressedAlertKeys` — over its threshold, but pushed out of
+`MonitoringReport.suppressedAlertKeys` — matched by its rule, but pushed out of
 the report by `maxAlertsPerCategory` — and that list carries nothing but the key,
 hence the three nulls. A suppressed alert that was already firing is never pushed
 again, so the row is the only trace it leaves anywhere.

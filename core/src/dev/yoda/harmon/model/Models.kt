@@ -348,9 +348,9 @@ data class Alert(
 
 /**
  * [alerts] is capped at `maxAlertsPerCategory` per rule so a report stays readable, and
- * [suppressedAlertKeys] names every key that was over its threshold but did not fit. A dropped
- * alert that was already firing is never pushed again, so this is the only place a consumer sees
- * it at all.
+ * [suppressedAlertKeys] names every key its rule matched but that did not fit — over its threshold
+ * for the rules that have one, orphaned for the one that has none. A dropped alert that was
+ * already firing is never pushed again, so this is the only place a consumer sees it at all.
  */
 data class MonitoringReport(
     val usage: SystemUsage,

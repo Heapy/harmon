@@ -243,7 +243,7 @@ fun AlertsQueries.insertReportedAlert(sampleId: Long, alert: Alert) {
 }
 
 /**
- * Writes one key from `MonitoringReport.suppressedAlertKeys` — over its threshold, but pushed out
+ * Writes one key from `MonitoringReport.suppressedAlertKeys` — matched by its rule, but pushed out
  * of the report by the per-category cap — as an `alert` row with `reported = 0` and no text.
  *
  * The key is all there is to write: the report carries nothing else about a suppressed alert. It is

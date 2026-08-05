@@ -369,7 +369,7 @@ harmon-collector → RawSystemSnapshot (parentPid уже внутри)
 
 - [x] добавить приватную функцию, читающую `PRAGMA table_info(process)` и возвращающую набор имён колонок
 - [x] добавить выполнение `ALTER TABLE process ADD COLUMN reparented_at TEXT`, когда колонки нет
-- [x] вызвать миграцию в новом `init` блоке `HistoryStore` (сегодня его нет), после создания `database` — сделано **иначе**: `init` не появился. Ревью показало, что миграция в `init` делает недостижимую базу фатальной для всего прогона, поэтому вызов живёт в `HistoryStore.openOrNull` (`HistoryStore.kt:466`) и повторяется из `record` через `migrateBeforeWriting` (`HistoryStore.kt:252`). Коммиты `9ca8472` и `d104f9a`
+- [x] вызвать миграцию в новом `init` блоке `HistoryStore` (сегодня его нет), после создания `database` — сделано **иначе**: `init` не появился. Ревью показало, что миграция в `init` делает недостижимую базу фатальной для всего прогона, поэтому вызов живёт в `HistoryStore.openOrNull` (`HistoryStore.kt:478`) и повторяется из `record` через `migrateBeforeWriting` (`HistoryStore.kt:260`). Коммиты `9ca8472` и `d104f9a`
 - [x] **не** оборачивать в `runCatching`: sqliter печатает полный стектрейс до броска, проглоченное исключение всё равно даст стену красного в launchd-логе на каждом старте агента
 - [x] написать KDoc **на английском**: это первая миграция в проекте и почему `.sqm` для неё непригоден
 - [x] написать хелпер, создающий базу **старой** формы: таблицу `process` построить сырым SQL по прежнему определению — это документирует дошаговую форму схемы там, где её больше нигде не видно
@@ -390,7 +390,7 @@ harmon-collector → RawSystemSnapshot (parentPid уже внутри)
 - Modify: `history-sqlite/test/HistoryProcessRowTest.kt`
 - ~~Modify: `history-sqlite/src/dev/yoda/harmon/history/HistoryRows.kt`~~ — не потребовался, см. первый пункт
 
-- [x] добавить в `HistoryRows.kt` функцию `ProcessesQueries.markReparented(processId, capturedAt)` — обёртка была написана и **удалена** в `934a30a` по замечанию ревью: она ничего не добавляла к сгенерированному запросу. `HistoryRows.kt` байт в байт совпадает с базовой веткой, `record` зовёт `processes.markReparented(...)` напрямую (`HistoryStore.kt:290`)
+- [x] добавить в `HistoryRows.kt` функцию `ProcessesQueries.markReparented(processId, capturedAt)` — обёртка была написана и **удалена** в `934a30a` по замечанию ревью: она ничего не добавляла к сгенерированному запросу. `HistoryRows.kt` байт в байт совпадает с базовой веткой, `record` зовёт `processes.markReparented(...)` напрямую (`HistoryStore.kt:298`)
 - [x] в цикле `record` (`HistoryStore.kt:136-143`) вынести id процесса в локальную переменную — сейчас он вычисляется инлайн внутри вызова, а отметке он нужен отдельно
 - [x] вызвать `markReparented` в той же транзакции при условии `reparentedFrom != null && parentPid == 1`
 - [x] использовать `usage.capturedAt.toSqlTimestamp()` — то же представление времени, что у `sample.captured_at`

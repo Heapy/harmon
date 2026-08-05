@@ -10,8 +10,9 @@ import dev.yoda.harmon.model.SystemUsage
 import dev.yoda.harmon.util.Format
 
 /**
- * What one sample's rules produced: the capped [alerts] a report carries, every other key over its
- * threshold in [suppressedKeys], and the [firingKeys] the alert state has to remember.
+ * What one sample's rules produced: the capped [alerts] a report carries, every other key its rule
+ * matched in [suppressedKeys] — over its threshold where the rule has one, orphaned where it has
+ * none — and the [firingKeys] the alert state has to remember.
  *
  * [firingKeys] is the reported keys plus the already-active ones among the suppressed. Dropping an
  * active key because a report had no room for it would look like the alert clearing; admitting a

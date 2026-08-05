@@ -17,9 +17,10 @@ object ReportJson {
 
     /**
      * [newAlertKeys] tells the consumer which of the reported alerts have not been delivered
-     * before; `alerts` carries the capped list and `suppressedAlertKeys` names every key that was
-     * over its threshold but did not fit it, so a consumer diffing the list cannot mistake an
-     * alert the cap dropped for a cleared one.
+     * before; `alerts` carries the capped list and `suppressedAlertKeys` names every key its rule
+     * matched but that did not fit it — over its threshold for the rules that have one, orphaned
+     * for the one that has none — so a consumer diffing the list cannot mistake an alert the cap
+     * dropped for a cleared one.
      */
     fun encode(report: MonitoringReport, newAlertKeys: List<String>): String =
         json.encodeToString(report.toDto(newAlertKeys))
