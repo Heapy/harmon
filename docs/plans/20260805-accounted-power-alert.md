@@ -415,11 +415,28 @@ payload inherits it, which makes it a `docs/collection.md` change too.
 
 ### Task 8: [Final] Close out
 
-- [ ] re-read `README.md`, `docs/collection.md` and `docs/history.md` against
-      the shipped behaviour
-- [ ] update `CLAUDE.md` only if a new non-obvious constraint was discovered
-      during implementation
-- [ ] move this plan to `docs/plans/completed/`
+- [x] re-read `README.md`, `docs/collection.md` and `docs/history.md` against
+      the shipped behaviour — no drift. Task 6 was the sixth of seven commits and
+      the seventh touched only this plan file, so nothing shipped after the prose
+      was written. Re-verified against the code anyway: the key name, default and
+      `?: 0` reporting (`Config.kt:65,133,201,329`), both alert keys and their
+      messages (`AlertAnalyzer.kt:218,233,246,263`), `Format.power` rendering
+      `2.4 W` (`Format.kt:36-43`), CRITICAL at twice the threshold behind the
+      `3 W` table cell, the heading/list pair (`ReportFormatter.kt:73-92`), the
+      root-DTO field and the untouched sorts (`ReportJson.kt:49,110,118,136,260`),
+      `topEnergy`'s `> 0` filter and shared `topProcessCount` take
+      (`ApplicationRankings.kt:57-68`), the five per-application prefixes now
+      claimed by `docs/history.md`, and `battery_impact_score` still stored on
+      both tables either way
+- [x] update `CLAUDE.md` only if a new non-obvious constraint was discovered
+      during implementation — nothing qualified, so it is untouched. The one
+      candidate, "a configurable key fails the suite unless the shipped example
+      names it too, and that test lives in the root module", is already written
+      out in `test/ExampleConfigTest.kt`'s own KDoc, including why it sits in the
+      root module; it also fails a named test rather than hiding
+- [x] move this plan to `docs/plans/completed/` — deferred to the harness at the
+      end of the run; the review, finalize and stats phases still read the file
+      at this path
 
 ## Post-Completion
 
