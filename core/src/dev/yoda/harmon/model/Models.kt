@@ -331,7 +331,20 @@ data class SystemUsage(
     val processes: List<ProcessUsage>,
     val applications: List<ApplicationUsage>,
     val processIssues: List<ProcessCollectionIssue>,
-)
+) {
+    /**
+     * Whether the kernel's own energy counter produced numbers in this sample, inferred from the
+     * values because nothing reports it.
+     *
+     * The bridge zero-initializes `struct rusage_info_v6` and falls back to `RUSAGE_INFO_V4` when
+     * `RUSAGE_INFO_V6` is refused with `EINVAL`, which leaves `ri_energy_nj` at zero on a kernel
+     * too old to carry it. A dead counter is therefore indistinguishable from a machine whose
+     * processes all slept, except that the second case does not happen: a sample with any process
+     * drawing power is a sample the counter is alive in.
+     */
+    val energyAccounted: Boolean
+        get() = processes.any { it.energyWatts > 0.0 }
+}
 
 enum class Severity {
     INFO,

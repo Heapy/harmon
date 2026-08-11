@@ -140,6 +140,58 @@ class UsageCalculatorTest {
     }
 
     /**
+     * One process drawing power is the whole signal: the counter is a per-kernel capability, so a
+     * single positive reading says it works for every process in the sample.
+     */
+    @Test
+    fun reportsTheEnergyCounterAsAccountedWhenAnyProcessDrawsPower() {
+        fun snapshot(monotonicNs: ULong, energyNanojoules: ULong) = rawSnapshot(
+            monotonicNs = monotonicNs,
+            processes = listOf(
+                rawProcess(pid = 11, startedAt = 1u, name = "idle"),
+                rawProcess(
+                    pid = 12,
+                    startedAt = 2u,
+                    name = "busy",
+                    energyNanojoules = energyNanojoules,
+                ),
+            ),
+        )
+
+        val usage = UsageCalculator().calculate(
+            snapshot(1_000_000_000u, 1_000_000_000u),
+            snapshot(3_000_000_000u, 3_000_000_000u),
+        )
+
+        assertTrue(usage.energyAccounted)
+        assertEquals(0.0, usage.processes.single { it.name == "idle" }.energyWatts)
+    }
+
+    /**
+     * The fallback to `RUSAGE_INFO_V4` leaves `ri_energy_nj` zero-initialized, so a whole sample
+     * reading zero is what a dead counter looks like.
+     */
+    @Test
+    fun reportsTheEnergyCounterAsUnaccountedWhenEveryProcessReadsZero() {
+        val processes = listOf(
+            rawProcess(pid = 11, startedAt = 1u, name = "alpha", userTimeNs = 1_000_000_000u),
+            rawProcess(pid = 12, startedAt = 2u, name = "bravo"),
+        )
+        val previous = rawSnapshot(monotonicNs = 1_000_000_000u, processes = processes)
+        val current = rawSnapshot(monotonicNs = 3_000_000_000u, processes = processes)
+
+        assertFalse(UsageCalculator().calculate(previous, current).energyAccounted)
+    }
+
+    @Test
+    fun reportsTheEnergyCounterAsUnaccountedWhenThereAreNoProcesses() {
+        val previous = rawSnapshot(monotonicNs = 1_000_000_000u, processes = emptyList())
+        val current = rawSnapshot(monotonicNs = 3_000_000_000u, processes = emptyList())
+
+        assertFalse(UsageCalculator().calculate(previous, current).energyAccounted)
+    }
+
+    /**
      * The configured terminal list has to reach the grouper that actually builds the applications,
      * not stop at the constructor.
      */
