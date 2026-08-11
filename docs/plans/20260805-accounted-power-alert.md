@@ -228,22 +228,22 @@ payload inherits it, which makes it a `docs/collection.md` change too.
 - Modify: `config/harmon.conf.example`
 - Modify: `core/test/ConfigLoaderTest.kt`
 
-- [ ] add `applicationPowerWatts: Double? = 1.5` to `AlertThresholds`
+- [x] add `applicationPowerWatts: Double? = 1.5` to `AlertThresholds`
       (`Config.kt:45`)
-- [ ] parse `applicationPowerAlertWatts` through `optionalPositiveDouble` in the
+- [x] parse `applicationPowerAlertWatts` through `optionalPositiveDouble` in the
       threshold block (`Config.kt:289-316`)
-- [ ] emit it from `redactedDescription()` next to the existing threshold lines
+- [x] emit it from `redactedDescription()` next to the existing threshold lines
       (`Config.kt:116`), following the `?: 0` convention — this is what
       `harmon check-config` prints, not a default-config generator
-- [ ] add the key to `configurableKeys` (`Config.kt:171`); no legacy alias is
+- [x] add the key to `configurableKeys` (`Config.kt:171`); no legacy alias is
       needed
-- [ ] add `applicationPowerAlertWatts=1.5` to `config/harmon.conf.example`
+- [x] add `applicationPowerAlertWatts=1.5` to `config/harmon.conf.example`
       beside `applicationBatteryImpactAlertScore=100` (`:29`) — **required**:
       `test/ExampleConfigTest.kt:60` asserts `configurableKeys` minus the keys
       the example names is empty, so omitting it fails this task's own gate
-- [ ] write tests: the key parses, the default is 1.5 when absent, `0` disables
+- [x] write tests: the key parses, the default is 1.5 when absent, `0` disables
       the rule, a negative value is rejected the way its neighbours are
-- [ ] run `./kotlin build && ./kotlin test` — must pass before task 3
+- [x] run `./kotlin build && ./kotlin test` — must pass before task 3
 
 ### Task 3: Branch the battery alert rule on counter availability
 

@@ -238,6 +238,53 @@ class ConfigLoaderTest {
         assertContains(assertNotNull(failure.message), "orphanAlerts must be true or false")
     }
 
+    /**
+     * The watt threshold reads exactly like its neighbours: absent is the default, zero is off.
+     *
+     * Zero mattering here is the whole point of the key being separate from
+     * `applicationBatteryImpactAlertScore` — one silences the accounted-power rule, the other the
+     * heuristic, and neither falls back to the other.
+     */
+    @Test
+    fun readsTheApplicationPowerThresholdAndTakesZeroAsDisabled() {
+        assertEquals(1.5, parseConfig().thresholds.applicationPowerWatts)
+        assertEquals(
+            2.5,
+            parseConfig("applicationPowerAlertWatts=2.5").thresholds.applicationPowerWatts,
+        )
+        assertNull(
+            parseConfig("applicationPowerAlertWatts=0").thresholds.applicationPowerWatts,
+            "zero is how every optional threshold here spells 'off'",
+        )
+        assertEquals(
+            100.0,
+            parseConfig("applicationPowerAlertWatts=0").thresholds.applicationBatteryImpactScore,
+            "disabling one regime must leave the other one's threshold alone",
+        )
+    }
+
+    @Test
+    fun rejectsANegativeApplicationPowerThreshold() {
+        val failure = assertFailsWith<ConfigException> {
+            parseConfig("applicationPowerAlertWatts=-1")
+        }
+
+        assertContains(
+            assertNotNull(failure.message),
+            "applicationPowerAlertWatts must be a non-negative number",
+        )
+    }
+
+    /** `check-config` prints the running configuration, so a disabled rule has to read as disabled. */
+    @Test
+    fun reportsTheApplicationPowerThresholdEvenWhenItIsDisabled() {
+        assertContains(parseConfig().redactedDescription(), "applicationPowerAlertWatts=1.5")
+        assertContains(
+            parseConfig("applicationPowerAlertWatts=0").redactedDescription(),
+            "applicationPowerAlertWatts=0",
+        )
+    }
+
     /** `check-config` is where a user finds out history is off, so the key has to appear disabled. */
     @Test
     fun reportsTheHistoryRetentionEvenWhenItIsDisabled() {

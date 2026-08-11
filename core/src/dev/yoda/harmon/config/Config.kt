@@ -49,6 +49,20 @@ data class AlertThresholds(
     val swapUsedMiB: Long? = 1_024,
     val swapOutMiBPerSecond: Double? = 25.0,
     val applicationBatteryImpactScore: Double? = 100.0,
+    /**
+     * Watts an application may draw on battery before it is alerted on.
+     *
+     * Power, not energy, so the key is spelled `applicationPowerAlertWatts` rather than
+     * `...Energy...`. The default is read off six days of one machine's history: p99 is 0.276 W and
+     * p99.9 is 1.108 W per application per sample, so 1.5 W fires for the handful of applications
+     * that genuinely cost something. One watt sustained across a working day is roughly 8 Wh, about
+     * 15% of a typical MacBook battery.
+     *
+     * It governs its own regime and nothing else: this threshold applies where the kernel's energy
+     * counter is live, [applicationBatteryImpactScore] where it is not, and a zero on either one
+     * silences that regime rather than falling back to the other.
+     */
+    val applicationPowerWatts: Double? = 1.5,
     val batteryLowPercent: Int? = 20,
 )
 
@@ -116,6 +130,7 @@ data class HarmonConfig(
             "applicationBatteryImpactAlertScore=" +
                 (thresholds.applicationBatteryImpactScore ?: 0),
         )
+        appendLine("applicationPowerAlertWatts=${thresholds.applicationPowerWatts ?: 0}")
         appendLine("batteryLowAlertPercent=${thresholds.batteryLowPercent ?: 0}")
         appendLine("systemNotifications=${notifications.systemEnabled}")
         appendLine("notifyEverySample=${notifications.notifyEverySample}")
@@ -183,6 +198,7 @@ object ConfigLoader {
         "swapAlertMiB",
         "swapOutAlertMiBPerSecond",
         "applicationBatteryImpactAlertScore",
+        "applicationPowerAlertWatts",
         "batteryLowAlertPercent",
         "systemNotifications",
         "notifyEverySample",
@@ -309,6 +325,10 @@ object ConfigLoader {
                 applicationBatteryImpactScore = values.optionalPositiveDouble(
                     "applicationBatteryImpactAlertScore",
                     thresholdDefaults.applicationBatteryImpactScore,
+                ),
+                applicationPowerWatts = values.optionalPositiveDouble(
+                    "applicationPowerAlertWatts",
+                    thresholdDefaults.applicationPowerWatts,
                 ),
                 batteryLowPercent = values.optionalPercentage(
                     "batteryLowAlertPercent",

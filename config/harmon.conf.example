@@ -27,6 +27,7 @@ applicationDiskWriteAlertMiBPerSecond=50
 swapAlertMiB=1024
 swapOutAlertMiBPerSecond=25
 applicationBatteryImpactAlertScore=100
+applicationPowerAlertWatts=1.5
 batteryLowAlertPercent=20
 
 # Delivery
