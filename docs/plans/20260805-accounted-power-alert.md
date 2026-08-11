@@ -365,19 +365,53 @@ payload inherits it, which makes it a `docs/collection.md` change too.
 
 ### Task 7: Verify acceptance criteria
 
-- [ ] `applicationPowerAlertWatts` parses, defaults to 1.5, and `0` disables
-- [ ] the two keys are independent: neither one set to `0` disables the other's
-      rule
-- [ ] the watt rule fires only on battery and only when the counter is live
-- [ ] the score rule still fires unchanged when the counter is dead
-- [ ] the text report switches metric and heading together
-- [ ] the JSON payload gained exactly one field and changed no sort order
-- [ ] `config/harmon.conf.example` names every configurable key
-      (`test/ExampleConfigTest.kt` proves it)
-- [ ] the collector, the bridges, `CollectorProtocol` and the `.sq` schema are
-      untouched — confirm with `git diff --stat`
-- [ ] run the full suite: `./kotlin build && ./kotlin test`
-- [ ] run `./kotlin build --variant release` to confirm the release variant links
+- [x] `applicationPowerAlertWatts` parses, defaults to 1.5, and `0` disables —
+      `optionalPositiveDouble` (`Config.kt:521-533`) returns the default when the
+      key is absent, `null` on `0`, and throws on a negative; pinned by
+      `ConfigLoaderTest.readsTheApplicationPowerThresholdAndTakesZeroAsDisabled`,
+      `.rejectsANegativeApplicationPowerThreshold`, and
+      `.reportsTheApplicationPowerThresholdEvenWhenItIsDisabled`
+- [x] the two keys are independent: neither one set to `0` disables the other's
+      rule — `AlertAnalyzer.kt:206` reads `if (usage.power.onBattery)` first, then
+      branches on `usage.energyAccounted`, and only inside each branch does the
+      regime's own `?.let` run, so neither `null` can reach the other's rule;
+      pinned by `AlertAnalyzerTest.doesNotFallBackToTheScoreWhenTheWattThresholdIsDisabled`
+      and `.alertsOnWattsWhileTheScoreThresholdIsDisabled`
+- [x] the watt rule fires only on battery and only when the counter is live —
+      `AlertAnalyzerTest.alertsOnAccountedWattsWhereTheEnergyCounterIsLive`,
+      `.raisesNoBatteryDrainAlertBelowTheWattThreshold` (impact 260 stays silent,
+      so the score is genuinely not consulted in this regime), and
+      `.raisesNoBatteryDrainAlertInEitherRegimeWhileOnWallPower`
+- [x] the score rule still fires unchanged when the counter is dead — the block
+      moved into the `else` branch with a byte-identical body (key, value,
+      severity, title and message all unchanged in the diff);
+      `AlertAnalyzerTest.fallsBackToTheHeuristicScoreWhereTheEnergyCounterIsDead`
+- [x] the text report switches metric and heading together — one `energyAccounted`
+      read drives the heading, the list and the metric lambda
+      (`ReportFormatter.kt:66-92`); both
+      `ReportFormatterTest.theBatteryImpactTableLeadsWithWattsWhenTheCounterIsAccounted`
+      and `.theBatteryImpactTableKeepsTheHeuristicScoreWhenNothingIsAccounted`
+      assert the heading and the full row list in one comparison, so a heading
+      that moved without its list fails
+- [x] the JSON payload gained exactly one field and changed no sort order —
+      `git diff --numstat` on `ReportJson.kt` is `10 0`, all ten added lines being
+      `energyAccounted` and its KDoc, and `ApplicationRankings.kt` is absent from
+      the diff entirely; `ReportJsonTest.keepsTopBatteryImpactOnTheHeuristicScoreWhileTheCounterIsLive`
+      pins both the application and the process slice, and
+      `.reportsWhetherTheKernelEnergyCounterProducedThisSample` pins both regimes
+- [x] `config/harmon.conf.example` names every configurable key
+      (`test/ExampleConfigTest.kt` proves it) —
+      `ExampleConfigTest.theShippedExampleParsesAndNamesEveryConfigurableKey`
+      ran and passed
+- [x] the collector, the bridges, `CollectorProtocol` and the `.sq` schema are
+      untouched — confirm with `git diff --stat`: `git diff --stat main...HEAD --
+      harmon-collector/ 'bridge-*' history-sqlite/ '*CollectorProtocol.kt' '*.sq'`
+      returns nothing
+- [x] run the full suite: `./kotlin build && ./kotlin test` — 352 tests across the
+      ten test tasks, 0 failures, `SelftestBridgeTest` and `NativeCTest` included
+- [x] run `./kotlin build --variant release` to confirm the release variant links —
+      "Build successful"; the `'+zcm' is not a recognized feature` lines the
+      linker prints are LLVM notices on stderr, not build failures
 
 ### Task 8: [Final] Close out
 
