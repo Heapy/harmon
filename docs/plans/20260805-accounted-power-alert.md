@@ -311,15 +311,18 @@ payload inherits it, which makes it a `docs/collection.md` change too.
 - Modify: `core/src/dev/yoda/harmon/report/ReportJson.kt`
 - Modify: `core/test/ReportJsonTest.kt`
 
-- [ ] add `energyAccounted: Boolean` to the root DTO and populate it from
+- [x] add `energyAccounted: Boolean` to the root DTO and populate it from
       `usage.energyAccounted`
-- [ ] change nothing else: `topBatteryImpact` keeps sorting by score,
+- [x] change nothing else: `topBatteryImpact` keeps sorting by score,
       `topEnergy` keeps filtering `> 0`
-- [ ] write tests for the field in both regimes
-- [ ] write a regression test that `topBatteryImpact` is still ordered by score
+- [x] write tests for the field in both regimes
+- [x] write a regression test that `topBatteryImpact` is still ordered by score
       even when the counter is live — this is the guard on the text/JSON
-      asymmetry surviving future refactors
-- [ ] run `./kotlin build && ./kotlin test` — must pass before task 6
+      asymmetry surviving future refactors. Verified by mutation: switching
+      either the application slice to `rankings.topEnergy` or the inline process
+      sort to `energyWatts` fails it, and the process slice is covered because
+      it is sorted in `ReportJson` rather than by `ApplicationRankings`
+- [x] run `./kotlin build && ./kotlin test` — must pass before task 6
 
 ### Task 6: Update the documentation
 

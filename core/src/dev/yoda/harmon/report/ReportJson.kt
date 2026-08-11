@@ -46,6 +46,7 @@ object ReportJson {
         return ReportEventDto(
             capturedAt = usage.capturedAt.toString(),
             elapsedSeconds = usage.elapsedSeconds,
+            energyAccounted = usage.energyAccounted,
             power = usage.power.toDto(),
             swap = SwapDto(
                 usedBytes = usage.swap.usedBytes,
@@ -248,6 +249,15 @@ private data class ReportEventDto(
     val event: String = "harmon.sample",
     val capturedAt: String,
     val elapsedSeconds: Double,
+    /**
+     * Whether the kernel's own energy counter produced the watts in this sample, so a consumer can
+     * tell which regime it is reading. The flag is the only thing that switches: unlike the text
+     * report, which has one column and has to choose, this payload carries `topBatteryImpact`
+     * sorted by the heuristic score and `topEnergy` sorted by watts side by side, always, whatever
+     * this reads. Re-sorting either list by the other metric would make its name a lie to every
+     * consumer that already reads it.
+     */
+    val energyAccounted: Boolean,
     val power: PowerDto,
     val swap: SwapDto,
     val system: SystemDto,

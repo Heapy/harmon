@@ -2,6 +2,8 @@ import dev.yoda.harmon.model.MonitoringReport
 import dev.yoda.harmon.report.ReportJson
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonArray
+import kotlinx.serialization.json.JsonObject
+import kotlinx.serialization.json.boolean
 import kotlinx.serialization.json.jsonArray
 import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
@@ -136,6 +138,72 @@ class ReportJsonTest {
         }
     }
 
+    /**
+     * The regime the sample was measured in, reported at the root because it qualifies every watt
+     * figure below it. Both directions are pinned: a flag that is hardcoded true would pass the
+     * first half of any single-regime test.
+     */
+    @Test
+    fun reportsWhetherTheKernelEnergyCounterProducedThisSample() {
+        val accounted = Json
+            .parseToJsonElement(ReportJson.encode(rankingReport(), newAlertKeys = emptyList()))
+            .jsonObject
+
+        assertTrue(accounted.getValue("energyAccounted").jsonPrimitive.boolean)
+
+        val heuristic = Json
+            .parseToJsonElement(
+                ReportJson.encode(zeroEnergyReport(), newAlertKeys = emptyList()),
+            )
+            .jsonObject
+
+        assertFalse(heuristic.getValue("energyAccounted").jsonPrimitive.boolean)
+    }
+
+    /**
+     * The asymmetry between this payload and the text report, guarded. The text report switches its
+     * one column to watts when the counter is live; this payload must not, because
+     * `topBatteryImpact` and `topEnergy` are both already here and re-sorting either by the other's
+     * metric would make the field name lie to consumers that already read it. Asserting
+     * `energyAccounted` first is what keeps the guard from passing vacuously if the fixture ever
+     * loses its watts, and both slices are checked because the application list is ranked by
+     * `ApplicationRankings` while the process list is sorted inline here — two separate places a
+     * refactor could "helpfully" switch.
+     */
+    @Test
+    fun keepsTopBatteryImpactOnTheHeuristicScoreWhileTheCounterIsLive() {
+        val payload = Json
+            .parseToJsonElement(ReportJson.encode(rankingReport(), newAlertKeys = emptyList()))
+            .jsonObject
+
+        assertTrue(payload.getValue("energyAccounted").jsonPrimitive.boolean)
+        assertEquals(
+            listOf("alpha", "bravo", "echo"),
+            sliceNames(payload, "applications", "topBatteryImpact"),
+        )
+        assertEquals(
+            listOf("alpha", "bravo", "echo"),
+            sliceNames(payload, "processes", "topBatteryImpact"),
+        )
+        assertEquals(
+            listOf("alpha", "charlie", "echo"),
+            sliceNames(payload, "applications", "topEnergy"),
+        )
+        assertEquals(
+            listOf("alpha", "charlie", "echo"),
+            sliceNames(payload, "processes", "topEnergy"),
+        )
+    }
+
+    /** The names one ranked slice selected, in the order it selected them. */
+    private fun sliceNames(payload: JsonObject, section: String, slice: String): List<String> =
+        payload
+            .getValue(section)
+            .jsonObject
+            .getValue(slice)
+            .jsonArray
+            .map { it.jsonObject.getValue("name").jsonPrimitive.content }
+
     @Test
     fun usesTelegramApiFieldNames() {
         val payload = Json.parseToJsonElement(
@@ -150,6 +218,18 @@ class ReportJsonTest {
         )
     }
 }
+
+/**
+ * [rankingReport] with the kernel counter dead: every process reads zero watts, which is the only
+ * way a sample says the counter never answered.
+ */
+private fun zeroEnergyReport(): MonitoringReport = MonitoringReport(
+    usage = systemUsage(
+        processes = rankingReport().usage.processes.map { it.copy(energyWatts = 0.0) },
+    ),
+    alerts = emptyList(),
+    topProcessCount = 3,
+)
 
 /** The slices [rankingReport] has to produce, one line per slice, in selection order. */
 private val EXPECTED_RANKED_SLICES = """
