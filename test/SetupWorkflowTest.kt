@@ -1,3 +1,4 @@
+import dev.yoda.harmon.BuildInfo
 import dev.yoda.harmon.setup.CommandInvocation
 import dev.yoda.harmon.setup.CommandResult
 import dev.yoda.harmon.setup.CommandRunner
@@ -47,7 +48,7 @@ class SetupWorkflowTest {
         assertEquals("0600".toUInt(8), fileSystem.attributes[paths.config]?.mode)
         assertFalse(paths.legacyAgentPlist in fileSystem.files)
         assertFalse(paths.legacyCommandLink in fileSystem.symlinks)
-        assertTrue(fileSystem.files.getValue(paths.installedInfoPlist).contains("0.4.0"))
+        assertTrue(fileSystem.files.getValue(paths.installedInfoPlist).contains(BuildInfo.VERSION))
         assertFalse(fileSystem.files.getValue(paths.installedInfoPlist).contains("@HARMON_VERSION@"))
         assertEquals(
             2,
