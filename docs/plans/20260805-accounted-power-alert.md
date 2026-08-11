@@ -251,30 +251,30 @@ payload inherits it, which makes it a `docs/collection.md` change too.
 - Modify: `core/src/dev/yoda/harmon/analysis/AlertAnalyzer.kt`
 - Modify: `core/test/AlertAnalyzerTest.kt`
 
-- [ ] invert the existing nesting at `AlertAnalyzer.kt:206`: hoist
+- [x] invert the existing nesting at `AlertAnalyzer.kt:206`: hoist
       `if (usage.power.onBattery)` outside, and read each threshold inside its
       own branch. Nesting the new rule inside
       `thresholds.applicationBatteryImpactScore?.let` would let
       `applicationBatteryImpactAlertScore=0` disable the watt rule as well
-- [ ] add the watt branch under `usage.energyAccounted`: key `power:${it.id}`,
+- [x] add the watt branch under `usage.energyAccounted`: key `power:${it.id}`,
       value `it.energyWatts`, `clearThreshold = threshold.cleared()`,
       `maxPerCategory = config.maxAlertsPerCategory` — the same `selectAlerting`
       call shape as the score branch
-- [ ] keep severity CRITICAL at `>= threshold * 2` and the title
+- [x] keep severity CRITICAL at `>= threshold * 2` and the title
       "Likely battery drain"; message reads
       `"${application.alertLabel()} draws ${Format.power(...)}"`
-- [ ] leave the score branch behaviour untouched for the unavailable-counter
+- [x] leave the score branch behaviour untouched for the unavailable-counter
       case
-- [ ] write tests for the four regime cases: live counter over threshold fires a
+- [x] write tests for the four regime cases: live counter over threshold fires a
       watt alert; live counter under threshold is silent; dead counter fires the
       score rule; not on battery is silent in both regimes
-- [ ] write tests for the two-key cross product: `applicationPowerAlertWatts=0`
+- [x] write tests for the two-key cross product: `applicationPowerAlertWatts=0`
       with a live counter is silent and does **not** fall back to the score;
       `applicationBatteryImpactAlertScore=0` with a live counter still fires the
       watt alert — this is the regression the inversion exists for
-- [ ] write tests: CRITICAL at twice the threshold, the key is `power:`, and the
+- [x] write tests: CRITICAL at twice the threshold, the key is `power:`, and the
       message text matches what Task 6 documents
-- [ ] run `./kotlin build && ./kotlin test` — must pass before task 4
+- [x] run `./kotlin build && ./kotlin test` — must pass before task 4
 
 ### Task 4: Switch the text report's metric and heading
 

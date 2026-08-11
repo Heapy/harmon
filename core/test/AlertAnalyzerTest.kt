@@ -146,6 +146,99 @@ class AlertAnalyzerTest {
         assertEquals(emptyList(), alerts.filter { it.key.startsWith("battery") })
     }
 
+    @Test
+    fun alertsOnAccountedWattsWhereTheEnergyCounterIsLive() {
+        val usage = systemUsage(processes = listOf(processUsage(energyWatts = 2.0, impact = 4.0)))
+
+        val alerts = AlertAnalyzer().analyze(usage, HarmonConfig(), activeKeys = emptySet()).alerts
+        val alert = alerts.single()
+
+        assertEquals("power:process:42:42", alert.key)
+        assertEquals(Severity.WARNING, alert.severity)
+        assertEquals("Likely battery drain", alert.title)
+        assertEquals("example (PID 42) draws 2.0 W", alert.message)
+    }
+
+    @Test
+    fun raisesNoBatteryDrainAlertBelowTheWattThreshold() {
+        val usage = systemUsage(processes = listOf(processUsage(energyWatts = 1.0, impact = 260.0)))
+
+        val alerts = AlertAnalyzer().analyze(usage, HarmonConfig(), activeKeys = emptySet()).alerts
+
+        assertEquals(emptyList(), alerts)
+    }
+
+    @Test
+    fun fallsBackToTheHeuristicScoreWhereTheEnergyCounterIsDead() {
+        val usage = systemUsage(processes = listOf(processUsage(energyWatts = 0.0, impact = 130.0)))
+
+        val alerts = AlertAnalyzer().analyze(usage, HarmonConfig(), activeKeys = emptySet()).alerts
+        val alert = alerts.single()
+
+        assertEquals("battery-impact:process:42:42", alert.key)
+        assertEquals("Likely battery drain", alert.title)
+        assertEquals("example (PID 42) has impact score 130.0", alert.message)
+    }
+
+    @Test
+    fun raisesNoBatteryDrainAlertInEitherRegimeWhileOnWallPower() {
+        val analyzer = AlertAnalyzer()
+
+        listOf(
+            processUsage(energyWatts = 3.0, impact = 4.0),
+            processUsage(energyWatts = 0.0, impact = 260.0),
+        ).forEach { process ->
+            val sampled = systemUsage(processes = listOf(process))
+            val usage = sampled.copy(power = sampled.power.copy(onBattery = false, charging = true))
+
+            assertEquals(
+                emptyList(),
+                analyzer.analyze(usage, HarmonConfig(), activeKeys = emptySet()).alerts,
+                process.toString(),
+            )
+        }
+    }
+
+    /**
+     * The two thresholds govern one regime each. Nesting the watt rule inside the score threshold's
+     * `?.let` would tie them together, because `optionalPositiveDouble` turns a configured `0` into
+     * a `null`.
+     */
+    @Test
+    fun doesNotFallBackToTheScoreWhenTheWattThresholdIsDisabled() {
+        val usage = systemUsage(processes = listOf(processUsage(energyWatts = 3.0, impact = 260.0)))
+
+        val alerts = AlertAnalyzer()
+            .analyze(usage, batteryRegimeThresholds(watts = null), activeKeys = emptySet())
+            .alerts
+
+        assertEquals(emptyList(), alerts)
+    }
+
+    @Test
+    fun alertsOnWattsWhileTheScoreThresholdIsDisabled() {
+        val usage = systemUsage(processes = listOf(processUsage(energyWatts = 3.0, impact = 260.0)))
+
+        val alerts = AlertAnalyzer()
+            .analyze(usage, batteryRegimeThresholds(score = null), activeKeys = emptySet())
+            .alerts
+
+        assertEquals(listOf("power:process:42:42"), alerts.map { it.key })
+    }
+
+    @Test
+    fun gradesTheWattRuleAsCriticalAtTwiceItsThreshold() {
+        val usage = systemUsage(processes = listOf(processUsage(energyWatts = 3.0, impact = 4.0)))
+
+        val alert = AlertAnalyzer()
+            .analyze(usage, HarmonConfig(), activeKeys = emptySet())
+            .alerts
+            .single()
+
+        assertEquals(Severity.CRITICAL, alert.severity)
+        assertEquals("example (PID 42) draws 3.0 W", alert.message)
+    }
+
     /** The two system-wide rules spell their hysteresis out by hand, one rule at a time. */
     @Test
     fun holdsTheSwapAlertBetweenItsClearRatioAndItsThresholdOnlyWhileActive() {
@@ -543,6 +636,28 @@ class AlertAnalyzerTest {
                 swapUsedMiB = swapUsedMiB,
                 swapOutMiBPerSecond = null,
                 applicationBatteryImpactScore = null,
+                applicationPowerWatts = null,
+                batteryLowPercent = null,
+            ),
+        )
+
+        /**
+         * Only the two battery-drain thresholds, at their shipped defaults unless a test disables
+         * one, so the cross product of the two keys is observed without another rule's alert in
+         * the list. A `null` is what `optionalPositiveDouble` makes of a configured `0`.
+         */
+        fun batteryRegimeThresholds(
+            watts: Double? = 1.5,
+            score: Double? = 100.0,
+        ): HarmonConfig = HarmonConfig(
+            thresholds = AlertThresholds(
+                applicationCpuPercent = null,
+                applicationMemoryMiB = null,
+                applicationDiskWriteMiBPerSecond = null,
+                swapUsedMiB = null,
+                swapOutMiBPerSecond = null,
+                applicationBatteryImpactScore = score,
+                applicationPowerWatts = watts,
                 batteryLowPercent = null,
             ),
         )

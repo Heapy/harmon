@@ -203,35 +203,69 @@ class AlertAnalyzer {
             }
         }
 
-        thresholds.applicationBatteryImpactScore?.let { threshold ->
-            if (usage.power.onBattery) {
-                usage.applications
-                    .selectAlerting(
-                        maxPerCategory = config.maxAlertsPerCategory,
-                        activeKeys = activeKeys,
-                        suppressed = suppressed,
-                        key = { "battery-impact:${it.id}" },
-                        value = { it.batteryImpactScore },
-                        threshold = threshold,
-                        clearThreshold = threshold.cleared(),
-                    )
-                    .forEach { (key, application) ->
-                        add(
-                            Alert(
-                                key = key,
-                                severity = if (
-                                    application.batteryImpactScore >= threshold * 2
-                                ) {
-                                    Severity.CRITICAL
-                                } else {
-                                    Severity.WARNING
-                                },
-                                title = "Likely battery drain",
-                                message = "${application.alertLabel()} has impact score " +
-                                    Format.decimal(application.batteryImpactScore),
-                            ),
+        // The battery guard is read before either threshold, so each regime reads only its own:
+        // where the kernel's energy counter is live the watt rule applies and the heuristic score
+        // is not consulted at all, and a threshold configured to zero silences that regime instead
+        // of falling back to the other one.
+        if (usage.power.onBattery) {
+            if (usage.energyAccounted) {
+                thresholds.applicationPowerWatts?.let { threshold ->
+                    usage.applications
+                        .selectAlerting(
+                            maxPerCategory = config.maxAlertsPerCategory,
+                            activeKeys = activeKeys,
+                            suppressed = suppressed,
+                            key = { "power:${it.id}" },
+                            value = { it.energyWatts },
+                            threshold = threshold,
+                            clearThreshold = threshold.cleared(),
                         )
-                    }
+                        .forEach { (key, application) ->
+                            add(
+                                Alert(
+                                    key = key,
+                                    severity = if (application.energyWatts >= threshold * 2) {
+                                        Severity.CRITICAL
+                                    } else {
+                                        Severity.WARNING
+                                    },
+                                    title = "Likely battery drain",
+                                    message = "${application.alertLabel()} draws " +
+                                        Format.power(application.energyWatts),
+                                ),
+                            )
+                        }
+                }
+            } else {
+                thresholds.applicationBatteryImpactScore?.let { threshold ->
+                    usage.applications
+                        .selectAlerting(
+                            maxPerCategory = config.maxAlertsPerCategory,
+                            activeKeys = activeKeys,
+                            suppressed = suppressed,
+                            key = { "battery-impact:${it.id}" },
+                            value = { it.batteryImpactScore },
+                            threshold = threshold,
+                            clearThreshold = threshold.cleared(),
+                        )
+                        .forEach { (key, application) ->
+                            add(
+                                Alert(
+                                    key = key,
+                                    severity = if (
+                                        application.batteryImpactScore >= threshold * 2
+                                    ) {
+                                        Severity.CRITICAL
+                                    } else {
+                                        Severity.WARNING
+                                    },
+                                    title = "Likely battery drain",
+                                    message = "${application.alertLabel()} has impact score " +
+                                        Format.decimal(application.batteryImpactScore),
+                                ),
+                            )
+                        }
+                }
             }
         }
 
