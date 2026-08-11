@@ -439,7 +439,7 @@ was actually measured.
 ## Battery-impact ranking
 
 Harmon exports `energyWatts` when the V6 ledger changes. It also keeps a stable
-cross-process heuristic for systems and tasks where energy accounting is zero:
+cross-process heuristic for systems where energy accounting reports nothing:
 
 ```text
 I/O MiB/s =
@@ -455,6 +455,38 @@ Battery-impact alerts fire only while on battery.
 The score does not directly include GPU engines, network radio activity,
 display brightness, thermal state, or external peripherals.
 
+Those two weights are why the score never matched Activity Monitor. Apple has
+never published the Energy Impact formula — the current guide describes it only
+as a relative measure of energy use — but it has been reconstructed twice. On
+OS X 10.9 Mavericks the `POWER` column of `top` matched Activity Monitor's
+Energy Impact, and its formula was
+`100 × (CPU_time_us + idle_wakeups × 500us) / elapsed_time_us`, which reduces to
+about `CPU% + 0.05 × wakeups/s`. Later Intel releases moved the coefficients
+into per-model files at `/usr/share/pmenergy/<board-id>.plist`, normalised so
+that one unit of Energy Impact is 10 ms of CPU-equivalent time; a wakeup was
+worth 0.0002 s of that, about `0.02 × wakeups/s`. Apple lowered the wakeup
+penalty over time, and Harmon's 0.25 is 5× the Mavericks figure and 12.5× the
+later one. Those plists carry disk and network coefficients too, but their units
+are unclear enough that Chromium's reimplementation deliberately does not apply
+them, so Harmon's 2 per MiB/s of physical I/O has no Apple analogue at all. On
+Apple silicon the comparison stops being possible at all: the kernel accounts
+energy directly in nanojoules — `ri_energy_nj`, what `energyWatts` is derived
+from — and no public formula maps that onto the number the UI shows.
+
+Which of the two metrics a report leads with is decided once per sample rather
+than per application. `SystemUsage.energyAccounted` is true when any process in
+the sample reads above zero watts; a process at zero on such a machine has
+genuinely slept rather than gone unmeasured, so mixing watts into some rows and
+the score into others would produce a column that is not comparable with itself.
+The text report therefore switches whole, heading and list together: either
+`Likely application battery impact (accounted power)` over the applications
+ranked by `energyWatts`, or `(heuristic score)` over the applications ranked by
+`batteryImpactScore`. The accounted list drops applications drawing nothing
+instead of printing zero rows, so it can be shorter than `topProcessCount`. The
+JSON payload does not switch — it has carried both rankings all along and keeps
+both sorts — and exposes `energyAccounted` so a consumer can tell which regime
+produced what it is reading.
+
 ## Alerts
 
 | Rule | Default | Critical at |
@@ -464,9 +496,25 @@ display brightness, thermal state, or external peripherals.
 | Application physical storage writes | 50 MiB/s | 100 MiB/s |
 | Allocated-swap usage | 1,024 MiB | 2,048 MiB |
 | System swap-out traffic | 25 MiB/s | 50 MiB/s |
-| Application battery-impact score | 100, on battery | 200 |
+| Application accounted power | 1.5 W, on battery, counter reporting | 3 W |
+| Application battery-impact score | 100, on battery, counter silent | 200 |
 | Low battery | 20% | 10% |
 | Orphaned process | on | never; always a warning |
+
+The two battery rows are one rule with two thresholds, and `energyAccounted`
+decides which of them is read for a sample. Neither falls back to the other:
+with the counter reporting, `applicationPowerAlertWatts=0` silences
+battery-drain alerting rather than handing the sample back to the score, and
+`applicationBatteryImpactAlertScore=0` does not reach the watt rule at all. Both
+carry the title "Likely battery drain" and both are capped and cleared like
+every other application rule, but they differ in key and message: the watt
+branch keys `power:<application key>` and reads
+`Firefox (12 processes) draws 2.4 W`, the score branch keys
+`battery-impact:<application key>` and reads
+`Firefox (12 processes) has impact score 124.0`. A machine crossing between the
+regimes therefore clears one key and raises another for the same application.
+The noise is bounded to the moment of the switch, and in exchange the `alert`
+table in the history database records which metric fired.
 
 The orphan rule is the only one reading a transition rather than a level, and
 the only one keyed to a process rather than to an application or to the system.
@@ -624,6 +672,10 @@ Collector IPC and notification payloads are encoded by
 The standard `harmon.sample` webhook includes:
 
 - power, swap, system CPU, load, VM, and internal-storage summaries;
+- `energyAccounted`, whether the kernel's energy counter produced this sample's
+  watts, so a consumer can tell which regime it is reading. It is the only thing
+  that switches: unlike the text report, which has one column and has to choose,
+  the payload always carries both rankings with their own sorts intact;
 - top applications and processes by CPU, memory, battery impact, physical
   writes, internal logical writes, compressed/paged-out proxy, and accounted
   energy;

@@ -48,7 +48,9 @@ samples are queried through.
   `terminalApplications` treated as boundaries rather than owners of every
   command they launch;
 - alerts on crossing a threshold for CPU, memory, physical storage writes, swap
-  usage, swap-out traffic, likely battery impact, and low battery;
+  usage, swap-out traffic, likely battery drain — accounted watts where macOS's
+  energy counter reports, the heuristic score where it does not — and low
+  battery;
 - an alert on a process losing its parent: a process that had a live parent in
   one sample and is handed to launchd by the next raises a warning naming both,
   which no snapshot of `ps` can tell apart from an ordinary daemon.
@@ -107,7 +109,17 @@ relative score:
 CPU % + wakeups/s × 0.25 + physical disk I/O MiB/s × 2
 ```
 
-The score is useful for ranking and alerting, not as a wattmeter.
+The score is not a wattmeter, and where the accounted counter reports it is no
+longer what Harmon ranks or alerts on. Which of the two leads is decided once
+per sample rather than per application: any process reading above zero watts
+makes the whole sample accounted. The battery-impact table names the regime in
+its heading — `(accounted power)` or `(heuristic score)` — and the JSON payload
+carries `energyAccounted` for the same reason. The score is still calculated for
+every sample, carried in the JSON payload and stored in `history.db` either way;
+on a machine whose counter reads zero it remains the only battery signal there
+is. Its wakeup weight is 5 to 12.5 times heavier than in the reconstructions of
+Apple's own formula, and its I/O term has no Apple analogue at all; see
+[the collection model](docs/collection.md) for that comparison.
 
 ## Upgrading from an earlier build
 
@@ -246,6 +258,7 @@ applicationDiskWriteAlertMiBPerSecond=50
 swapAlertMiB=1024
 swapOutAlertMiBPerSecond=25
 applicationBatteryImpactAlertScore=100
+applicationPowerAlertWatts=1.5
 batteryLowAlertPercent=20
 systemNotifications=true
 notifyEverySample=false
@@ -269,6 +282,17 @@ turns the terminal boundary off. The old
 `alertCooldownSeconds` no longer does anything — alerts are pushed when a
 threshold is crossed rather than on a timer — but the key is still accepted and
 reported on stderr instead of failing the config.
+
+`applicationPowerAlertWatts` and `applicationBatteryImpactAlertScore` are two
+thresholds for one rule, and only one of them is read per sample. Where macOS's
+energy counter reports, the watt threshold decides and the score threshold is
+not consulted at all; where the counter reads zero, the score decides exactly as
+before. That changes the behaviour of configurations written before this
+release: on a machine with a working counter a tuned
+`applicationBatteryImpactAlertScore` stops firing and the 1.5 W default takes
+over. Neither key falls back to the other, so `applicationPowerAlertWatts=0`
+silences battery-drain alerts on such a machine rather than handing the rule
+back to the score.
 
 Notification destinations can be overridden for manual runs:
 

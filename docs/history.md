@@ -153,10 +153,11 @@ ORDER BY s.captured_at, al.key;
 ```
 
 Splitting the key at its first `:` rather than concatenating each rule prefix in
-turn is what keeps this correct as rules are added: there are four
-per-application rules today (`cpu:`, `memory:`, `disk-write:`, `battery-impact:`)
-and a list of them written into the join answers `NULL` for any rule it forgot —
-which reads exactly like "this alert is not about an application".
+turn is what keeps this correct as rules are added: there are five
+per-application rules today (`cpu:`, `memory:`, `disk-write:`,
+`battery-impact:`, `power:`) and a list of them written into the join answers
+`NULL` for any rule it forgot — which reads exactly like "this alert is not
+about an application".
 
 What a notification channel actually did — the one record of a webhook that has
 been answering 500 all night:
@@ -512,9 +513,16 @@ ordinal, so that inserting a constant into `Severity` cannot re-point rows
 written before it.
 
 `alert.key` is the rule's key: `swap`, `swap-out` and `battery-low` for the
-global rules; `cpu:`, `memory:`, `disk-write:` and `battery-impact:` prefixed to
-the application key for the per-application ones. A key appears at most once per
-sample.
+global rules; `cpu:`, `memory:`, `disk-write:`, `battery-impact:` and `power:`
+prefixed to the application key for the per-application ones. A key appears at
+most once per sample.
+
+`battery-impact:` and `power:` are the two forms of one rule and never both
+appear for the same sample: `power:` is what a sample whose processes reported
+accounted energy raises, `battery-impact:` what a sample without it falls back
+to. So the prefix is the record of which metric the alert was judged on, and an
+application seen under both prefixes over a window is a machine that changed
+regime rather than two rules firing at once.
 
 `alert_delivery` is what each notification channel did with this sample's push —
 `system`, `webhook` or `telegram`, at most once per sample each, failures

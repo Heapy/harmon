@@ -331,29 +331,36 @@ payload inherits it, which makes it a `docs/collection.md` change too.
 - Modify: `docs/collection.md`
 - Modify: `docs/history.md`
 
-- [ ] add `applicationPowerAlertWatts=1.5` to the example config block in
+- [x] add `applicationPowerAlertWatts=1.5` to the example config block in
       `README.md`
-- [ ] state plainly in `README.md` that on a machine with a working counter
+- [x] state plainly in `README.md` that on a machine with a working counter
       `applicationBatteryImpactAlertScore` no longer fires and the watt threshold
       takes over — existing configurations change behaviour, so this is not a
-      footnote
-- [ ] correct the two `README.md` passages that name the score as the alerting
+      footnote. Placed in the Configuration prose beside the score key and its
+      aliases, not in "Upgrading from an earlier build", which narrates the
+      0.5.0 protocol-2 migration and nothing else
+- [x] correct the two `README.md` passages that name the score as the alerting
       metric: the feature list at `:50-51` and the `### Battery impact` section
       at `:100-110` ("useful for ranking and alerting")
-- [ ] add the rule to the alert table in `docs/collection.md` and describe in
-      "Battery-impact ranking" which metric appears when
-- [ ] add `energyAccounted` to the `harmon.sample` payload description
+- [x] add the rule to the alert table in `docs/collection.md` and describe in
+      "Battery-impact ranking" which metric appears when. Both battery rows are
+      qualified by regime — "counter reporting" against "counter silent" —
+      because the unqualified score row became wrong the moment the watt row
+      joined it. The rule's key and message forms are documented under the
+      table, which is what `AlertAnalyzerTest` pins
+- [x] add `energyAccounted` to the `harmon.sample` payload description
       (`docs/collection.md:624-632`)
-- [ ] add the weight comparison to `docs/collection.md`: 0.25 per wakeup/s
+- [x] add the weight comparison to `docs/collection.md`: 0.25 per wakeup/s
       against Apple's 0.05 (OS X 10.9) and 0.02 (late Intel plist), and an I/O
       term with no Apple analogue — this is why the score never matched Activity
-      Monitor
-- [ ] add `power:` to the per-application alert key prefixes in
+      Monitor. Written as a reconstruction, since Apple has never published the
+      formula and the current guide calls it only a relative measure
+- [x] add `power:` to the per-application alert key prefixes in
       `docs/history.md`, which enumerates them as exhaustive in two places:
       `:155-157` (the `substr` join explanation, "there are four
       per-application rules today") and `:513-515` (the `alert.key` reference).
       Both become wrong the moment the new key ships
-- [ ] leave `docs/native-testing.md` untouched: no C change, no new harness
+- [x] leave `docs/native-testing.md` untouched: no C change, no new harness
       check
 
 ### Task 7: Verify acceptance criteria
