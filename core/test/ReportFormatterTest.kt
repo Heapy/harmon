@@ -47,6 +47,11 @@ class ReportFormatterTest {
         assertContains(output, "/usr/libexec/protected")
     }
 
+    /**
+     * The fixture reads no energy on purpose: this is about the storage and compressed-memory
+     * signals, and a positive `energyWatts` would make the sample accounted and switch the
+     * battery-impact table to its other form. The two forms have their own tests below.
+     */
     @Test
     fun reportShowsSystemStorageAndCompressedMemorySignals() {
         val usage = systemUsage(
@@ -56,7 +61,7 @@ class ReportFormatterTest {
                     diskWriteBytesPerSecond = 64.0 * 1_048_576.0,
                     logicalWriteBytesPerSecond = 96.0 * 1_048_576.0,
                     compressedOrPagedOutBytes = 512uL * 1_048_576uL,
-                    energyWatts = 0.012,
+                    energyWatts = 0.0,
                 ),
             ),
         )
@@ -73,7 +78,56 @@ class ReportFormatterTest {
         assertContains(output, "Top application storage writes")
         assertContains(output, "Top application compressed/paged-out memory")
         assertContains(output, "writer")
-        assertContains(output, "12.0 mW accounted")
+    }
+
+    /**
+     * The heading and the list have to move together: an accounted heading over the score-ranked
+     * list is the failure this switch can introduce, and a row assertion alone would miss it. The
+     * whole table is compared rather than one line — `topEnergy` drops `bravo` and `delta`, which
+     * draw nothing, and orders what is left by watts instead of by score, so membership, order and
+     * the row shape all fail separately here.
+     */
+    @Test
+    fun theBatteryImpactTableLeadsWithWattsWhenTheCounterIsAccounted() {
+        val output = ReportFormatter.text(rankingReport())
+
+        assertFalse("(heuristic score)" in output)
+        assertEquals(
+            listOf(
+                "1. alpha (PID 11): 900.0 mW, 4.0 wakeups/s, 8.0 MiB/s I/O",
+                "2. charlie (PID 13): 200.0 mW, 1.0 wakeups/s, 1.0 MiB/s I/O",
+                "3. echo (PID 15): 50.0 mW, 2.0 wakeups/s, 4.0 MiB/s I/O",
+            ),
+            tableRows(output, "Likely application battery impact (accounted power)"),
+        )
+    }
+
+    /**
+     * A sample where every process reads zero is a sample the kernel counter is dead in, and the
+     * table is then exactly what it has always been: the heuristic score, ranked by score, with no
+     * watt figure anywhere in it.
+     */
+    @Test
+    fun theBatteryImpactTableKeepsTheHeuristicScoreWhenNothingIsAccounted() {
+        val report = MonitoringReport(
+            usage = systemUsage(
+                processes = rankingReport().usage.processes.map { it.copy(energyWatts = 0.0) },
+            ),
+            alerts = emptyList(),
+            topProcessCount = 3,
+        )
+
+        val output = ReportFormatter.text(report)
+
+        assertFalse("(accounted power)" in output)
+        assertEquals(
+            listOf(
+                "1. alpha (PID 11): score 4.0, 4.0 wakeups/s, 8.0 MiB/s I/O",
+                "2. bravo (PID 12): score 4.0, 4.0 wakeups/s, 0 B/s I/O",
+                "3. echo (PID 15): score 2.0, 2.0 wakeups/s, 4.0 MiB/s I/O",
+            ),
+            tableRows(output, "Likely application battery impact (heuristic score)"),
+        )
     }
 
     @Test
@@ -294,11 +348,18 @@ class ReportFormatterTest {
         assertContains(output, "- warning: node (pid 44559) lost its parent codex (pid 44268)")
     }
 
-    private fun rankedNames(output: String, heading: String): List<String> = output
-        .substringAfter("$heading:\n")
-        .substringBefore("\n\n")
-        .lines()
-        .map { it.substringAfter(". ").substringBefore(" (") }
+    private fun rankedNames(output: String, heading: String): List<String> =
+        tableRows(output, heading)
+            .map { it.substringAfter(". ").substringBefore(" (") }
+
+    /** The rendered rows of one table, heading included in the lookup so a missing one fails. */
+    private fun tableRows(output: String, heading: String): List<String> {
+        assertContains(output, "$heading:\n")
+        return output
+            .substringAfter("$heading:\n")
+            .substringBefore("\n\n")
+            .lines()
+    }
 
     private fun alertingReport(): MonitoringReport = MonitoringReport(
         usage = systemUsage(processes = listOf(processUsage(name = "noisy"))),

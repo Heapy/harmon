@@ -63,21 +63,33 @@ object ReportFormatter {
             applications = rankings.topMemory,
             metric = { Format.bytes(it.physicalFootprintBytes) },
         )
+        /*
+         * Which metric leads is decided once per sample, not per row: a process reading zero watts
+         * on a machine whose counter works has genuinely slept, so mixing watts into some rows and
+         * the score into others would produce a column that is not comparable with itself. The
+         * heading carries the regime because the same line would otherwise mean different things
+         * on two machines with nothing to say so.
+         */
+        val energyAccounted = usage.energyAccounted
         appendApplicationTable(
-            heading = "Likely application battery impact",
-            applications = rankings.topBatteryImpact,
+            heading = "Likely application battery impact " +
+                if (energyAccounted) "(accounted power)" else "(heuristic score)",
+            applications = if (energyAccounted) {
+                rankings.topEnergy
+            } else {
+                rankings.topBatteryImpact
+            },
             metric = { application ->
-                "score ${Format.decimal(application.batteryImpactScore)}, " +
-                    "${Format.decimal(application.wakeupsPerSecond)} wakeups/s, " +
+                val leading = if (energyAccounted) {
+                    Format.power(application.energyWatts)
+                } else {
+                    "score ${Format.decimal(application.batteryImpactScore)}"
+                }
+                "$leading, ${Format.decimal(application.wakeupsPerSecond)} wakeups/s, " +
                     "${Format.bytesPerSecond(
                         application.diskReadBytesPerSecond +
                             application.diskWriteBytesPerSecond,
-                    )} I/O" +
-                    if (application.energyWatts > 0.0) {
-                        ", ${Format.power(application.energyWatts)} accounted"
-                    } else {
-                        ""
-                    }
+                    )} I/O"
             },
         )
         appendApplicationTable(

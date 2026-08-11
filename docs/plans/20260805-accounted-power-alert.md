@@ -282,23 +282,28 @@ payload inherits it, which makes it a `docs/collection.md` change too.
 - Modify: `core/src/dev/yoda/harmon/report/ReportFormatter.kt`
 - Modify: `core/test/ReportFormatterTest.kt`
 
-- [ ] at `ReportFormatter.kt:66`, choose `rankings.topEnergy` when
+- [x] at `ReportFormatter.kt:66`, choose `rankings.topEnergy` when
       `usage.energyAccounted` and `rankings.topBatteryImpact` otherwise —
       `ApplicationRankings` itself is not modified
-- [ ] make the heading carry the regime: `(accounted power)` versus
+- [x] make the heading carry the regime: `(accounted power)` versus
       `(heuristic score)`
-- [ ] in the accounted-power form, lead with `Format.power(energyWatts)` and
+- [x] in the accounted-power form, lead with `Format.power(energyWatts)` and
       drop the trailing `, N W accounted` fragment
-- [ ] leave the heuristic form exactly as it renders today
-- [ ] fix `reportShowsSystemStorageAndCompressedMemorySignals`
+- [x] leave the heuristic form exactly as it renders today — the rendering is
+      byte-identical; the source lost the per-row `, N W accounted` conditional
+      because it is unreachable in that branch (application `energyWatts` is a
+      plain sum of process watts, so `energyAccounted == false` forces every
+      application to zero)
+- [x] fix `reportShowsSystemStorageAndCompressedMemorySignals`
       (`core/test/ReportFormatterTest.kt:76`): it asserts
       `"12.0 mW accounted"` against a fixture with `energyWatts = 0.012`, which
       now makes the sample accounted and removes that fragment. Either retarget
       the assertion at the new form or set the fixture to `0.0` so it keeps
-      covering the heuristic path
-- [ ] write tests for both forms, asserting the heading as well as the row — the
+      covering the heuristic path — **chose `0.0`**, which keeps the test about
+      the storage and compressed-memory signals it is named for
+- [x] write tests for both forms, asserting the heading as well as the row — the
       heading is the easiest part to forget
-- [ ] run `./kotlin build && ./kotlin test` — must pass before task 5
+- [x] run `./kotlin build && ./kotlin test` — must pass before task 5
 
 ### Task 5: Expose the regime in the JSON payload
 
