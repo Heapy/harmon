@@ -32,6 +32,12 @@ assertion survives a transposed pair of fields; an anchor does not. Where an
 anchor cannot separate two fields, the gap is listed below rather than left to
 the comment.
 
+The process listing also runs with both attribution budgets set to zero and
+requires every returned sample to keep its attempted/available/region fields at
+zero (`processes.zero-budget-skips-region-attribution`). This is the native
+guard that `LIVE_FAST` reaches no region-attribution candidate; Kotlin tests pin
+that profile to the same 0/0 arguments and pin `FULL` to 256/100,000.
+
 Two shapes of anchor are in use — a *bracket* around the bridge's read and a
 *tolerance* on two reads in a row — and `test/native/anchors.h` describes both.
 The comparison helpers both shapes run through are pinned to exact values by the

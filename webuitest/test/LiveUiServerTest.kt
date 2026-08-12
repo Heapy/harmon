@@ -13,6 +13,33 @@ import kotlin.test.assertTrue
 
 class LiveUiServerTest {
     @Test
+    fun onlyAnAuthenticatedExplicitWatchRenewsTheLease() {
+        Harness().use { harness ->
+            val client = HttpClient.newHttpClient()
+
+            fun get(path: String): Int {
+                val request = HttpRequest.newBuilder()
+                    .uri(URI.create(harness.baseUrl + path))
+                    .timeout(Duration.ofSeconds(3))
+                    .GET()
+                    .build()
+                return client.send(request, HttpResponse.BodyHandlers.discarding()).statusCode()
+            }
+
+            assertEquals(0, harness.watchCount())
+            assertEquals(200, get("/api/live?token=${harness.token}"))
+            assertEquals(200, get("/?token=${harness.token}"))
+            assertEquals(0, harness.watchCount())
+
+            assertEquals(403, get("/api/live?token=${"b".repeat(64)}&watch=1"))
+            assertEquals(0, harness.watchCount())
+
+            assertEquals(200, get("/api/live?token=${harness.token}&watch=1"))
+            assertEquals(1, harness.watchCount())
+        }
+    }
+
+    @Test
     fun slowHeaderCannotHoldTheOnlyAcceptQueuePastTheAbsoluteDeadline() {
         Harness().use { harness ->
             Socket("127.0.0.1", harness.port).use { slowClient ->

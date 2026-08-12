@@ -79,6 +79,16 @@ class Harness : AutoCloseable {
         }
     }
 
+    fun watchCount(): Int {
+        send("watch count")
+        val response = nextLine()
+        if (!response.startsWith("WATCH=")) {
+            harnessFailure("expected WATCH response, got '$response'")
+        }
+        return response.removePrefix("WATCH=").toIntOrNull()
+            ?: harnessFailure("WATCH response is not numeric")
+    }
+
     override fun close() {
         stdin.close()
         if (!process.waitFor(SHUTDOWN_MILLIS, TimeUnit.MILLISECONDS)) {

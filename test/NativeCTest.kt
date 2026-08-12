@@ -47,6 +47,7 @@ private val C_HARNESS_CHECKS = setOf(
     "processes.listing-is-consistent",
     "processes.total-matches-a-fresh-count",
     "processes.samples-are-well-formed",
+    "processes.zero-budget-skips-region-attribution",
     "processes.issues-are-well-formed",
     "processes.issue-metadata-matches-a-fresh-read",
     "processes.own-sample-carries-metadata",

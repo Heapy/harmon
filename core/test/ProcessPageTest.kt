@@ -18,6 +18,35 @@ class ProcessPageTest {
     }
 
     @Test
+    fun liveModeRenewsOnlyAVisibleWatchAndKeepsInteractiveTableStateOutsidePayload() {
+        val html = ProcessPage.document(payloadJson = "null", mode = "live")
+
+        assertContains(html, "&watch=1")
+        assertContains(html, "document.visibilityState === \"visible\"")
+        assertContains(html, "visibilitychange")
+        assertContains(html, "pollGeneration")
+        assertContains(html, "selectedColumns: new Set(presets.Overview)")
+        assertContains(html, "sort: { column: \"cpu\", scope: \"total\" }")
+        assertContains(html, "const state = {")
+        assertContains(html, "state.payload = payload")
+    }
+
+    @Test
+    fun exposesAllColumnPresetsIndependentSelfTotalSortAndSystemDetails() {
+        val html = ProcessPage.document(payloadJson = "null", mode = "snapshot")
+
+        assertContains(html, "[\"Overview\", \"Memory\", \"I/O\", \"Activity\", \"Compute / Energy\"]")
+        assertContains(html, "column.label + \" \" + (scope === \"self\" ? \"Self\" : \"Total\")")
+        assertContains(html, "columnById[first].selfOnly ? \"self\" : \"total\"")
+        assertContains(html, "Lifetime peak")
+        assertContains(html, "System details")
+        assertContains(html, "Known partial totals remain sortable")
+        assertContains(html, "position: sticky; left: 0")
+        assertContains(html, "position: sticky; left: var(--pid-width)")
+        assertContains(html, "payload.schemaVersion !== 2")
+    }
+
+    @Test
     fun escapesBootstrapJsonAndTheNoScriptFallbackInTheirOwnContexts() {
         val hostile = "</script><script id=attack>&\u2028"
 

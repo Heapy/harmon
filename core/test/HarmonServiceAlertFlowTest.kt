@@ -4,6 +4,7 @@ import dev.yoda.harmon.config.NotificationConfig
 import dev.yoda.harmon.config.SAMPLE_SECONDS_RANGE
 import dev.yoda.harmon.model.NotificationPayload
 import dev.yoda.harmon.model.RawSystemSnapshot
+import dev.yoda.harmon.monitor.CollectionProfile
 import dev.yoda.harmon.monitor.SystemCollector
 import dev.yoda.harmon.notify.NotificationChannel
 import dev.yoda.harmon.notify.NotificationDispatcher
@@ -274,12 +275,13 @@ class HarmonServiceAlertFlowTest {
     @Test
     fun sampleOnceWaitsOutItsWindowWithoutBuildingTheDispatcher() {
         var initializations = 0
+        val collector = ScriptedCollector(
+            snapshot(0uL, ALERTING_FOOTPRINT),
+            snapshot(1uL, ALERTING_FOOTPRINT),
+        )
         val service = HarmonService(
             config = alertConfig(),
-            collector = ScriptedCollector(
-                snapshot(0uL, ALERTING_FOOTPRINT),
-                snapshot(1uL, ALERTING_FOOTPRINT),
-            ),
+            collector = collector,
             notifications = lazy {
                 initializations += 1
                 NotificationDispatcher(listOf(RecordingChannel()))
@@ -293,6 +295,7 @@ class HarmonServiceAlertFlowTest {
 
         assertTrue(started.elapsedNow() >= 1.seconds, "the sample window was not waited out")
         assertEquals(0, initializations)
+        assertEquals(listOf(CollectionProfile.FULL, CollectionProfile.FULL), collector.profiles)
     }
 
     @Test
@@ -487,19 +490,24 @@ private fun crowdedSnapshot(seconds: ULong, footprints: List<ULong>): RawSystemS
     )
 
 private object UnusedCollector : SystemCollector {
-    override fun capture(): RawSystemSnapshot = error("handleSample must not capture")
+    override fun capture(profile: dev.yoda.harmon.monitor.CollectionProfile): RawSystemSnapshot =
+        error("handleSample must not capture")
 }
 
 private class ScriptedCollector(vararg snapshots: RawSystemSnapshot) : SystemCollector {
     private val remaining = snapshots.toMutableList()
+    val profiles = mutableListOf<CollectionProfile>()
 
-    override fun capture(): RawSystemSnapshot = remaining.removeFirst()
+    override fun capture(profile: dev.yoda.harmon.monitor.CollectionProfile): RawSystemSnapshot {
+        profiles += profile
+        return remaining.removeFirst()
+    }
 }
 
 private class FlakyCollector(private val snapshot: RawSystemSnapshot) : SystemCollector {
     private var attempts = 0
 
-    override fun capture(): RawSystemSnapshot {
+    override fun capture(profile: dev.yoda.harmon.monitor.CollectionProfile): RawSystemSnapshot {
         attempts += 1
         if (attempts == 1) {
             error("collector socket refused the connection")

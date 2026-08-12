@@ -280,6 +280,30 @@ static void hm_check_samples_are_well_formed(const HMProcessSample *samples, int
     );
 }
 
+static void hm_check_zero_budget_skips_region_attribution(
+    const HMProcessSample *samples,
+    int written
+) {
+    int attempted = 0;
+    int available = 0;
+    int reported_regions = 0;
+    for (int index = 0; index < written; ++index) {
+        attempted += samples[index].compressed_attribution_attempted != 0;
+        available += samples[index].compressed_attribution_available != 0;
+        reported_regions += samples[index].virtual_memory_region_count != 0;
+    }
+    CHECK(
+        "processes.zero-budget-skips-region-attribution",
+        written > 0 && attempted == 0 && available == 0 && reported_regions == 0,
+        "expected a 0/0 process and region budget to leave every one of %d samples "
+            "unattempted, got attempted=%d available=%d with-regions=%d",
+        written,
+        attempted,
+        available,
+        reported_regions
+    );
+}
+
 static const char *hm_malformed_issue(const HMProcessIssue *issue) {
     if (issue->pid < 0) {
         return "pid is negative";
@@ -379,6 +403,7 @@ static void hm_check_process_listing(void) {
     hm_check_listing_consistency(written, total, inaccessible, written_issues);
     hm_check_total_against_a_fresh_count(total, counted_before, counted_after);
     hm_check_samples_are_well_formed(samples, written);
+    hm_check_zero_budget_skips_region_attribution(samples, written);
     hm_check_issues_are_well_formed(issues, written_issues, &own);
     hm_check_issue_metadata(issues, written_issues, &own);
 

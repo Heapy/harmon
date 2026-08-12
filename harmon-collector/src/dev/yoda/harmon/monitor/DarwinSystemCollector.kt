@@ -47,12 +47,29 @@ import platform.posix.EPERM
 import platform.posix.ESRCH
 import kotlin.time.Clock
 
+const val FULL_COMPRESSED_ATTRIBUTION_PROCESS_LIMIT = 256
+const val FULL_ATTRIBUTION_REGION_BUDGET = 100_000
+
+data class AttributionLimits(
+    val processLimit: Int,
+    val regionBudget: Int,
+)
+
+fun attributionLimitsFor(
+    profile: CollectionProfile,
+    fullProcessLimit: Int = FULL_COMPRESSED_ATTRIBUTION_PROCESS_LIMIT,
+    fullRegionBudget: Int = FULL_ATTRIBUTION_REGION_BUDGET,
+): AttributionLimits = when (profile) {
+    CollectionProfile.FULL -> AttributionLimits(fullProcessLimit, fullRegionBudget)
+    CollectionProfile.LIVE_FAST -> AttributionLimits(processLimit = 0, regionBudget = 0)
+}
+
 class DarwinSystemCollector(
     private val processCapacity: Int = DEFAULT_PROCESS_CAPACITY,
     private val issueCapacity: Int = DEFAULT_ISSUE_CAPACITY,
     private val compressedAttributionProcessLimit: Int =
-        DEFAULT_COMPRESSED_ATTRIBUTION_PROCESS_LIMIT,
-    private val attributionRegionBudget: Int = DEFAULT_ATTRIBUTION_REGION_BUDGET,
+        FULL_COMPRESSED_ATTRIBUTION_PROCESS_LIMIT,
+    private val attributionRegionBudget: Int = FULL_ATTRIBUTION_REGION_BUDGET,
 ) : SystemCollector {
     init {
         require(processCapacity > 0) { "processCapacity must be positive" }
@@ -66,7 +83,12 @@ class DarwinSystemCollector(
     }
 
     @OptIn(ExperimentalForeignApi::class)
-    override fun capture(): RawSystemSnapshot = memScoped {
+    override fun capture(profile: CollectionProfile): RawSystemSnapshot = memScoped {
+        val attributionLimits = attributionLimitsFor(
+            profile = profile,
+            fullProcessLimit = compressedAttributionProcessLimit,
+            fullRegionBudget = attributionRegionBudget,
+        )
         val pidCount = hm_count_processes()
         val sampleSlots = processCapacityFor(pidCount, processCapacity)
         val issueSlots = processCapacityFor(pidCount, issueCapacity)
@@ -80,8 +102,8 @@ class DarwinSystemCollector(
             sampleSlots,
             nativeIssues,
             issueSlots,
-            compressedAttributionProcessLimit,
-            attributionRegionBudget,
+            attributionLimits.processLimit,
+            attributionLimits.regionBudget,
             totalProcesses.ptr,
             inaccessibleProcesses.ptr,
             writtenIssues.ptr,
@@ -315,7 +337,5 @@ class DarwinSystemCollector(
     private companion object {
         const val DEFAULT_PROCESS_CAPACITY = 16_384
         const val DEFAULT_ISSUE_CAPACITY = 4_096
-        const val DEFAULT_COMPRESSED_ATTRIBUTION_PROCESS_LIMIT = 256
-        const val DEFAULT_ATTRIBUTION_REGION_BUDGET = 100_000
     }
 }

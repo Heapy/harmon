@@ -2,11 +2,13 @@ package dev.yoda.harmon.ipc
 
 import dev.yoda.harmon.model.RawSystemSnapshot
 import dev.yoda.harmon.monitor.CollectionException
+import dev.yoda.harmon.monitor.CollectionProfile
 import dev.yoda.harmon.monitor.SystemCollector
 import dev.yoda.harmon.nativebridge.ipc.HM_MAX_JSON_FRAME_SIZE
 import dev.yoda.harmon.nativebridge.ipc.hm_close_descriptor
 import dev.yoda.harmon.nativebridge.ipc.hm_free
 import dev.yoda.harmon.nativebridge.ipc.hm_receive_json_frame
+import dev.yoda.harmon.nativebridge.ipc.hm_send_json_frame
 import dev.yoda.harmon.nativebridge.ipc.hm_unix_connect
 import kotlinx.cinterop.ExperimentalForeignApi
 import kotlinx.cinterop.UIntVar
@@ -25,39 +27,56 @@ class CollectorClient(
     }
 
     @OptIn(ExperimentalForeignApi::class)
-    override fun capture(): RawSystemSnapshot =
-        CollectorProtocol.decode(receivePayload())
+    override fun capture(profile: CollectionProfile): RawSystemSnapshot = withConnection { descriptor ->
+        CollectorProtocol.decodeHello(receivePayload(descriptor))
+        sendPayload(descriptor, CollectorProtocol.encodeCapture(profile))
+        CollectorProtocol.decodeSnapshot(receivePayload(descriptor), profile).snapshot
+    }
 
-    fun probeProtocolVersion(): Int {
-        val payload = receivePayload()
-        val version = CollectorProtocol.reportedVersion(payload)
+    fun probeProtocolVersion(): Int = withConnection { descriptor ->
+        val hello = receivePayload(descriptor)
+        val version = CollectorProtocol.reportedVersion(hello)
             ?: throw CollectorProtocolException("Collector did not return a protocol version")
         if (version == CollectorProtocol.VERSION) {
-            CollectorProtocol.decode(payload)
+            CollectorProtocol.decodeHello(hello)
+            sendPayload(descriptor, CollectorProtocol.encodeProbe())
+            CollectorProtocol.decodeAck(receivePayload(descriptor))
         }
-        return version
+        version
     }
 
     @OptIn(ExperimentalForeignApi::class)
-    private fun receivePayload(): String = memScoped {
+    private inline fun <T> withConnection(block: (Int) -> T): T {
         val descriptor = hm_unix_connect(socketPath)
         if (descriptor < 0) {
             throw nativeCollectionFailure("Unable to connect to collector at $socketPath")
         }
         try {
-            val size = alloc<UIntVar>()
-            val payload = hm_receive_json_frame(
-                descriptor,
-                HM_MAX_JSON_FRAME_SIZE,
-                size.ptr,
-            ) ?: throw nativeCollectionFailure("Unable to receive collector snapshot")
-            try {
-                payload.toKString()
-            } finally {
-                hm_free(payload)
-            }
+            return block(descriptor)
         } finally {
             hm_close_descriptor(descriptor)
+        }
+    }
+
+    @OptIn(ExperimentalForeignApi::class)
+    private fun receivePayload(descriptor: Int): String = memScoped {
+        val size = alloc<UIntVar>()
+        val payload = hm_receive_json_frame(
+            descriptor,
+            HM_MAX_JSON_FRAME_SIZE,
+            size.ptr,
+        ) ?: throw nativeCollectionFailure("Unable to receive collector protocol frame")
+        try {
+            payload.toKString()
+        } finally {
+            hm_free(payload)
+        }
+    }
+
+    @OptIn(ExperimentalForeignApi::class)
+    private fun sendPayload(descriptor: Int, payload: String) {
+        if (hm_send_json_frame(descriptor, payload) != 0) {
+            throw nativeCollectionFailure("Unable to send collector protocol frame")
         }
     }
 }

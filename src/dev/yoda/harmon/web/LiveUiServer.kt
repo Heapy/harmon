@@ -77,6 +77,7 @@ class LiveUiServer(
     private val state: LiveUiState,
     private val token: String,
     private val page: String = ProcessPage.document(payloadJson = null, mode = "live"),
+    private val onWatch: () -> Unit = {},
     private val logError: (String) -> Unit,
 ) {
     private val lifecycleLock = NSLock()
@@ -166,17 +167,15 @@ class LiveUiServer(
         if (!request.target.startsWith('/')) return HttpResponse.badRequest()
 
         val path = request.target.substringBefore('?')
-        val suppliedToken = request.target.substringAfter('?', "")
-            .split('&')
-            .firstNotNullOfOrNull { part ->
-                part.substringBefore('=').takeIf { it == "token" }
-                    ?.let { part.substringAfter('=', "") }
-            }
+        val suppliedToken = queryParameter(request.target, "token")
         if (!secureEquals(token, suppliedToken.orEmpty())) return HttpResponse.forbidden()
 
         return when (path) {
             "/" -> HttpResponse.ok("text/html; charset=utf-8", page)
-            "/api/live" -> HttpResponse.ok("application/json; charset=utf-8", state.currentJson())
+            "/api/live" -> {
+                if (liveUiWatchRequested(request.target)) onWatch()
+                HttpResponse.ok("application/json; charset=utf-8", state.currentJson())
+            }
             else -> HttpResponse.notFound()
         }
     }
@@ -379,6 +378,17 @@ class LiveUiServer(
         const val ACCEPT_RETRY_MICROSECONDS = 100_000u
     }
 }
+
+fun liveUiWatchRequested(target: String): Boolean =
+    target.substringBefore('?') == "/api/live" && queryParameter(target, "watch") == "1"
+
+private fun queryParameter(target: String, name: String): String? =
+    target.substringAfter('?', "")
+        .split('&')
+        .firstNotNullOfOrNull { part ->
+            part.substringBefore('=').takeIf { it == name }
+                ?.let { part.substringAfter('=', "") }
+        }
 
 fun secureEquals(expected: String, supplied: String): Boolean {
     var difference = expected.length xor supplied.length

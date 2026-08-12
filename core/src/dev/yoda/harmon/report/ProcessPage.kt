@@ -27,9 +27,7 @@ object ProcessPage {
             </head>
             <body data-mode="$$escapedMode">
               <script id="harmon-bootstrap" type="application/json">$$bootstrap</script>
-              <main id="app">
-                <p class="loading">Loading process metrics…</p>
-              </main>
+              <main id="app"><p class="loading">Loading process metrics…</p></main>
               <noscript><section class="raw-report"><pre>$$escapedFallback</pre></section></noscript>
               <script>$$APP</script>
             </body>
@@ -73,260 +71,172 @@ object ProcessPage {
           --green: #83df9a;
           --amber: #f0bd66;
           --red: #ff7a90;
+          --pid-width: 78px;
+          --process-width: 330px;
         }
 
         * { box-sizing: border-box; }
-
         body { margin: 0; min-width: 760px; background: #090c10; }
-
         button, input, select { font: inherit; }
-
-        button:focus-visible, input:focus-visible, select:focus-visible {
-          outline: 2px solid var(--cyan);
-          outline-offset: 2px;
+        button:focus-visible, input:focus-visible, summary:focus-visible {
+          outline: 2px solid var(--cyan); outline-offset: 2px;
         }
 
         .shell { min-height: 100vh; padding: 18px 22px 32px; }
-
-        .topbar {
-          display: flex;
-          align-items: flex-start;
-          justify-content: space-between;
-          gap: 24px;
-          margin-bottom: 14px;
-        }
-
+        .topbar { display: flex; justify-content: space-between; gap: 24px; margin-bottom: 14px; }
         .eyebrow {
-          margin: 0 0 4px;
-          color: var(--cyan);
+          margin: 0 0 4px; color: var(--cyan);
           font: 700 11px/1.2 ui-monospace, SFMono-Regular, Menlo, monospace;
-          letter-spacing: .13em;
-          text-transform: uppercase;
+          letter-spacing: .13em; text-transform: uppercase;
         }
-
         h1 { margin: 0; color: #f5f7fa; font-size: 24px; letter-spacing: -.025em; }
-
         .subtitle { margin: 5px 0 0; color: var(--muted); font-size: 13px; }
-
-        .mode-button {
-          min-width: 138px;
-          border: 1px solid #344255;
-          border-radius: 7px;
-          padding: 8px 12px;
-          background: #17202a;
-          color: #eff4fa;
-          cursor: pointer;
+        .mode-button, .preset-button {
+          border: 1px solid #344255; border-radius: 7px; padding: 8px 12px;
+          background: #17202a; color: #eff4fa; cursor: pointer;
         }
-
+        .mode-button { min-width: 148px; }
         .mode-button[data-live="true"] { border-color: #267a58; color: var(--green); }
         .mode-button:disabled { cursor: default; opacity: .72; }
 
         .summary-grid {
-          display: grid;
-          grid-template-columns: repeat(5, minmax(118px, 1fr));
-          gap: 8px;
-          margin-bottom: 10px;
+          display: grid; grid-template-columns: repeat(5, minmax(118px, 1fr));
+          gap: 8px; margin-bottom: 10px;
         }
-
         .summary-card {
-          min-height: 65px;
-          border: 1px solid var(--line);
-          border-radius: 8px;
-          padding: 9px 11px;
-          background: linear-gradient(145deg, #121922, #0e131a);
+          min-height: 65px; border: 1px solid var(--line); border-radius: 8px;
+          padding: 9px 11px; background: linear-gradient(145deg, #121922, #0e131a);
         }
-
         .summary-label {
-          display: block;
-          margin-bottom: 6px;
-          color: var(--muted);
+          display: block; margin-bottom: 6px; color: var(--muted);
           font: 700 10px/1.2 ui-monospace, SFMono-Regular, Menlo, monospace;
-          letter-spacing: .08em;
-          text-transform: uppercase;
+          letter-spacing: .08em; text-transform: uppercase;
         }
-
         .summary-value { color: #f3f6f9; font-size: 18px; font-weight: 650; }
         .summary-detail { margin-left: 5px; color: var(--muted); font-size: 11px; }
 
         .notice {
-          margin: 0 0 10px;
-          border: 1px solid #6f5125;
-          border-radius: 7px;
-          padding: 8px 10px;
-          background: #211a10;
-          color: #ffd897;
-          font-size: 12px;
+          margin: 0 0 10px; border: 1px solid #6f5125; border-radius: 7px;
+          padding: 8px 10px; background: #211a10; color: #ffd897; font-size: 12px;
         }
-
         .notice.error { border-color: #713547; background: #25131a; color: #ffb0bf; }
 
         .toolbar {
-          display: flex;
-          align-items: center;
-          gap: 9px;
-          border: 1px solid var(--line);
-          border-bottom: 0;
-          border-radius: 9px 9px 0 0;
-          padding: 8px;
-          background: var(--panel);
+          display: flex; flex-wrap: wrap; align-items: center; gap: 8px;
+          border: 1px solid var(--line); border-bottom: 0; border-radius: 9px 9px 0 0;
+          padding: 8px; background: var(--panel);
         }
-
         .search {
-          flex: 1;
-          min-width: 240px;
-          border: 1px solid #354254;
-          border-radius: 6px;
-          padding: 7px 10px;
-          background: #0b1016;
-          color: #edf2f7;
+          flex: 1 1 260px; min-width: 240px; border: 1px solid #354254;
+          border-radius: 6px; padding: 7px 10px; background: #0b1016; color: #edf2f7;
         }
-
         .search::placeholder { color: #66758a; }
-
+        .preset-list { display: flex; gap: 5px; }
+        .preset-button { padding: 6px 8px; color: #aeb9c7; font-size: 11px; }
+        .preset-button.active { border-color: #34758a; color: var(--cyan); background: #12232c; }
+        .column-picker { position: relative; }
+        .column-picker > summary {
+          border: 1px solid #344255; border-radius: 6px; padding: 6px 9px;
+          color: #d5dde7; cursor: pointer; font-size: 11px; list-style: none;
+        }
+        .column-picker > summary::-webkit-details-marker { display: none; }
+        .column-menu {
+          position: absolute; right: 0; z-index: 20; display: grid; grid-template-columns: repeat(2, 190px);
+          gap: 4px 10px; margin-top: 6px; border: 1px solid #3a4758; border-radius: 8px;
+          padding: 10px; background: #121922; box-shadow: 0 12px 30px #000b;
+        }
+        .column-menu label { display: flex; gap: 7px; align-items: center; color: #c0cad6; font-size: 11px; }
         .toolbar-meta {
-          white-space: nowrap;
-          color: var(--muted);
+          margin-left: auto; white-space: nowrap; color: var(--muted);
           font: 11px/1.2 ui-monospace, SFMono-Regular, Menlo, monospace;
         }
 
         .table-wrap {
-          overflow: auto;
-          border: 1px solid var(--line);
-          border-radius: 0 0 9px 9px;
-          background: #0c1117;
+          max-height: 68vh; overflow: auto; border: 1px solid var(--line);
+          border-radius: 0 0 9px 9px; background: #0c1117;
         }
-
-        table { width: 100%; border-collapse: collapse; table-layout: fixed; }
-
-        thead { position: sticky; top: 0; z-index: 3; }
-
+        table { min-width: 100%; border-collapse: separate; border-spacing: 0; table-layout: fixed; }
+        thead { position: sticky; top: 0; z-index: 8; }
         th {
-          border-bottom: 1px solid #334052;
-          padding: 0;
-          background: #171e27;
-          color: #9eacbd;
-          text-align: right;
+          border-bottom: 1px solid #334052; padding: 0; background: #171e27;
+          color: #9eacbd; text-align: right;
           font: 700 10px/1.1 ui-monospace, SFMono-Regular, Menlo, monospace;
-          letter-spacing: .06em;
-          text-transform: uppercase;
+          letter-spacing: .04em; text-transform: uppercase;
         }
-
-        th:first-child, th:nth-child(2) { text-align: left; }
-
         .sort-button {
-          width: 100%;
-          border: 0;
-          padding: 9px 10px;
-          background: transparent;
-          color: inherit;
-          text-align: inherit;
-          cursor: pointer;
+          width: 100%; border: 0; padding: 9px 8px; background: transparent;
+          color: inherit; text-align: inherit; cursor: pointer;
         }
-
-        .sort-button[aria-pressed="true"] { color: var(--cyan); }
-
         td {
-          position: relative;
-          height: 34px;
-          border-bottom: 1px solid #18212b;
-          padding: 0 10px;
-          overflow: hidden;
-          color: #cad2dd;
-          text-align: right;
-          text-overflow: ellipsis;
-          white-space: nowrap;
+          position: relative; height: 34px; border-bottom: 1px solid #18212b;
+          padding: 0 9px; overflow: hidden; background: #0c1117; color: #cad2dd;
+          text-align: right; text-overflow: ellipsis; white-space: nowrap;
           font: 12px/1 ui-monospace, SFMono-Regular, Menlo, monospace;
         }
-
-        td:first-child, td:nth-child(2) { text-align: left; }
         tbody tr:hover td { background-color: #121a24; }
         tbody tr.unavailable td { color: #b79c6e; }
-
-        .pid { width: 84px; color: #91a0b4; }
-        .process-column { width: 42%; min-width: 330px; }
-        .metric-column { width: 14.5%; min-width: 125px; }
-
+        .pid-column, .pid-cell {
+          position: sticky; left: 0; width: var(--pid-width); min-width: var(--pid-width);
+          max-width: var(--pid-width); z-index: 5; text-align: left;
+        }
+        .process-column, .process-cell {
+          position: sticky; left: var(--pid-width); width: var(--process-width);
+          min-width: var(--process-width); max-width: var(--process-width); z-index: 5; text-align: left;
+          box-shadow: 1px 0 #334052;
+        }
+        thead .pid-column, thead .process-column { z-index: 12; background: #171e27; }
+        .metric-column { width: 128px; min-width: 128px; }
         .tree-cell { display: flex; align-items: center; min-width: 0; height: 34px; }
-
         .tree-guide { flex: none; width: calc(var(--depth) * 18px); }
-
-        .twisty, .twisty-space {
-          flex: none;
-          width: 24px;
-          height: 26px;
-          margin-right: 2px;
-        }
-
+        .twisty, .twisty-space { flex: none; width: 24px; height: 26px; margin-right: 2px; }
         .twisty {
-          border: 0;
-          border-radius: 4px;
-          background: transparent;
-          color: #8191a6;
-          cursor: pointer;
+          border: 0; border-radius: 4px; background: transparent; color: #8191a6; cursor: pointer;
         }
-
         .twisty:hover { background: #24303e; color: #dbe5ef; }
         .process-name { overflow: hidden; text-overflow: ellipsis; color: #eef2f6; }
-        .partial { margin-left: 7px; color: var(--amber); font-size: 10px; }
+        .partial { margin-left: 6px; color: var(--amber); font-size: 9px; text-transform: uppercase; }
         .issue { margin-left: 7px; color: #b79c6e; font-size: 10px; text-transform: lowercase; }
-
-        .metric-bar {
-          position: absolute;
-          inset: 4px 5px;
-          width: min(var(--fill), calc(100% - 10px));
-          border-radius: 3px;
-          background: color-mix(in srgb, var(--bar-color) 20%, transparent);
-          pointer-events: none;
-        }
-
-        .metric-value { position: relative; z-index: 1; }
-        .self { --bar-color: #718096; color: #aab5c2; }
-        .total { --bar-color: var(--cyan); color: #e5fbff; font-weight: 700; }
-        .cpu-total { --bar-color: var(--green); }
-
+        .self { color: #aab5c2; }
+        .total { color: #e5fbff; font-weight: 700; }
+        .not-available { color: #647286; }
         .empty { padding: 42px 20px; color: var(--muted); text-align: center; }
         .loading { padding: 40px; color: var(--muted); }
         .raw-report { padding: 24px; }
         .raw-report pre { white-space: pre-wrap; font: 12px/1.5 ui-monospace, SFMono-Regular, Menlo, monospace; }
 
-        .report-details {
-          margin-top: 12px;
-          border: 1px solid var(--line);
-          border-radius: 8px;
-          background: var(--panel);
+        .system-details, .report-details {
+          margin-top: 12px; border: 1px solid var(--line); border-radius: 8px; background: var(--panel);
         }
-
-        .report-details summary {
-          padding: 10px 12px;
-          color: var(--muted);
-          cursor: pointer;
+        .system-details summary, .report-details summary {
+          padding: 10px 12px; color: var(--muted); cursor: pointer;
           font: 700 11px/1.2 ui-monospace, SFMono-Regular, Menlo, monospace;
-          letter-spacing: .05em;
-          text-transform: uppercase;
+          letter-spacing: .05em; text-transform: uppercase;
         }
-
+        .details-grid {
+          display: grid; grid-template-columns: repeat(4, minmax(190px, 1fr));
+          gap: 8px; padding: 0 12px 14px;
+        }
+        .details-group { border: 1px solid #222d39; border-radius: 7px; padding: 9px; background: #0d131a; }
+        .details-group h3 { margin: 0 0 7px; color: var(--cyan); font-size: 11px; text-transform: uppercase; }
+        .detail-row { display: flex; justify-content: space-between; gap: 12px; padding: 2px 0; color: #9eabba; font-size: 11px; }
+        .detail-row span:last-child { color: #d7dee7; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; }
         .report-details pre {
-          max-height: 420px;
-          margin: 0;
-          padding: 0 12px 14px;
-          overflow: auto;
-          white-space: pre-wrap;
-          color: #bec8d4;
+          max-height: 420px; margin: 0; padding: 0 12px 14px; overflow: auto;
+          white-space: pre-wrap; color: #bec8d4;
           font: 12px/1.5 ui-monospace, SFMono-Regular, Menlo, monospace;
         }
 
-        @media (max-width: 980px) {
+        @media (max-width: 1100px) {
           .summary-grid { grid-template-columns: repeat(3, 1fr); }
+          .details-grid { grid-template-columns: repeat(2, minmax(190px, 1fr)); }
         }
-
         @media (prefers-reduced-motion: no-preference) {
           .mode-button, .twisty, tbody td { transition: background-color 120ms, color 120ms; }
         }
     """.trimIndent()
 
     private val APP = $$"""
-        const { Fragment, h, render } = globalThis.preact;
-
+        const { h, render } = globalThis.preact;
         const root = document.getElementById("app");
         const bootstrapNode = document.getElementById("harmon-bootstrap");
         const pageMode = document.body.dataset.mode || "live";
@@ -334,12 +244,45 @@ object ProcessPage {
         const e = (type, props, ...children) => h(type, props, ...children);
         const initial = JSON.parse(bootstrapNode.textContent || "null");
 
+        const columns = [
+          { id: "cpu", group: "Overview", label: "CPU", metric: "cpuPercent", format: "percent", kind: "decimal" },
+          { id: "userCpu", group: "Overview", label: "User CPU", metric: "userCpuPercent", format: "percent", kind: "decimal" },
+          { id: "systemCpu", group: "Overview", label: "System CPU", metric: "systemCpuPercent", format: "percent", kind: "decimal" },
+          { id: "footprint", group: "Overview", label: "Footprint", metric: "physicalFootprintBytes", format: "bytes", kind: "integer" },
+          { id: "resident", group: "Memory", label: "Resident", metric: "residentBytes", format: "bytes", kind: "integer" },
+          { id: "wired", group: "Memory", label: "Wired", metric: "wiredBytes", format: "bytes", kind: "integer" },
+          { id: "compressed", group: "Memory", label: "Compressed / paged", metric: "compressedOrPagedOutBytes", format: "bytes", kind: "integer" },
+          { id: "regions", group: "Memory", label: "VM regions", metric: "virtualMemoryRegionCount", format: "integer", kind: "integer" },
+          { id: "peak", group: "Memory", label: "Lifetime peak", metric: "lifetimeMaxPhysicalFootprintBytes", format: "bytes", kind: "integer", selfOnly: true },
+          { id: "diskRead", group: "I/O", label: "Disk read", metric: "diskReadBytesPerSecond", format: "bytesRate", kind: "decimal" },
+          { id: "diskWrite", group: "I/O", label: "Disk write", metric: "diskWriteBytesPerSecond", format: "bytesRate", kind: "decimal" },
+          { id: "logicalWrite", group: "I/O", label: "Logical writes", metric: "logicalWriteBytesPerSecond", format: "bytesRate", kind: "decimal" },
+          { id: "pageIns", group: "I/O", label: "Page-ins", metric: "pageInsPerSecond", format: "rate", kind: "decimal" },
+          { id: "wakeups", group: "Activity", label: "Wakeups", metric: "wakeupsPerSecond", format: "rate", kind: "decimal" },
+          { id: "faults", group: "Activity", label: "Faults", metric: "faultsPerSecond", format: "rate", kind: "decimal" },
+          { id: "cowFaults", group: "Activity", label: "CoW faults", metric: "copyOnWriteFaultsPerSecond", format: "rate", kind: "decimal" },
+          { id: "syscalls", group: "Activity", label: "Syscalls", metric: "systemCallsPerSecond", format: "rate", kind: "decimal" },
+          { id: "switches", group: "Activity", label: "Context switches", metric: "contextSwitchesPerSecond", format: "rate", kind: "decimal" },
+          { id: "threads", group: "Activity", label: "Threads", metric: "threadCount", format: "integer", kind: "integer" },
+          { id: "runningThreads", group: "Activity", label: "Running threads", metric: "runningThreadCount", format: "integer", kind: "integer" },
+          { id: "instructions", group: "Compute / Energy", label: "Instructions", metric: "instructionsPerSecond", format: "rate", kind: "decimal" },
+          { id: "cycles", group: "Compute / Energy", label: "Cycles", metric: "cyclesPerSecond", format: "rate", kind: "decimal" },
+          { id: "watts", group: "Compute / Energy", label: "Watts", metric: "energyWatts", format: "watts", kind: "decimal" },
+          { id: "impact", group: "Compute / Energy", label: "Battery impact", metric: "batteryImpactScore", format: "score", kind: "decimal" }
+        ];
+        const columnById = Object.fromEntries(columns.map(column => [column.id, column]));
+        const presets = Object.fromEntries(
+          ["Overview", "Memory", "I/O", "Activity", "Compute / Energy"].map(group =>
+            [group, columns.filter(column => column.group === group).map(column => column.id)])
+        );
+
         const state = {
           payload: initial,
           frozen: pageMode !== "live",
           search: "",
-          sortKey: "memoryTotalBytes",
+          sort: { column: "cpu", scope: "total" },
           sortDirection: "desc",
+          selectedColumns: new Set(presets.Overview),
           expanded: new Set(),
           initializedExpansion: false,
           requestError: null,
@@ -351,8 +294,9 @@ object ProcessPage {
           try { return BigInt(value || "0"); } catch (_) { return 0n; }
         }
 
-        function finite(value) {
-          return Number.isFinite(value) && value >= 0 ? value : 0;
+        function asNumber(value) {
+          const number = Number(value);
+          return Number.isFinite(number) && number >= 0 ? number : 0;
         }
 
         function formatBytes(value) {
@@ -369,24 +313,67 @@ object ProcessPage {
           return (tenths / 10n).toString() + "." + (tenths % 10n).toString() + " " + units[unit];
         }
 
-        function formatCpu(value) {
-          const cpu = finite(value);
-          return cpu >= 100 ? cpu.toFixed(0) + "%" : cpu.toFixed(1) + "%";
+        function formatRate(value) {
+          const number = asNumber(value);
+          if (number >= 1000000000) return (number / 1000000000).toFixed(1) + "G/s";
+          if (number >= 1000000) return (number / 1000000).toFixed(1) + "M/s";
+          if (number >= 1000) return (number / 1000).toFixed(1) + "k/s";
+          return number.toFixed(number >= 100 ? 0 : 1) + "/s";
         }
 
-        function compareValues(a, b, key) {
-          if (key === "memorySelfBytes" || key === "memoryTotalBytes") {
-            const left = asBigInt(a[key]);
-            const right = asBigInt(b[key]);
-            return left < right ? -1 : left > right ? 1 : 0;
+        function formatMetric(column, value) {
+          if (column.format === "bytes") return formatBytes(value);
+          if (column.format === "bytesRate") return formatBytes(String(Math.round(asNumber(value)))) + "/s";
+          if (column.format === "integer") return asBigInt(value).toString();
+          if (column.format === "percent") {
+            const number = asNumber(value);
+            return number >= 100 ? number.toFixed(0) + "%" : number.toFixed(1) + "%";
           }
-          if (key === "name") return a.name.localeCompare(b.name, undefined, { sensitivity: "base" });
-          return finite(a[key]) - finite(b[key]);
+          if (column.format === "watts") return asNumber(value).toFixed(3) + " W";
+          if (column.format === "score") return asNumber(value).toFixed(1);
+          return formatRate(value);
+        }
+
+        function metric(node, column) {
+          return node.metrics && node.metrics[column.metric];
+        }
+
+        function metricAvailable(value, scope) {
+          return Boolean(value && value[scope + "Available"]);
+        }
+
+        function compareMetric(leftNode, rightNode, column, scope) {
+          const left = metric(leftNode, column);
+          const right = metric(rightNode, column);
+          const leftAvailable = metricAvailable(left, scope);
+          const rightAvailable = metricAvailable(right, scope);
+          if (leftAvailable !== rightAvailable) return leftAvailable ? -1 : 1;
+          if (!leftAvailable) return 0;
+          const leftValue = left[scope];
+          const rightValue = right[scope];
+          let compared;
+          if (column.kind === "integer") {
+            const a = asBigInt(leftValue);
+            const b = asBigInt(rightValue);
+            compared = a < b ? -1 : a > b ? 1 : 0;
+          } else {
+            compared = asNumber(leftValue) - asNumber(rightValue);
+          }
+          return state.sortDirection === "desc" ? -compared : compared;
         }
 
         function nodeComparator(a, b) {
-          let compared = compareValues(a, b, state.sortKey);
-          if (state.sortDirection === "desc") compared = -compared;
+          let compared = 0;
+          if (state.sort.column === "pid") {
+            compared = a.pid - b.pid;
+            if (state.sortDirection === "desc") compared = -compared;
+          } else if (state.sort.column === "name") {
+            compared = a.name.localeCompare(b.name, undefined, { sensitivity: "base" });
+            if (state.sortDirection === "desc") compared = -compared;
+          } else {
+            const column = columnById[state.sort.column];
+            if (column) compared = compareMetric(a, b, column, state.sort.scope);
+          }
           if (compared !== 0) return compared;
           const byName = a.name.localeCompare(b.name, undefined, { sensitivity: "base" });
           return byName !== 0 ? byName : a.pid - b.pid;
@@ -406,7 +393,7 @@ object ProcessPage {
         function filterNode(node, query, ancestorMatched) {
           const selfMatched = matches(node, query);
           if (ancestorMatched || selfMatched) return node;
-          const children = node.children.map(child => filterNode(child, query, false)).filter(Boolean);
+          const children = (node.children || []).map(child => filterNode(child, query, false)).filter(Boolean);
           return children.length ? { ...node, children } : null;
         }
 
@@ -426,72 +413,66 @@ object ProcessPage {
           state.initializedExpansion = true;
         }
 
-        function setSort(key) {
-          if (state.sortKey === key) {
+        function setSort(column, scope) {
+          if (state.sort.column === column && state.sort.scope === scope) {
             state.sortDirection = state.sortDirection === "desc" ? "asc" : "desc";
           } else {
-            state.sortKey = key;
-            state.sortDirection = key === "name" || key === "pid" ? "asc" : "desc";
+            state.sort = { column, scope };
+            state.sortDirection = column === "name" || column === "pid" ? "asc" : "desc";
           }
           draw();
         }
 
-        function sortHeader(label, key, className) {
-          const active = state.sortKey === key;
+        function sortHeader(label, column, scope, className) {
+          const active = state.sort.column === column && state.sort.scope === scope;
           const suffix = active ? (state.sortDirection === "desc" ? " ▼" : " ▲") : "";
           return e("th", {
             class: className,
             "aria-sort": active ? (state.sortDirection === "desc" ? "descending" : "ascending") : "none"
-          },
-            e("button", {
-              class: "sort-button",
-              type: "button",
-              "aria-label": "Sort by " + label,
-              onClick: () => setSort(key)
-            }, label + suffix)
-          );
+          }, e("button", {
+            class: "sort-button",
+            type: "button",
+            "aria-label": "Sort by " + label,
+            onClick: () => setSort(column, scope)
+          }, label + suffix));
         }
 
-        function metricCell(value, formatted, classes, maximum) {
-          const ratio = maximum > 0 ? Math.min(100, finite(value) / maximum * 100) : 0;
-          return e("td", { class: classes },
-            e("span", { class: "metric-bar", style: { "--fill": ratio.toFixed(2) + "%" } }),
-            e("span", { class: "metric-value" }, formatted)
-          );
+        function selectedMetricColumns() {
+          const result = [];
+          for (const column of columns) {
+            if (!state.selectedColumns.has(column.id)) continue;
+            result.push({ column, scope: "self" });
+            if (!column.selfOnly) result.push({ column, scope: "total" });
+          }
+          return result;
         }
 
-        function memoryCell(value, classes, maximum) {
-          const max = maximum > 0n ? maximum : 1n;
-          const ratio = Number(asBigInt(value) * 10000n / max) / 100;
-          return e("td", { class: classes },
-            e("span", { class: "metric-bar", style: { "--fill": Math.min(100, ratio).toFixed(2) + "%" } }),
-            e("span", { class: "metric-value" }, formatBytes(value))
+        function metricCell(node, column, scope) {
+          const value = metric(node, column);
+          const available = metricAvailable(value, scope);
+          const partial = scope === "total" && value && value.totalPartial;
+          return e("td", { class: "metric-column " + scope },
+            available ? formatMetric(column, value[scope]) : e("span", { class: "not-available" }, "—"),
+            partial ? e("span", {
+              class: "partial",
+              title: "Known subtotal; unavailable values are excluded"
+            }, "partial") : null
           );
         }
 
         function flatten(nodes, depth, forceOpen, rows) {
           for (const node of nodes) {
             rows.push({ node, depth });
-            const open = forceOpen || state.expanded.has(node.key);
-            if (open) flatten(node.children || [], depth + 1, forceOpen, rows);
+            if (forceOpen || state.expanded.has(node.key)) {
+              flatten(node.children || [], depth + 1, forceOpen, rows);
+            }
           }
           return rows;
         }
 
-        function ProcessRows({ roots }) {
+        function ProcessRows({ roots, metricColumns }) {
           const forceOpen = state.search.trim().length > 0;
           const rows = flatten(roots, 0, forceOpen, []);
-          const maxCpuSelf = Math.max(1, ...rows.map(row => finite(row.node.cpuSelfPercent)));
-          const maxCpuTotal = Math.max(1, ...rows.map(row => finite(row.node.cpuTotalPercent)));
-          const maxMemorySelf = rows.reduce((max, row) => {
-            const value = asBigInt(row.node.memorySelfBytes);
-            return value > max ? value : max;
-          }, 1n);
-          const maxMemoryTotal = rows.reduce((max, row) => {
-            const value = asBigInt(row.node.memoryTotalBytes);
-            return value > max ? value : max;
-          }, 1n);
-
           return rows.map(({ node, depth }) => {
             const hasChildren = node.children && node.children.length > 0;
             const open = forceOpen || state.expanded.has(node.key);
@@ -504,14 +485,12 @@ object ProcessPage {
               "aria-level": String(depth + 1),
               "aria-expanded": hasChildren ? String(open) : null
             },
-              e("td", { class: "pid" }, String(node.pid)),
-              e("td", null,
+              e("td", { class: "pid-cell" }, String(node.pid)),
+              e("td", { class: "process-cell" },
                 e("div", { class: "tree-cell", style: { "--depth": String(depth) } },
                   e("span", { class: "tree-guide" }),
                   hasChildren ? e("button", {
-                    class: "twisty",
-                    type: "button",
-                    "aria-label": toggleLabel,
+                    class: "twisty", type: "button", "aria-label": toggleLabel,
                     "aria-expanded": String(open),
                     onClick: () => {
                       if (state.expanded.has(node.key)) state.expanded.delete(node.key);
@@ -520,17 +499,11 @@ object ProcessPage {
                     }
                   }, open ? "▾" : "▸") : e("span", { class: "twisty-space" }),
                   e("span", { class: "process-name", title: node.executablePath || node.name }, node.name),
-                  node.totalsPartial ? e("span", {
-                    class: "partial",
-                    title: String(node.unavailableProcessCount) + " unavailable process(es) excluded from totals"
-                  }, "partial") : null,
-                  !node.measured ? e("span", { class: "issue" }, String(node.issueReason || "unavailable").replaceAll("_", " ")) : null
+                  !node.measured ? e("span", { class: "issue" },
+                    String(node.issueReason || "unavailable").replaceAll("_", " ")) : null
                 )
               ),
-              metricCell(node.cpuSelfPercent, formatCpu(node.cpuSelfPercent), "self", maxCpuSelf),
-              metricCell(node.cpuTotalPercent, formatCpu(node.cpuTotalPercent), "total cpu-total", maxCpuTotal),
-              memoryCell(node.memorySelfBytes, "self", maxMemorySelf),
-              memoryCell(node.memoryTotalBytes, "total", maxMemoryTotal)
+              ...metricColumns.map(({ column, scope }) => metricCell(node, column, scope))
             );
           });
         }
@@ -549,8 +522,97 @@ object ProcessPage {
             const since = payload.staleSince ? new Date(payload.staleSince).getTime() : Date.now();
             return "Metrics stale for " + Math.max(0, Math.floor((Date.now() - since) / 1000)) + "s";
           }
-          if (payload.status === "WARMING") return "Collecting the baseline sample";
+          if (payload.status === "WARMING") return "Collecting a fresh baseline; the previous tree remains visible";
           return null;
+        }
+
+        function attributionText(payload) {
+          if (!payload || !payload.attributionCapturedAt) return "attribution unavailable";
+          const captured = new Date(payload.attributionCapturedAt).getTime();
+          const dynamicAge = Number.isFinite(captured) ? Math.max(0, (Date.now() - captured) / 1000) : 0;
+          const age = Math.max(asNumber(payload.attributionAgeSeconds), dynamicAge);
+          return "attribution " + Math.floor(age) + "s old";
+        }
+
+        function detailRow(label, value) {
+          return e("div", { class: "detail-row" }, e("span", null, label), e("span", null, value));
+        }
+
+        function detailsGroup(title, rows) {
+          return e("section", { class: "details-group" }, e("h3", null, title), ...rows);
+        }
+
+        function SystemDetails({ system }) {
+          if (!system) return null;
+          const vm = system.virtualMemory;
+          const storage = system.storage;
+          const power = system.power;
+          const load = system.load;
+          const processor = system.processor;
+          return e("details", { class: "system-details" },
+            e("summary", null, "System details"),
+            e("div", { class: "details-grid" },
+              detailsGroup("Processor / load", [
+                detailRow("CPU total", processor.totalPercent.toFixed(1) + "%"),
+                detailRow("User / system", processor.userPercent.toFixed(1) + "% / " + processor.systemPercent.toFixed(1) + "%"),
+                detailRow("Nice / idle", processor.nicePercent.toFixed(1) + "% / " + processor.idlePercent.toFixed(1) + "%"),
+                detailRow("Load 1 / 5 / 15m", load.oneMinute.toFixed(2) + " / " + load.fiveMinutes.toFixed(2) + " / " + load.fifteenMinutes.toFixed(2))
+              ]),
+              detailsGroup("Virtual memory", [
+                detailRow("Free / active", formatBytes(vm.freeBytes) + " / " + formatBytes(vm.activeBytes)),
+                detailRow("Inactive / wired", formatBytes(vm.inactiveBytes) + " / " + formatBytes(vm.wiredBytes)),
+                detailRow("Purgeable / compressed", formatBytes(vm.purgeableBytes) + " / " + formatBytes(vm.compressedBytes)),
+                detailRow("Compressor / swap-backed", formatBytes(vm.uncompressedBytesInCompressor) + " / " + formatBytes(vm.swapBackedUncompressedBytes)),
+                detailRow("Page in / out", formatBytes(String(Math.round(vm.pageInBytesPerSecond))) + "/s / " + formatBytes(String(Math.round(vm.pageOutBytesPerSecond))) + "/s"),
+                detailRow("Faults / CoW", formatRate(vm.faultRate) + " / " + formatRate(vm.copyOnWriteFaultRate)),
+                detailRow("Compress / decompress", formatBytes(String(Math.round(vm.compressionBytesPerSecond))) + "/s / " + formatBytes(String(Math.round(vm.decompressionBytesPerSecond))) + "/s"),
+                detailRow("Swap in / out", formatBytes(String(Math.round(vm.swapInBytesPerSecond))) + "/s / " + formatBytes(String(Math.round(vm.swapOutBytesPerSecond))) + "/s")
+              ]),
+              detailsGroup("Storage / swap", [
+                detailRow("Storage", storage.available ? storage.deviceCount + " device(s)" : "unavailable"),
+                detailRow("Read / write", formatBytes(String(Math.round(storage.readBytesPerSecond))) + "/s / " + formatBytes(String(Math.round(storage.writeBytesPerSecond))) + "/s"),
+                detailRow("Read / write ops", formatRate(storage.readOperationsPerSecond) + " / " + formatRate(storage.writeOperationsPerSecond)),
+                detailRow("Service time", storage.readServiceTimePercent.toFixed(1) + "% / " + storage.writeServiceTimePercent.toFixed(1) + "%"),
+                detailRow("Root free / total", formatBytes(storage.rootFileSystemAvailableBytes) + " / " + formatBytes(storage.rootFileSystemTotalBytes)),
+                detailRow("Swap used / total", formatBytes(system.swap.usedBytes) + " / " + formatBytes(system.swap.totalBytes)),
+                detailRow("Swap available", formatBytes(system.swap.availableBytes) + (system.swap.encrypted ? " · encrypted" : ""))
+              ]),
+              detailsGroup("Power / collection", [
+                detailRow("Power source", !power.batteryAvailable ? "No battery" : power.charging ? "Charging" : power.onBattery ? "Battery" : "AC"),
+                detailRow("Battery", power.batteryAvailable ? String(power.percentage ?? "—") + "%" : "n/a"),
+                detailRow("Time remaining", power.minutesRemaining == null ? "—" : power.minutesRemaining + " min"),
+                detailRow("Processes", system.processes.total + " total · " + system.processes.inaccessible + " inaccessible"),
+                detailRow("Attribution", system.processes.compressedAttributionAvailable + " available · " + system.processes.compressedAttributionFailures + " failed"),
+                detailRow("Energy counter", system.energyAccounted ? "accounted" : "fallback score")
+              ])
+            )
+          );
+        }
+
+        function setPreset(name) {
+          state.selectedColumns = new Set(presets[name]);
+          if (!state.selectedColumns.has(state.sort.column)) {
+            const first = presets[name][0];
+            state.sort = { column: first, scope: columnById[first].selfOnly ? "self" : "total" };
+            state.sortDirection = "desc";
+          }
+          draw();
+        }
+
+        function activePreset(name) {
+          const ids = presets[name];
+          return ids.length === state.selectedColumns.size && ids.every(id => state.selectedColumns.has(id));
+        }
+
+        function toggleColumn(id, checked) {
+          if (checked) state.selectedColumns.add(id); else state.selectedColumns.delete(id);
+          if (!state.selectedColumns.size) state.selectedColumns.add("cpu");
+          if (!state.selectedColumns.has(state.sort.column)) {
+            const first = [...state.selectedColumns][0];
+            state.sort = { column: first, scope: columnById[first].selfOnly ? "self" : "total" };
+            state.sortDirection = "desc";
+          }
+          draw();
         }
 
         function App() {
@@ -563,112 +625,124 @@ object ProcessPage {
           const captured = tree && tree.capturedAt ? new Date(tree.capturedAt).toLocaleTimeString() : "—";
           const displayed = tree ? tree.displayedProcessCount : 0;
           const total = tree ? tree.totalProcessCount : 0;
-          const unavailable = tree ? Math.max(tree.inaccessibleProcessCount, total - displayed) : 0;
-          const isLive = pageMode === "live" && !state.frozen;
+          const unavailable = tree ? Math.max(tree.inaccessibleProcessCount, total - tree.measuredProcessCount) : 0;
+          const isLive = pageMode === "live" && !state.frozen && document.visibilityState === "visible";
+          const metricColumns = selectedMetricColumns();
 
           return e("div", { class: "shell" },
             e("header", { class: "topbar" },
               e("div", null,
                 e("p", { class: "eyebrow" }, "Harmon · process tree"),
                 e("h1", null, "Self and descendant totals"),
-                e("p", { class: "subtitle" }, "Every row is one PID. Total columns include the readable subtree.")
+                e("p", { class: "subtitle" }, "Every row is one PID. Known partial totals remain sortable.")
               ),
               e("button", {
-                class: "mode-button",
-                type: "button",
-                disabled: pageMode !== "live",
-                "data-live": String(isLive),
-                onClick: toggleFreeze
-              }, pageMode !== "live" ? "Saved snapshot" : isLive ? "● Live · Snapshot" : "Snapshot · Resume")
+                class: "mode-button", type: "button", disabled: pageMode !== "live",
+                "data-live": String(isLive), onClick: toggleFreeze
+              }, pageMode !== "live" ? "Saved snapshot" : state.frozen ? "Snapshot · Resume" : isLive ? "● Live · Snapshot" : "Live · hidden")
             ),
             e("section", { class: "summary-grid", "aria-label": "System summary" },
               summaryCard("Processes", String(displayed), total ? "of " + total : ""),
-              summaryCard("CPU", system ? formatCpu(system.cpuTotalPercent) : "—", "system"),
+              summaryCard("CPU", system ? system.processor.totalPercent.toFixed(1) + "%" : "—", "system"),
               summaryCard("Physical memory", system ? formatBytes(system.physicalMemoryBytes) : "—", "installed"),
-              summaryCard("Swap used", system ? formatBytes(system.swapUsedBytes) : "—", ""),
-              summaryCard("Load", system ? finite(system.loadAverageOneMinute).toFixed(2) : "—", "1 minute"),
-              summaryCard("Battery", system && system.batteryAvailable ? String(system.batteryPercentage ?? "—") + "%" : "n/a",
-                system ? (system.charging ? "charging" : system.onBattery ? "on battery" : "AC power") : ""),
-              summaryCard("Captured", captured, payload ? "sample " + payload.sequence : "")
+              summaryCard("Swap used", system ? formatBytes(system.swap.usedBytes) : "—", ""),
+              summaryCard("Load", system ? system.load.oneMinute.toFixed(2) : "—", "1 minute"),
+              summaryCard("Battery", system && system.power.batteryAvailable ? String(system.power.percentage ?? "—") + "%" : "n/a",
+                system ? (system.power.charging ? "charging" : system.power.onBattery ? "on battery" : "AC power") : ""),
+              summaryCard("Captured", captured, payload ? "sample " + payload.sequence : ""),
+              summaryCard("Attribution", payload && payload.attributionCapturedAt ? new Date(payload.attributionCapturedAt).toLocaleTimeString() : "—", attributionText(payload))
             ),
             status ? e("p", {
               class: "notice" + (payload && payload.status === "STALE" ? " error" : ""),
-              role: "status",
-              "aria-live": "polite"
+              role: "status", "aria-live": "polite"
             }, status + (payload && payload.error ? ": " + payload.error : "")) : null,
+            payload && payload.attributionWarning ? e("p", { class: "notice", role: "status" }, "Attribution warning: " + payload.attributionWarning) : null,
             state.requestError ? e("p", { class: "notice error", role: "alert" }, "Live update failed: " + state.requestError) : null,
             payload && payload.alerts && payload.alerts.length ? e("p", { class: "notice" }, payload.alerts.map(alert => alert.title).join(" · ")) : null,
             e("section", { "aria-label": "Process table" },
               e("div", { class: "toolbar" },
                 e("input", {
-                  class: "search",
-                  type: "search",
-                  value: state.search,
-                  placeholder: "Search process name or PID",
-                  "aria-label": "Search processes",
+                  class: "search", type: "search", value: state.search,
+                  placeholder: "Search process name or PID", "aria-label": "Search processes",
                   onInput: event => { state.search = event.currentTarget.value; draw(); }
                 }),
-                e("span", { class: "toolbar-meta" }, unavailable ? unavailable + " unavailable · totals may be partial" : "all reported processes readable")
+                e("div", { class: "preset-list", "aria-label": "Column presets" },
+                  ...Object.keys(presets).map(name => e("button", {
+                    class: "preset-button" + (activePreset(name) ? " active" : ""),
+                    type: "button", onClick: () => setPreset(name)
+                  }, name))
+                ),
+                e("details", { class: "column-picker" },
+                  e("summary", null, "Columns (" + state.selectedColumns.size + ")"),
+                  e("div", { class: "column-menu" }, ...columns.map(column =>
+                    e("label", { key: column.id },
+                      e("input", {
+                        type: "checkbox", checked: state.selectedColumns.has(column.id),
+                        onChange: event => toggleColumn(column.id, event.currentTarget.checked)
+                      }),
+                      column.group + " · " + column.label
+                    )
+                  ))
+                ),
+                e("span", { class: "toolbar-meta" }, unavailable ? unavailable + " unavailable process(es)" : "all reported processes readable")
               ),
               e("div", { class: "table-wrap" },
                 e("table", { role: "treegrid", "aria-label": "Processes" },
                   e("thead", null, e("tr", null,
-                    sortHeader("PID", "pid", "pid"),
-                    sortHeader("Process", "name", "process-column"),
-                    sortHeader("CPU Self", "cpuSelfPercent", "metric-column"),
-                    sortHeader("CPU Total", "cpuTotalPercent", "metric-column"),
-                    sortHeader("Memory Self", "memorySelfBytes", "metric-column"),
-                    sortHeader("Memory Total", "memoryTotalBytes", "metric-column")
+                    sortHeader("PID", "pid", "identity", "pid-column"),
+                    sortHeader("Process", "name", "identity", "process-column"),
+                    ...metricColumns.map(({ column, scope }) =>
+                      sortHeader(column.label + " " + (scope === "self" ? "Self" : "Total"), column.id, scope, "metric-column")
+                    )
                   )),
                   e("tbody", null,
-                    tree && roots.length ? e(ProcessRows, { roots }) :
-                      e("tr", null, e("td", { class: "empty", colSpan: 6 },
+                    tree && roots.length ? e(ProcessRows, { roots, metricColumns }) :
+                      e("tr", null, e("td", { class: "empty", colSpan: 2 + metricColumns.length },
                         tree ? "No processes match this search." : "Waiting for process metrics…"
                       ))
                   )
                 )
               )
             ),
+            e(SystemDetails, { system }),
             payload && payload.reportText ? e("details", { class: "report-details" },
-              e("summary", null, "Full text report"),
-              e("pre", null, payload.reportText)
+              e("summary", null, "Full text report"), e("pre", null, payload.reportText)
             ) : null
           );
         }
 
-        function draw() {
-          render(e(App), root);
+        function draw() { render(e(App), root); }
+
+        function canPoll() {
+          return pageMode === "live" && !state.frozen && document.visibilityState === "visible";
         }
 
         function schedule() {
           clearTimeout(state.timer);
-          if (pageMode === "live" && !state.frozen) {
+          if (canPoll()) {
             const seconds = state.payload && (state.payload.retrySeconds || state.payload.sampleIntervalSeconds);
-            state.timer = setTimeout(refresh, Math.max(250, finite(seconds || 1) * 1000));
+            state.timer = setTimeout(refresh, Math.max(250, asNumber(seconds || 1) * 1000));
           }
         }
 
         async function refresh() {
-          if (pageMode !== "live" || state.frozen) return;
+          if (!canPoll()) return;
           const generation = state.pollGeneration;
           try {
-            const response = await fetch("/api/live?token=" + encodeURIComponent(token), {
-              cache: "no-store",
-              headers: { "Accept": "application/json" }
+            const response = await fetch("/api/live?token=" + encodeURIComponent(token) + "&watch=1", {
+              cache: "no-store", headers: { "Accept": "application/json" }
             });
             if (!response.ok) throw new Error("HTTP " + response.status);
             const payload = await response.json();
-            if (generation !== state.pollGeneration || state.frozen) return;
+            if (payload.schemaVersion !== 2) throw new Error("unsupported schema " + payload.schemaVersion);
+            if (generation !== state.pollGeneration || !canPoll()) return;
             state.payload = payload;
             state.requestError = null;
           } catch (error) {
-            if (generation !== state.pollGeneration || state.frozen) return;
+            if (generation !== state.pollGeneration || !canPoll()) return;
             state.requestError = error instanceof Error ? error.message : String(error);
           } finally {
-            if (generation === state.pollGeneration) {
-              draw();
-              schedule();
-            }
+            if (generation === state.pollGeneration) { draw(); schedule(); }
           }
         }
 
@@ -676,12 +750,19 @@ object ProcessPage {
           if (pageMode !== "live") return;
           state.pollGeneration += 1;
           state.frozen = !state.frozen;
-          if (state.frozen) clearTimeout(state.timer);
+          clearTimeout(state.timer);
           draw();
-          if (!state.frozen) refresh();
+          if (canPoll()) refresh();
         }
 
+        document.addEventListener("visibilitychange", () => {
+          state.pollGeneration += 1;
+          clearTimeout(state.timer);
+          draw();
+          if (canPoll()) refresh();
+        });
+
         draw();
-        if (pageMode === "live") refresh();
+        if (canPoll()) refresh();
     """.trimIndent()
 }

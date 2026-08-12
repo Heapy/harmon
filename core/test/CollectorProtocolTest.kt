@@ -1,121 +1,148 @@
 import dev.yoda.harmon.ipc.CollectorProtocol
 import dev.yoda.harmon.ipc.CollectorProtocolException
+import dev.yoda.harmon.ipc.CollectorRequest
+import dev.yoda.harmon.monitor.CollectionProfile
 import kotlin.test.Test
 import kotlin.test.assertContains
 import kotlin.test.assertEquals
 import kotlin.test.assertFailsWith
+import kotlin.test.assertIs
 import kotlin.test.assertNotNull
 
 private val CURRENT_VERSION_FIELD = "\"protocolVersion\":${CollectorProtocol.VERSION}"
 
 class CollectorProtocolTest {
     @Test
-    fun reportsANewerVersionWithoutDecodingItsUnknownPayload() {
-        assertEquals(
-            CollectorProtocol.VERSION + 1,
-            CollectorProtocol.reportedVersion(
-                """{"protocolVersion":${CollectorProtocol.VERSION + 1},"future":true}""",
-            ),
-        )
-    }
-
-    @Test
-    fun roundTripsRawSnapshotAsJson() {
+    fun roundTripsBothCaptureProfilesAndTheirAppliedProfile() {
         val original = rawSnapshot(
             monotonicNs = 3_000_000_000u,
             processes = listOf(
-                rawProcess(
-                    pid = 123,
-                    compressedOrPagedOut = 32uL * 1_048_576uL,
-                ),
+                rawProcess(pid = 123, compressedOrPagedOut = 32uL * 1_048_576uL),
             ),
         )
 
-        val decoded = CollectorProtocol.decode(CollectorProtocol.encode(original))
+        for (profile in CollectionProfile.entries) {
+            val request = assertIs<CollectorRequest.Capture>(
+                CollectorProtocol.decodeRequest(CollectorProtocol.encodeCapture(profile)),
+            )
+            val decoded = CollectorProtocol.decodeSnapshot(
+                CollectorProtocol.encodeSnapshot(original, profile),
+                expectedProfile = profile,
+            )
 
-        assertEquals(original, decoded)
+            assertEquals(profile, request.profile)
+            assertEquals(profile, decoded.appliedProfile)
+            assertEquals(original, decoded.snapshot)
+        }
     }
 
     @Test
-    fun rejectsAnIncompatibleProtocolVersion() {
-        val payload = encodedSnapshot().withVersion("\"protocolVersion\":3")
+    fun helloProbeAndAckUseStrictVersionThreeFrames() {
+        CollectorProtocol.decodeHello(CollectorProtocol.encodeHello())
+        assertEquals(
+            CollectorRequest.Probe,
+            CollectorProtocol.decodeRequest(CollectorProtocol.encodeProbe()),
+        )
+        CollectorProtocol.decodeAck(CollectorProtocol.encodeAck())
+        assertEquals(3, CollectorProtocol.VERSION)
+    }
+
+    @Test
+    fun rejectsAProfileMismatchInsteadOfSilentlyApplyingIt() {
+        val failure = assertFailsWith<CollectorProtocolException> {
+            CollectorProtocol.decodeSnapshot(
+                CollectorProtocol.encodeSnapshot(emptySnapshot(), CollectionProfile.FULL),
+                expectedProfile = CollectionProfile.LIVE_FAST,
+            )
+        }
+
+        assertContains(assertNotNull(failure.message), "applied profile FULL")
+        assertContains(assertNotNull(failure.message), "expected LIVE_FAST")
+    }
+
+    @Test
+    fun rejectsAnUnknownCaptureProfile() {
+        val payload = CollectorProtocol.encodeCapture(CollectionProfile.FULL)
+            .replace("\"FULL\"", "\"FUTURE\"")
 
         val failure = assertFailsWith<CollectorProtocolException> {
-            CollectorProtocol.decode(payload)
+            CollectorProtocol.decodeRequest(payload)
         }
 
-        assertContains(assertNotNull(failure.message), "Unsupported collector protocol 3")
+        assertContains(assertNotNull(failure.message), "invalid collector request")
     }
 
     @Test
-    fun blamesTheProtocolVersionRatherThanTheUnknownFieldOfANewerCollector() {
-        val payload = withUnknownField(encodedSnapshot().withVersion("\"protocolVersion\":3"))
+    fun rejectsUnknownFieldsInEveryFrameDirection() {
+        val frames = listOf<Pair<String, () -> Unit>>(
+            "hello" to {
+                CollectorProtocol.decodeHello(withUnknownField(CollectorProtocol.encodeHello()))
+            },
+            "request" to {
+                CollectorProtocol.decodeRequest(
+                    withUnknownField(CollectorProtocol.encodeCapture(CollectionProfile.FULL)),
+                )
+            },
+            "ack" to {
+                CollectorProtocol.decodeAck(withUnknownField(CollectorProtocol.encodeAck()))
+            },
+            "snapshot" to {
+                CollectorProtocol.decodeSnapshot(
+                    withUnknownField(
+                        CollectorProtocol.encodeSnapshot(emptySnapshot(), CollectionProfile.FULL),
+                    ),
+                    CollectionProfile.FULL,
+                )
+            },
+        )
 
-        val failure = assertFailsWith<CollectorProtocolException> {
-            CollectorProtocol.decode(payload)
+        for ((name, decode) in frames) {
+            val failure = assertFailsWith<CollectorProtocolException>(name, decode)
+            assertContains(assertNotNull(failure.message), "invalid")
         }
-
-        assertContains(assertNotNull(failure.message), "Unsupported collector protocol 3")
     }
 
     @Test
-    fun stillRejectsAnUnknownFieldWithinTheSupportedVersion() {
-        val payload = withUnknownField(encodedSnapshot())
+    fun reportsV2V3MismatchesBeforeDecodingUnknownPayload() {
+        val newer = withUnknownField(CollectorProtocol.encodeHello())
+            .withVersion("\"protocolVersion\":4")
+        val older = """{"protocolVersion":2,"snapshot":{}}"""
 
-        val failure = assertFailsWith<CollectorProtocolException> {
-            CollectorProtocol.decode(payload)
+        val newerFailure = assertFailsWith<CollectorProtocolException> {
+            CollectorProtocol.decodeHello(newer)
+        }
+        val olderFailure = assertFailsWith<CollectorProtocolException> {
+            CollectorProtocol.decodeHello(older)
         }
 
-        assertContains(assertNotNull(failure.message), "invalid JSON")
+        assertContains(assertNotNull(newerFailure.message), "Unsupported collector protocol 4")
+        assertContains(assertNotNull(olderFailure.message), "Unsupported collector protocol 2")
+        assertEquals(2, CollectorProtocol.reportedVersion(older))
     }
 
     @Test
-    fun reportsMalformedJsonAsInvalidJson() {
-        val failure = assertFailsWith<CollectorProtocolException> {
-            CollectorProtocol.decode("{$CURRENT_VERSION_FIELD,")
+    fun reportsMissingMalformedAndNonIntegralVersionsPrecisely() {
+        val missing = CollectorProtocol.encodeHello().replaceFirst("$CURRENT_VERSION_FIELD,", "")
+        val missingFailure = assertFailsWith<CollectorProtocolException> {
+            CollectorProtocol.decodeHello(missing)
+        }
+        val malformedFailure = assertFailsWith<CollectorProtocolException> {
+            CollectorProtocol.decodeHello("{$CURRENT_VERSION_FIELD,")
+        }
+        val fractionalFailure = assertFailsWith<CollectorProtocolException> {
+            CollectorProtocol.decodeHello(
+                CollectorProtocol.encodeHello().withVersion("\"protocolVersion\":3.5"),
+            )
         }
 
-        assertContains(assertNotNull(failure.message), "invalid JSON")
+        assertContains(assertNotNull(missingFailure.message), "did not report")
+        assertContains(assertNotNull(malformedFailure.message), "did not report")
+        assertContains(assertNotNull(fractionalFailure.message), "did not report")
     }
 
-    @Test
-    fun reportsAMissingProtocolVersionAsAProtocolProblem() {
-        val payload = encodedSnapshot().replaceFirst("$CURRENT_VERSION_FIELD,", "")
-
-        val failure = assertFailsWith<CollectorProtocolException> {
-            CollectorProtocol.decode(payload)
-        }
-
-        assertContains(assertNotNull(failure.message), "did not report a protocol version")
-    }
-
-    @Test
-    fun leavesAVersionThatIsNotABareIntegerToTheStrictDecoder() {
-        val quoted = assertFailsWith<CollectorProtocolException> {
-            CollectorProtocol.decode(encodedSnapshot().withVersion("\"protocolVersion\":\"3\""))
-        }
-        val fractional = assertFailsWith<CollectorProtocolException> {
-            CollectorProtocol.decode(encodedSnapshot().withVersion("\"protocolVersion\":2.5"))
-        }
-
-        assertContains(assertNotNull(quoted.message), "Unsupported collector protocol 3")
-        assertContains(assertNotNull(fractional.message), "invalid JSON")
-    }
-
-    @Test
-    fun reportsANonObjectFrameAsInvalidJson() {
-        val failure = assertFailsWith<CollectorProtocolException> {
-            CollectorProtocol.decode("[$CURRENT_VERSION_FIELD]")
-        }
-
-        assertContains(assertNotNull(failure.message), "invalid JSON")
-    }
-
-    private fun encodedSnapshot(): String = CollectorProtocol.encode(
-        rawSnapshot(
-            monotonicNs = 1_000_000_000u,
-            processes = emptyList(),
-        ),
+    private fun emptySnapshot() = rawSnapshot(
+        monotonicNs = 1_000_000_000u,
+        processes = emptyList(),
     )
 
     private fun String.withVersion(field: String): String =

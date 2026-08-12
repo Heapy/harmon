@@ -119,28 +119,28 @@ sequenceDiagram
     L->>C: Start system LaunchDaemon
     C->>C: Bind root-owned Unix socket
     L->>A: Start Aqua LaunchAgent
-    A->>C: Connect for baseline snapshot
+    A->>C: HELLO / CAPTURE(FULL) for baseline
     C->>C: Verify peer UID with getpeereid
     C->>C: Capture one system snapshot
-    C-->>A: Versioned JSON frame
+    C-->>A: SNAPSHOT(FULL)
     A->>A: Sleep configured interval
-    A->>C: Connect for current snapshot
-    C-->>A: Versioned JSON frame
+    A->>C: HELLO / CAPTURE(FULL) for current sample
+    C-->>A: SNAPSHOT(FULL)
     A->>A: Calculate rates and application totals
     A->>D: Push only the alerts that just started firing
-    par Independent live sampler
-        A->>C: Capture on webSampleSeconds cadence
-        C-->>A: Fresh snapshot for process tree
-        U->>A: Authenticated GET /api/live
-        A-->>U: Self and descendant totals
+    par Demand-driven live sampler
+        U->>A: Authenticated GET /api/live?watch=1
+        A->>C: FULL baseline, then LIVE_FAST cadence
+        C-->>A: Profile-labelled snapshots
+        A-->>U: Schema-v2 tree and full report
     end
 ```
 
 The collector is request-driven rather than continuously polling. One accepted
-connection produces one snapshot. The agent determines the interval and needs
-two snapshots to calculate rates. It sleeps on the monotonic clock, parked for
-the whole interval rather than polling, so a wall-clock adjustment cannot
-stretch or collapse a sampling window.
+`CAPTURE` request produces one snapshot; `PROBE` produces none. The agent
+determines the interval and needs two snapshots to calculate rates. It sleeps
+on the monotonic clock, parked for the whole interval rather than polling, so a
+wall-clock adjustment cannot stretch or collapse a sampling window.
 
 Notification is edge-triggered, not scheduled. The agent keeps the set of alert
 keys that were firing on the previous sample and the set whose delivery was
@@ -190,28 +190,30 @@ The default endpoint is `/var/run/harmon.collector.sock`. It lives directly in
 the boot-managed `/var/run` directory, so the collector does not depend on a
 custom runtime directory surviving a restart.
 
-Each response is:
+Every protocol message is framed as:
 
 1. a four-byte unsigned payload length in network byte order;
-2. one UTF-8 JSON document of exactly that length;
-3. connection close.
+2. one UTF-8 JSON document of exactly that length.
 
 The frame limit is 32 MiB. Socket send and receive operations have 30-second
-timeouts. JSON is generated and parsed with `kotlinx.serialization`; the
-envelope contains a protocol version and a `RawSystemSnapshot`. Unknown fields
-are rejected so a version mismatch fails explicitly instead of silently
-changing metric meaning.
+timeouts. JSON is generated and parsed with `kotlinx.serialization`, with
+unknown fields rejected in both directions. A version-3 connection is exactly:
 
-The current version is 2. It was raised from 1 when the CPU counters changed
-units: `userTimeNs` and `systemTimeNs` used to carry raw mach absolute ticks
-under a nanosecond name, and the collector now converts them to real
-nanoseconds. The agent refuses a snapshot from any other version with
-`Unsupported collector protocol 1; expected 2` rather than deriving CPU
-percentages from ticks. Collector and agent are therefore a matched pair and
-have to be upgraded together.
+1. collector sends `HELLO`;
+2. agent sends either `PROBE` or `CAPTURE(profile)`;
+3. collector sends `ACK` or `SNAPSHOT(appliedProfile)` respectively;
+4. both sides close the connection.
 
-No request body or mutation command exists. Connecting only asks for a fresh
-snapshot.
+`PROBE` never scans the system. `CAPTURE` accepts only `FULL` and `LIVE_FAST`,
+and the client rejects a snapshot whose `appliedProfile` differs from its
+request. Unknown request kinds, profiles, and fields fail rather than falling
+back to a more expensive or semantically different capture.
+
+The current version is 3. Version 2 introduced true nanosecond CPU counters;
+version 3 adds the handshake, capture-free probe, and explicit collection
+profiles. The agent refuses every other version, for example with
+`Unsupported collector protocol 2; expected 3`. Collector and agent are a
+matched pair and have to be upgraded together.
 
 ## Local authorization
 
@@ -332,11 +334,28 @@ the IPC bridge; Darwin probes enter only through `bridge-probe`.
 ## Local process UI
 
 `harmon run` owns a second `CollectorClient` and `UsageCalculator` for the web
-view. Its one-second default cadence is independent of the main monitoring
-loop, so opening or disabling the UI cannot move the baseline used for alerts
-and history. Sampling and the HTTP accept loop run on separate serial GCD
-queues. A failed live capture keeps the last good tree visible as stale and is
-retried on the configured `webSampleSeconds` cadence.
+view. It stays idle until an authenticated `/api/live?...&watch=1` request
+renews a monotonic lease. Only a visible browser in Live mode sends that
+request; hidden, closed, and Snapshot tabs stop renewing it. The shared lease
+lasts `max(5 seconds, 3 × webSampleSeconds)`, so any one of several visible tabs
+keeps collection alive without multiplying collector work. Health probes,
+page loads, and ordinary API reads do not activate sampling.
+
+Each lease generation owns a new rate baseline, so CPU and other deltas never
+span an idle period. The previous tree remains visible as `WARMING` until that
+baseline advances. Captures run serially on one GCD queue with no pending work:
+the first is `FULL`, cadence captures are `LIVE_FAST`, and a monotonic deadline
+at least 30 seconds after the previous `FULL` start selects the next one.
+`LIVE_FAST` retains all task,
+storage, VM, disk, wakeup, fault, syscall, thread, compute, and energy metrics;
+it skips only the VM-region attribution walk. A failed fast capture marks the
+last good tree `STALE`. A failed scheduled full capture falls back to a fast
+capture and keeps the previous attribution with an explicit warning and
+increasing age.
+
+This sampler is independent of the main monitoring loop, so the UI cannot move
+the baseline used for alerts and history. Sampling and the HTTP accept loop run
+on separate serial GCD queues.
 
 The server binds `127.0.0.1` on a random free port. Every HTML/API request must
 carry a new 256-bit per-run token. The port and token are atomically published
@@ -344,12 +363,23 @@ in the user's `0600` `live-ui.endpoint`; `harmon ui` reads that file and asks
 macOS to open the authenticated URL. Responses opt out of caching, referrers,
 external resources, and MIME sniffing. No CORS permission is emitted.
 
-The browser receives one row per PID. The shared core builder handles missing
-parents and cycles, aggregates readable descendants with saturating arithmetic,
-and marks totals partial when an inaccessible placeholder occurs in that
-branch. ULong counters and process start times cross JSON as decimal strings,
-so JavaScript sorts them with `BigInt` without losing identity or overflow
-information. The page ships pinned Preact without npm or a bundling step.
+The browser receives schema v2 with one row per PID and an attribution timestamp
+and age. The shared core builder handles missing parents and cycles, aggregates
+every additive process metric with saturating arithmetic, and independently
+marks self/total availability and partial known totals. Lifetime peak remains
+self-only because summing historical peaks is misleading. All 64-bit integers
+and process start times cross JSON as decimal strings, so JavaScript sorts them
+with `BigInt` without losing identity or overflow information.
+
+PID and Process stay pinned. Overview is the default preset and CPU Total is
+the default descending sort; Memory, I/O, Activity, and Compute / Energy are
+available as presets or individual columns. Unavailable values sort below
+available values in either direction, while known partial totals sort by their
+known subtotal and carry a badge. Search, expansion, sort, and selected columns
+live outside the payload and therefore survive polling, WARMING, Snapshot, and
+Resume. Expandable system details expose CPU/load, VM, storage/swap, and power;
+the rebuilt full text report remains below the table. The page ships pinned
+Preact without npm or a bundling step.
 
 Notification snapshots use the same renderer. Their bootstrap payload and
 Preact module are embedded in `latest.html`, so a `file://` view neither needs

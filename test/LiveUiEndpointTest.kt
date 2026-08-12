@@ -1,5 +1,6 @@
 import dev.yoda.harmon.web.LiveUiEndpoint
 import dev.yoda.harmon.web.generateLiveUiToken
+import dev.yoda.harmon.web.liveUiWatchRequested
 import dev.yoda.harmon.web.secureEquals
 import kotlin.test.Test
 import kotlin.test.assertEquals
@@ -53,6 +54,17 @@ class LiveUiEndpointTest {
         assertTrue(first.matches(Regex("[0-9a-f]{64}")))
         assertTrue(second.matches(Regex("[0-9a-f]{64}")))
         assertFalse(first == second)
+    }
+
+    @Test
+    fun onlyExplicitApiWatchRequestsRenewTheSamplerLease() {
+        assertTrue(liveUiWatchRequested("/api/live?token=secret&watch=1"))
+        assertTrue(liveUiWatchRequested("/api/live?watch=1&token=secret"))
+
+        assertFalse(liveUiWatchRequested("/api/live?token=secret"))
+        assertFalse(liveUiWatchRequested("/api/live?token=secret&watch=0"))
+        assertFalse(liveUiWatchRequested("/?token=secret&watch=1"))
+        assertFalse(liveUiWatchRequested("/health?watch=1"))
     }
 
 }

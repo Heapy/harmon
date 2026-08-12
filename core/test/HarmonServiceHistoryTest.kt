@@ -269,5 +269,6 @@ private fun historySnapshotAt(seconds: ULong, footprint: ULong): RawSystemSnapsh
 )
 
 private object NoHistoryCaptureCollector : SystemCollector {
-    override fun capture(): RawSystemSnapshot = error("handleSample must not capture")
+    override fun capture(profile: dev.yoda.harmon.monitor.CollectionProfile): RawSystemSnapshot =
+        error("handleSample must not capture")
 }

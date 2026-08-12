@@ -1,6 +1,7 @@
 package dev.yoda.harmon.monitor
 
 import dev.yoda.harmon.model.RawSystemSnapshot
+import kotlinx.serialization.Serializable
 
 const val MIN_PROCESS_CAPACITY = 512
 const val PROCESS_CAPACITY_HEADROOM = 256
@@ -17,8 +18,14 @@ fun processCapacityFor(count: Int, capacity: Int): Int {
     return minOf(requested, capacity.toLong()).toInt()
 }
 
+@Serializable
+enum class CollectionProfile {
+    FULL,
+    LIVE_FAST,
+}
+
 interface SystemCollector {
-    fun capture(): RawSystemSnapshot
+    fun capture(profile: CollectionProfile): RawSystemSnapshot
 }
 
 class CollectionException(message: String) : IllegalStateException(message)

@@ -1,4 +1,9 @@
+import dev.yoda.harmon.monitor.CollectionProfile
 import dev.yoda.harmon.monitor.DarwinSystemCollector
+import dev.yoda.harmon.monitor.FULL_ATTRIBUTION_REGION_BUDGET
+import dev.yoda.harmon.monitor.FULL_COMPRESSED_ATTRIBUTION_PROCESS_LIMIT
+import dev.yoda.harmon.monitor.attributionLimitsFor
+import kotlin.test.assertEquals
 import kotlin.test.Test
 import kotlin.test.assertFailsWith
 import kotlin.test.assertTrue
@@ -27,5 +32,18 @@ class DarwinCollectorLimitsTest {
     fun acceptsAZeroRegionBudgetAsAWayToTurnAttributionOff() {
         DarwinSystemCollector(attributionRegionBudget = 0)
         DarwinSystemCollector(compressedAttributionProcessLimit = 0)
+    }
+
+    @Test
+    fun liveFastDisablesEveryRegionWalkWhileFullPreservesTheProductionLimits() {
+        val fast = attributionLimitsFor(CollectionProfile.LIVE_FAST)
+        val full = attributionLimitsFor(CollectionProfile.FULL)
+
+        assertEquals(0, fast.processLimit)
+        assertEquals(0, fast.regionBudget)
+        assertEquals(FULL_COMPRESSED_ATTRIBUTION_PROCESS_LIMIT, full.processLimit)
+        assertEquals(FULL_ATTRIBUTION_REGION_BUDGET, full.regionBudget)
+        assertEquals(256, full.processLimit)
+        assertEquals(100_000, full.regionBudget)
     }
 }

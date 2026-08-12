@@ -30,6 +30,20 @@ some scan skew. Harmon records a monotonic timestamp and divides by the actual
 time between completed snapshots rather than assuming the configured interval
 was exact.
 
+Scheduled monitoring, `once`, diagnostics, notification snapshots, and history
+always request the `FULL` collection profile. The independent Live UI sampler
+is demand-driven: an authenticated visible Live tab renews a lease, whose first
+capture is `FULL`; later captures use `LIVE_FAST` at `webSampleSeconds`, with a
+`FULL` selected by a monotonic deadline at least 30 seconds after the previous
+`FULL` start. The fast
+profile changes exactly one collector input: it passes zero process and region
+budgets to the `PROC_PIDREGIONINFO` attribution walk. Every other process and
+system source in the table below is collected normally.
+
+When the lease expires, the next activation starts a new pairwise-rate baseline
+rather than averaging counters across idle time. Captures are strictly serial,
+and missed deadlines do not enqueue catch-up work.
+
 ## macOS data sources
 
 The Kotlin collector calls the probe C bridge in
@@ -199,8 +213,8 @@ compressedOrPagedOutBytes
 It never labels this value “per-process swap bytes.”
 
 Walking every VM region of every process would make the monitor itself
-expensive. Harmon sorts readable processes by physical footprint and attempts
-region attribution for the largest 256. Two limits bound the work:
+expensive. On `FULL`, Harmon sorts readable processes by physical footprint and
+attempts region attribution for the largest 256. Two limits bound the work:
 
 - a per-process limit of 8,192 regions (`HM_ATTRIBUTION_REGION_LIMIT`);
 - a sample-wide budget of 100,000 regions shared by all attempted processes.
@@ -240,7 +254,10 @@ Reports expose:
 - per-application measured-process count.
 
 A process outside that bounded set has `null`, which is distinct from a
-measured value of zero.
+measured value of zero. `LIVE_FAST` performs no region calls and returns these
+two attribution fields as `null`; the Live session overlays its last `FULL`
+values by `(pid, startedAt)`. A newly observed identity therefore remains
+unavailable, and any ancestor's known subtotal is marked partial.
 
 The counters mean exactly what they say:
 
@@ -253,7 +270,8 @@ The counters mean exactly what they say:
   partway through are all undercounts: the partial sum is discarded and
   `compressedOrPagedOutBytes` stays `null`, because an undercount must never
   look like a measurement;
-- such a truncated walk is counted in `compressedAttributionFailureCount`: it
+- such a truncated `FULL` walk is counted in
+  `compressedAttributionFailureCount`: it
   was attempted and it did not produce a usable value;
 - a candidate the remaining budget could not afford is not counted at all —
   neither attempted nor failed. It is simply outside the bounded set, like
@@ -261,11 +279,11 @@ The counters mean exactly what they say:
 
 A walk that ends exactly on the last allowed region is reported as truncated
 even when the address space happened to end there too. The bias is deliberate
-and one-directional: a missed measurement is recoverable on the next sample, a
+and one-directional: a missed measurement is recoverable on the next `FULL`, a
 fabricated one is not.
 
 On a workstation running an IDE, a browser, and a virtual machine the budget,
-not the 256-process limit, is what actually ends attribution. Every sample still
+not the 256-process limit, is what actually ends attribution. Every `FULL` still
 attempts 256 candidates; on such a machine roughly 80 to 85 of them are measured
 and the remaining 170 to 175 are truncated by the share they were given. Those
 are measured figures from a real machine, not a target: 83 to 84 measured of 494
@@ -284,7 +302,15 @@ covering the tail: they were attempted and produced nothing, and they are
 counted as failures rather than hidden. Splitting the budget changes which
 processes are covered rather than how much work a sample costs. Attribution is
 a bounded proxy, and the bound costs a predictable number of system calls per
-sample instead of up to 8.4 million.
+`FULL` instead of up to 8.4 million. The intervening fast Live captures perform
+zero such calls.
+
+The Live payload records `attributionCapturedAt` and
+`attributionAgeSeconds`, and rebuilds its full text report from the current fast
+metrics plus the cached attribution on every cadence capture. If a scheduled
+`FULL` request fails, fast updates continue; the timestamp stays unchanged, its
+age grows, and the payload/report carry the failure warning. A fast failure
+instead marks current metrics stale until another capture succeeds.
 
 ### Why root still does not make this exact
 

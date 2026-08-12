@@ -2,7 +2,10 @@ package dev.yoda.harmon.ipc
 
 import dev.yoda.harmon.monitor.CollectionException
 import dev.yoda.harmon.monitor.SystemCollector
+import dev.yoda.harmon.nativebridge.ipc.HM_MAX_JSON_FRAME_SIZE
 import dev.yoda.harmon.nativebridge.ipc.hm_close_descriptor
+import dev.yoda.harmon.nativebridge.ipc.hm_free
+import dev.yoda.harmon.nativebridge.ipc.hm_receive_json_frame
 import dev.yoda.harmon.nativebridge.ipc.hm_remove_socket
 import dev.yoda.harmon.nativebridge.ipc.hm_send_json_frame
 import dev.yoda.harmon.nativebridge.ipc.hm_sleep_millis
@@ -33,6 +36,7 @@ class CollectorServer(
     private val logError: (String) -> Unit = ::printError,
 ) {
     private val rejectionLog = RejectionLog()
+    private val requestHandler = CollectorRequestHandler(collector)
 
     init {
         require(socketPath.isNotBlank()) { "socketPath must not be blank" }
@@ -85,14 +89,9 @@ class CollectorServer(
     @OptIn(ExperimentalForeignApi::class)
     private fun serveClient(clientDescriptor: Int) {
         try {
-            val snapshot = collector.capture()
-            val payload = CollectorProtocol.encode(snapshot)
-            if (hm_send_json_frame(clientDescriptor, payload) != 0) {
-                logError(
-                    "${Clock.System.now()} unable to send collector snapshot: " +
-                        nativeErrorDescription(),
-                )
-            }
+            sendPayload(clientDescriptor, CollectorProtocol.encodeHello())
+            val request = receivePayload(clientDescriptor)
+            sendPayload(clientDescriptor, requestHandler.respond(request))
         } catch (failure: Throwable) {
             logError(
                 "${Clock.System.now()} collector request failed: " +
@@ -100,6 +99,28 @@ class CollectorServer(
             )
         } finally {
             hm_close_descriptor(clientDescriptor)
+        }
+    }
+
+    @OptIn(ExperimentalForeignApi::class)
+    private fun receivePayload(descriptor: Int): String = memScoped {
+        val size = alloc<UIntVar>()
+        val payload = hm_receive_json_frame(
+            descriptor,
+            HM_MAX_JSON_FRAME_SIZE,
+            size.ptr,
+        ) ?: throw nativeCollectionFailure("Unable to receive collector request")
+        try {
+            payload.toKString()
+        } finally {
+            hm_free(payload)
+        }
+    }
+
+    @OptIn(ExperimentalForeignApi::class)
+    private fun sendPayload(descriptor: Int, payload: String) {
+        if (hm_send_json_frame(descriptor, payload) != 0) {
+            throw nativeCollectionFailure("Unable to send collector protocol frame")
         }
     }
 
@@ -112,6 +133,19 @@ class CollectorServer(
             peerUserId.ptr,
         )
         AcceptAttempt(resultOrDescriptor = result, peerUserId = peerUserId.value)
+    }
+}
+
+/** Public because Kotlin/Native test compilations cannot see production internal declarations. */
+class CollectorRequestHandler(
+    private val collector: SystemCollector,
+) {
+    fun respond(payload: String): String = when (val request = CollectorProtocol.decodeRequest(payload)) {
+        CollectorRequest.Probe -> CollectorProtocol.encodeAck()
+        is CollectorRequest.Capture -> CollectorProtocol.encodeSnapshot(
+            snapshot = collector.capture(request.profile),
+            appliedProfile = request.profile,
+        )
     }
 }
 

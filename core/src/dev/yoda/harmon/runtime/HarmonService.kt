@@ -10,6 +10,7 @@ import dev.yoda.harmon.model.Alert
 import dev.yoda.harmon.model.DeliveryResult
 import dev.yoda.harmon.model.MonitoringReport
 import dev.yoda.harmon.model.RawSystemSnapshot
+import dev.yoda.harmon.monitor.CollectionProfile
 import dev.yoda.harmon.monitor.SystemCollector
 import dev.yoda.harmon.monitor.UsageCalculator
 import dev.yoda.harmon.notify.NotificationDispatcher
@@ -85,7 +86,7 @@ class HarmonService(
     /** Capture failures keep the old baseline; handling failures advance it to avoid replay loops. */
     fun runCycle(previous: RawSystemSnapshot): RawSystemSnapshot {
         val current = try {
-            collector.capture()
+            collector.capture(CollectionProfile.FULL)
         } catch (failure: Throwable) {
             logFailure("collection failed", failure)
             return previous
@@ -127,9 +128,9 @@ class HarmonService(
             "sampleSeconds must be between ${SAMPLE_SECONDS_RANGE.first} " +
                 "and ${SAMPLE_SECONDS_RANGE.last}, got $sampleSeconds"
         }
-        val previous = collector.capture()
+        val previous = collector.capture(CollectionProfile.FULL)
         sleepSeconds(sampleSeconds)
-        val current = collector.capture()
+        val current = collector.capture(CollectionProfile.FULL)
         return createSample(previous, current).report
     }
 
@@ -161,7 +162,7 @@ class HarmonService(
     private fun captureWithRetry(): RawSystemSnapshot {
         while (true) {
             try {
-                return collector.capture()
+                return collector.capture(CollectionProfile.FULL)
             } catch (failure: Throwable) {
                 logFailure("initial collection failed", failure, "; retrying in 10s")
                 sleepSeconds(INITIAL_RETRY_SECONDS)

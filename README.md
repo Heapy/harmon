@@ -145,12 +145,12 @@ a machine whose energy counter reads zero: where it reports, that key is not
 consulted at all and `applicationPowerAlertWatts` governs battery-drain alerts
 instead.
 
-Because the meaning of the CPU counters on the wire changed, the collector
-protocol version is now 2. The collector (root LaunchDaemon) and the agent
-(user LaunchAgent) are a matched pair and have to be reinstalled together with
-`harmon setup`. A mismatched pair now fails explicitly with
-`Unsupported collector protocol 1; expected 2` instead of silently reporting
-CPU that is roughly 41 times too low.
+The collector protocol is now version 3. Version 2 introduced the corrected CPU
+counter units; version 3 adds a strict `HELLO → PROBE|CAPTURE(profile) →
+ACK|SNAPSHOT(appliedProfile)` exchange. Probe performs no collection, and the
+two accepted profiles are `FULL` and `LIVE_FAST`. The collector (root
+LaunchDaemon) and agent (user LaunchAgent) remain a matched pair and must be
+reinstalled together with `harmon setup`; a v2/v3 mismatch fails explicitly.
 
 ## Requirements
 
@@ -254,17 +254,31 @@ attribution coverage, and process-access failures.
 
 `harmon ui` opens the authenticated local process monitor published by the
 running user agent. The page is an htop-like PID tree, not an application-group
-view: each row shows CPU Self/Total and Memory Self/Total, where Total includes
-every readable descendant. Sibling sets are recursively sorted by the selected
-metric, with Memory Total descending as the default. Search accepts process
-names and PIDs, keeps matching ancestors visible, and includes a matched
-process's subtree. Roots and their first child level start expanded.
+view: every additive metric has independently sortable Self and descendant
+Total values. PID and Process are pinned, Overview is the default preset, and
+CPU Total descending is the default sort. Memory, I/O, Activity, and Compute /
+Energy presets expose footprint/resident/wired/compressed memory, disk and page
+activity, wakeups/faults/syscalls/threads, and instructions/cycles/power.
+Lifetime peak is self-only. Known partial totals remain sortable and badged;
+unavailable values stay below available ones. Search accepts process names and
+PIDs, keeps matching ancestors visible, and includes a matched process's
+subtree. Roots and their first child level start expanded. Expandable system
+details and the full text report remain below the tree.
 
-The live view samples through its own collector client every second by default;
-it does not alter the alert/history baseline or `intervalSeconds`. Snapshot
-freezes the current browser view without stopping the agent, and Resume returns
-to live updates. The server chooses a fresh loopback port and 256-bit token on
-every start. Its endpoint manifest is user-only at
+The live sampler stays idle until at least one visible tab is in Live mode. Its
+authenticated `watch=1` polling renews a shared lease of
+`max(5 seconds, 3 × webSampleSeconds)`; hidden, closed, and Snapshot tabs stop
+renewing it. The first capture after idle is a new `FULL` baseline, cadence
+captures are `LIVE_FAST`, and `FULL` attribution is refreshed at most once per
+30 seconds. Fast captures retain every metric except the VM-region walk and
+overlay cached attribution by PID plus start time. The UI shows its timestamp
+and age explicitly. This baseline remains independent of alert/history
+sampling and `intervalSeconds`. Snapshot freezes the current browser view, and
+Resume starts renewing the lease again. Column selection, sorting, search, and
+tree expansion survive live updates and WARMING/STALE transitions.
+
+The server chooses a fresh loopback port and 256-bit token on every start. Its
+endpoint manifest is user-only at
 `~/Library/Application Support/Harmon/live-ui.endpoint`; the token is never
 written to logs.
 
@@ -300,9 +314,10 @@ systemNotifications=true
 notifyEverySample=false
 ```
 
-`webSampleSeconds` accepts 1 through 10. `webUiEnabled=false` disables only the
-loopback server and its independent collector sampling; alerting, notifications,
-and history continue normally.
+`webSampleSeconds` accepts 1 through 10. It is the fast Live cadence, not a
+background polling interval: with no visible Live tab, the collector is not
+called. `webUiEnabled=false` disables only the loopback server and its
+demand-driven sampler; alerting, notifications, and history continue normally.
 
 A threshold of `0` disables that rule. `orphanAlerts` is the one alert rule
 without a threshold — losing a parent is an event, not a quantity, so there is
