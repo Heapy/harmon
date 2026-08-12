@@ -274,3 +274,9 @@ And the largest hole on the list, which is Kotlin rather than C:
   `harmon-collector` application module. Moving the mapping into
   `bridge-probe` would pull the shared model across the native bridge boundary.
   What covers it today is `harmon diagnose` on a real machine, read by a human.
+
+If Kotlin Toolchain starts linking a module's cinterop into its test compilation,
+move the binding assertions into ordinary `kotlin.test` tests and delete the
+`selftest` module and its staleness guard. Keep the C harness: direct `errno`,
+`static inline` internals, framing boundaries, and real sockets remain clearer
+and faster to test there.

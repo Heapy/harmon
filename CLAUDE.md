@@ -3,6 +3,12 @@
 Kotlin/Native macOS workload monitor with separate unprivileged `harmon` and
 root `harmon-collector` executables.
 
+Read [`docs/INTENT.md`](docs/INTENT.md) for product intent. Active implementation
+plans belong in `docs/plans/`. Before completing one, move its durable product
+intent, user behavior, architecture constraints, and testing policy to their
+authoritative homes; carry any unfinished work into an active plan or backlog,
+then delete the completed plan. Do not archive completed plans.
+
 ## Build and test
 
 Use the checked-in Kotlin Toolchain wrapper; this is not a Gradle project.

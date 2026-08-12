@@ -24,7 +24,8 @@ They are different native executables: `harmon-collector` links only collection
 and IPC code, while `harmon` owns the agent, CLI, notifications, HTTP, and
 SQLite history.
 
-See [the collection model](docs/collection.md) for metric definitions,
+See [the product intent](docs/INTENT.md) for the principles behind those choices,
+[the collection model](docs/collection.md) for metric definitions,
 [the service architecture](docs/architecture.md) for the privilege and IPC
 boundary, and [the sample history](docs/history.md) for the schema the stored
 samples are queried through.

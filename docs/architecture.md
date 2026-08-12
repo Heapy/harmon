@@ -48,6 +48,8 @@ matching Debug/Release collector and source resources when running from
 `harmon setup` has two privilege phases. The ordinary process creates every
 path under the login user's home, signs and registers `Harmon.app`, preserves
 the existing config while enforcing mode `0600`, and writes the LaunchAgent.
+It signs with the first trusted code-signing identity reported by the system and
+falls back to an ad-hoc signature when none is installed.
 It then performs one exact sudo re-exec of its resolved binary with
 `setup --system --uid N --gid M`. That root process writes only
 `/Library/PrivilegedHelperTools`, `/Library/LaunchDaemons`, and

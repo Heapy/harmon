@@ -43,6 +43,11 @@ dist/
 The workflow publishes all four files and adds a GitHub artifact attestation
 for the tarball.
 
+The release binaries are intentionally ad-hoc signed, and Homebrew is the only
+supported distribution channel. A direct browser-download channel would require
+a separately designed Developer ID and notarization flow; do not describe the
+current archive as notarized.
+
 ## Homebrew tap handoff
 
 The tap is intentionally a separate repository. After the GitHub Release is
@@ -51,11 +56,11 @@ repository:
 
 ```shell
 cp dist/Formula/harmon.rb /path/to/homebrew-tap/Formula/harmon.rb
-brew tap OWNER/TAP /path/to/homebrew-tap
-brew style OWNER/TAP/harmon
-brew audit --strict --formula OWNER/TAP/harmon
-brew install --build-from-source OWNER/TAP/harmon
-brew test OWNER/TAP/harmon
+brew tap Heapy/tap /path/to/homebrew-tap
+brew style Heapy/tap/harmon
+brew audit --strict --formula Heapy/tap/harmon
+brew install --build-from-source Heapy/tap/harmon
+brew test Heapy/tap/harmon
 ```
 
 Commit and publish that tap change only after these checks pass. The checked-in
@@ -89,13 +94,13 @@ gh attestation verify harmon-X.Y.Z-macos-arm64.tar.gz -R Heapy/harmon
 ## Manual setup and status acceptance
 
 Run this on a disposable Apple Silicon test account after publishing the
-release and updating `OWNER/TAP`. Do not run setup through sudo; the ordinary
+release and updating `Heapy/tap`. Do not run setup through sudo; the ordinary
 process owns the user half and requests sudo exactly once for the system half.
 Using the Homebrew path explicitly also migrates a machine where the former
 `~/.local/bin/harmon` symlink shadows the new command.
 
 ```shell
-brew install OWNER/TAP/harmon
+brew install Heapy/tap/harmon
 HARMON_ACCEPTANCE_CLI="$(brew --prefix)/bin/harmon"
 HARMON_ACCEPTANCE_CONFIG="$HOME/.config/harmon/config"
 
@@ -192,3 +197,25 @@ fi
 The first post-upgrade status must name the source/deployed mismatch and say
 `Run 'harmon setup'`; the final status must exit zero with both versions equal
 to the upgraded CLI.
+
+## Manual uninstall acceptance
+
+On the same disposable account, verify that uninstall removes managed services
+and binaries while preserving user data:
+
+```shell
+"$HARMON_ACCEPTANCE_CLI" uninstall
+
+test ! -e "$HOME/Library/LaunchAgents/dev.yoda.harmon.agent.plist"
+test ! -e "$HOME/Library/Application Support/Harmon/Harmon.app"
+sudo test ! -e /Library/LaunchDaemons/dev.yoda.harmon.collector.plist
+sudo test ! -e /Library/PrivilegedHelperTools/harmon-collector
+sudo test ! -e /var/run/harmon.collector.sock
+
+test -f "$HARMON_ACCEPTANCE_CONFIG"
+test -d "$HOME/Library/Logs/Harmon"
+```
+
+The Homebrew Cellar copy remains until `brew uninstall harmon`. Legacy-path
+cleanup is transitional compatibility behavior; remove it only after the
+supported migration window from the source installer has closed.

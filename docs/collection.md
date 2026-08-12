@@ -502,6 +502,11 @@ is reading.
 | Low battery | 20% | 10% |
 | Orphaned process | on | never; always a warning |
 
+The 1.5 W default came from six days of one machine's history and is a starting
+point, not a platform-wide safe limit. If it proves noisy or silent, tune
+`applicationPowerAlertWatts`; a replacement default should be derived from a
+battery-only distribution across more than one machine.
+
 The two battery rows are one rule with two thresholds, and `energyAccounted`
 decides which of them is read for a sample. Neither falls back to the other:
 with the counter reporting, `applicationPowerAlertWatts=0` silences
@@ -718,6 +723,9 @@ notification is due.
 
 Public or partly public signals that could improve a future version include:
 
+- zombie state from `proc_bsdinfo.pbi_status`; unlike the existing orphan rule,
+  this detects a live parent that has not reaped an exited child and therefore
+  needs its own signal and IPC field;
 - Foundation `ProcessInfo.thermalState` and low-power-mode state;
 - per-interface network totals from supported networking APIs;
 - file-system event summaries for user-selected directories;
