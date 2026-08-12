@@ -239,6 +239,68 @@ class AlertAnalyzerTest {
         assertEquals("example (PID 42) draws 3.0 W", alert.message)
     }
 
+    /** The comparison is `>=`, so the configured watts are over the line rather than under it. */
+    @Test
+    fun alertsAtExactlyTheWattThreshold() {
+        val usage = systemUsage(processes = listOf(processUsage(energyWatts = 1.5)))
+
+        val alerts = AlertAnalyzer().analyze(usage, HarmonConfig(), activeKeys = emptySet()).alerts
+
+        assertEquals(listOf("power:process:42:42"), alerts.map { it.key })
+        assertEquals(Severity.WARNING, alerts.single().severity)
+    }
+
+    /**
+     * The watt rule clears at nine tenths of its threshold like every other application rule, so an
+     * application hovering between 1.35 W and 1.5 W holds one alert instead of pushing a fresh one
+     * on every sample it crosses back over. Only an already-active key is graded against the
+     * lowered bound.
+     */
+    @Test
+    fun holdsThePowerAlertBetweenItsClearRatioAndItsThresholdOnlyWhileActive() {
+        val usage = systemUsage(processes = listOf(processUsage(energyWatts = 1.4)))
+        val analyzer = AlertAnalyzer()
+
+        assertEquals(
+            listOf(POWER_KEY),
+            analyzer.analyze(usage, HarmonConfig(), setOf(POWER_KEY)).alerts.map { it.key },
+        )
+        assertEquals(
+            emptyList(),
+            analyzer.analyze(usage, HarmonConfig(), activeKeys = emptySet()).alerts,
+        )
+    }
+
+    /**
+     * The regime belongs to the sample, so a counter falling silent between two samples clears one
+     * key and raises the other for the same application — and the only way to say that is to run
+     * the second sample with the first one's state.
+     *
+     * The `power:` key is handed back as `activeKeys` and must appear in neither the alerts nor the
+     * firing set: a rule evaluating both branches would report it beside the score key, and a state
+     * retaining a key no rule matched would leave it firing with nothing left to clear it.
+     */
+    @Test
+    fun clearsTheWattKeyWhenTheCounterFallsSilentBetweenSamples() {
+        val analyzer = AlertAnalyzer()
+        val accounted = systemUsage(
+            processes = listOf(processUsage(energyWatts = 2.0, impact = 260.0)),
+        )
+
+        val first = analyzer.analyze(accounted, HarmonConfig(), activeKeys = emptySet())
+
+        assertEquals(listOf(POWER_KEY), first.alerts.map { it.key })
+        assertEquals(setOf(POWER_KEY), first.firingKeys)
+
+        val silent = systemUsage(processes = listOf(processUsage(impact = 260.0)))
+
+        val second = analyzer.analyze(silent, HarmonConfig(), activeKeys = first.firingKeys)
+
+        assertEquals(listOf(BATTERY_IMPACT_KEY), second.alerts.map { it.key })
+        assertEquals(setOf(BATTERY_IMPACT_KEY), second.firingKeys)
+        assertEquals(emptySet(), second.suppressedKeys)
+    }
+
     /** The two system-wide rules spell their hysteresis out by hand, one rule at a time. */
     @Test
     fun holdsTheSwapAlertBetweenItsClearRatioAndItsThresholdOnlyWhileActive() {
@@ -278,41 +340,56 @@ class AlertAnalyzerTest {
         )
     }
 
+    /**
+     * Every rule that has a magnitude, and both battery regimes, because the watt rule and the
+     * score rule are one rule with two thresholds and cannot both fire for one sample: the eighth
+     * key only appears in the pass whose counter is alive. That pass is also the only place the
+     * watt rule is seen beside the other rules rather than alone in the list.
+     *
+     * `orphan` is in neither pass. It reads an event, has no threshold to double, and is always a
+     * warning.
+     */
     @Test
     fun gradesEveryRuleAsCriticalAtTwiceItsThreshold() {
-        val usage = systemUsage(
-            processes = listOf(
-                processUsage(
-                    name = "runaway",
-                    cpuPercent = 320.0,
-                    footprint = 5_000uL * 1_048_576uL,
-                    diskWriteBytesPerSecond = 120.0 * 1_048_576.0,
-                    impact = 260.0,
+        listOf(0.0 to "battery-impact", 4.0 to "power").forEach { (energyWatts, batteryKey) ->
+            val usage = systemUsage(
+                processes = listOf(
+                    processUsage(
+                        name = "runaway",
+                        cpuPercent = 320.0,
+                        footprint = 5_000uL * 1_048_576uL,
+                        diskWriteBytesPerSecond = 120.0 * 1_048_576.0,
+                        energyWatts = energyWatts,
+                        impact = 260.0,
+                    ),
                 ),
-            ),
-            swapUsed = 4uL * 1_073_741_824uL,
-            swapOutBytesPerSecond = 60.0 * 1_048_576.0,
-            batteryPercentage = 8,
-        )
+                swapUsed = 4uL * 1_073_741_824uL,
+                swapOutBytesPerSecond = 60.0 * 1_048_576.0,
+                batteryPercentage = 8,
+            )
 
-        val alerts = AlertAnalyzer().analyze(usage, HarmonConfig(), activeKeys = emptySet()).alerts
+            val alerts = AlertAnalyzer()
+                .analyze(usage, HarmonConfig(), activeKeys = emptySet())
+                .alerts
 
-        assertEquals(
-            listOf(
-                "battery-impact",
-                "battery-low",
-                "cpu",
-                "disk-write",
-                "memory",
-                "swap",
-                "swap-out",
-            ),
-            alerts.map { it.key.substringBefore(':') }.sorted(),
-        )
-        assertTrue(
-            alerts.all { it.severity == Severity.CRITICAL },
-            alerts.filterNot { it.severity == Severity.CRITICAL }.toString(),
-        )
+            assertEquals(
+                listOf(
+                    batteryKey,
+                    "battery-low",
+                    "cpu",
+                    "disk-write",
+                    "memory",
+                    "swap",
+                    "swap-out",
+                ).sorted(),
+                alerts.map { it.key.substringBefore(':') }.sorted(),
+                batteryKey,
+            )
+            assertTrue(
+                alerts.all { it.severity == Severity.CRITICAL },
+                alerts.filterNot { it.severity == Severity.CRITICAL }.toString(),
+            )
+        }
     }
 
     /**
@@ -604,6 +681,8 @@ class AlertAnalyzerTest {
 
     private companion object {
         const val CPU_KEY = "cpu:process:42:42"
+        const val POWER_KEY = "power:process:42:42"
+        const val BATTERY_IMPACT_KEY = "battery-impact:process:42:42"
 
         fun orphan(
             pid: Int = 44559,
@@ -624,10 +703,12 @@ class AlertAnalyzerTest {
 
         fun onlySwapThreshold(mib: Long): HarmonConfig = singleThreshold(swapUsedMiB = mib)
 
-        /** Every other rule disabled, so a test observes exactly the rule it enables. */
+        /** Every rule but the ones named disabled, so a test observes exactly what it enables. */
         fun singleThreshold(
             applicationMemoryMiB: Long? = null,
             swapUsedMiB: Long? = null,
+            applicationBatteryImpactScore: Double? = null,
+            applicationPowerWatts: Double? = null,
         ): HarmonConfig = HarmonConfig(
             thresholds = AlertThresholds(
                 applicationCpuPercent = null,
@@ -635,8 +716,8 @@ class AlertAnalyzerTest {
                 applicationDiskWriteMiBPerSecond = null,
                 swapUsedMiB = swapUsedMiB,
                 swapOutMiBPerSecond = null,
-                applicationBatteryImpactScore = null,
-                applicationPowerWatts = null,
+                applicationBatteryImpactScore = applicationBatteryImpactScore,
+                applicationPowerWatts = applicationPowerWatts,
                 batteryLowPercent = null,
             ),
         )
@@ -649,17 +730,9 @@ class AlertAnalyzerTest {
         fun batteryRegimeThresholds(
             watts: Double? = 1.5,
             score: Double? = 100.0,
-        ): HarmonConfig = HarmonConfig(
-            thresholds = AlertThresholds(
-                applicationCpuPercent = null,
-                applicationMemoryMiB = null,
-                applicationDiskWriteMiBPerSecond = null,
-                swapUsedMiB = null,
-                swapOutMiBPerSecond = null,
-                applicationBatteryImpactScore = score,
-                applicationPowerWatts = watts,
-                batteryLowPercent = null,
-            ),
+        ): HarmonConfig = singleThreshold(
+            applicationBatteryImpactScore = score,
+            applicationPowerWatts = watts,
         )
     }
 }

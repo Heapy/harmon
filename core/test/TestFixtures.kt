@@ -335,6 +335,18 @@ fun rankingReport(): MonitoringReport = MonitoringReport(
     topProcessCount = 3,
 )
 
+/**
+ * [rankingReport] with the kernel counter dead: every process reads zero watts, which is the only
+ * way a sample says the counter never answered.
+ */
+fun zeroEnergyReport(): MonitoringReport = MonitoringReport(
+    usage = systemUsage(
+        processes = rankingReport().usage.processes.map { it.copy(energyWatts = 0.0) },
+    ),
+    alerts = emptyList(),
+    topProcessCount = 3,
+)
+
 fun alert(
     key: String,
     severity: Severity = Severity.WARNING,

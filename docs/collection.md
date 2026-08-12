@@ -455,7 +455,8 @@ Battery-impact alerts fire only while on battery.
 The score does not directly include GPU engines, network radio activity,
 display brightness, thermal state, or external peripherals.
 
-Those two weights are why the score never matched Activity Monitor. Apple has
+The wakeup weight of 0.25 and the I/O weight of 2 are why the score never
+matched Activity Monitor. Apple has
 never published the Energy Impact formula — the current guide describes it only
 as a relative measure of energy use — but it has been reconstructed twice. On
 OS X 10.9 Mavericks the `POWER` column of `top` matched Activity Monitor's
@@ -476,8 +477,10 @@ from — and no public formula maps that onto the number the UI shows.
 Which of the two metrics a report leads with is decided once per sample rather
 than per application. `SystemUsage.energyAccounted` is true when any process in
 the sample reads above zero watts; a process at zero on such a machine has
-genuinely slept rather than gone unmeasured, so mixing watts into some rows and
-the score into others would produce a column that is not comparable with itself.
+genuinely slept, or first appeared this interval — a process the previous
+snapshot did not carry has no delta and reads zero — rather than gone
+unmeasured, so mixing watts into some rows and the score into others would
+produce a column that is not comparable with itself.
 The text report therefore switches whole, heading and list together: either
 `Likely application battery impact (accounted power)` over the applications
 ranked by `energyWatts`, or `(heuristic score)` over the applications ranked by
@@ -513,8 +516,13 @@ branch keys `power:<application key>` and reads
 `battery-impact:<application key>` and reads
 `Firefox (12 processes) has impact score 124.0`. A machine crossing between the
 regimes therefore clears one key and raises another for the same application.
-The noise is bounded to the moment of the switch, and in exchange the `alert`
-table in the history database records which metric fired.
+That costs one push per crossing, and a machine sitting on the boundary — where
+whole samples alternate between some process drawing power and none doing so —
+would pay it on every sample; nothing damps it, because the alert state is
+recomputed per sample and a key no rule matched is dropped. It has not been
+observed: the measured machine carried at least 388 processes above zero watts
+in every sample. In exchange the `alert` table in the history database records
+which metric fired.
 
 The orphan rule is the only one reading a transition rather than a level, and
 the only one keyed to a process rather than to an application or to the system.
@@ -673,9 +681,11 @@ The standard `harmon.sample` webhook includes:
 
 - power, swap, system CPU, load, VM, and internal-storage summaries;
 - `energyAccounted`, whether the kernel's energy counter produced this sample's
-  watts, so a consumer can tell which regime it is reading. It is the only thing
-  that switches: unlike the text report, which has one column and has to choose,
-  the payload always carries both rankings with their own sorts intact;
+  watts, so a consumer can tell which regime it is reading. No ranking switches
+  with it: unlike the text report, which has one column and has to choose, the
+  payload always carries both rankings with their own sorts intact. The alerts
+  below do switch, in key and in message, because there the regime decides which
+  rule ran;
 - top applications and processes by CPU, memory, battery impact, physical
   writes, internal logical writes, compressed/paged-out proxy, and accounted
   energy;

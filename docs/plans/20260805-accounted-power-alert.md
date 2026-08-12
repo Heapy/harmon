@@ -457,3 +457,9 @@ informational only*
 - 1.5 W is calibrated against six days of one machine's history. If it proves
   noisy or silent in practice, the value is a config key and needs no code
   change to adjust.
+- that calibration read every sample in the window, on AC and on battery alike,
+  while the rule fires only on battery. The battery-only distribution was never
+  measured separately, so 54 firings across 1,725 samples is an upper bound on
+  what the rule would actually have raised, not the count itself. Re-deriving it
+  with `power.onBattery` filtered is the first thing to do if the default needs
+  revisiting.

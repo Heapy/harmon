@@ -56,7 +56,10 @@ data class AlertThresholds(
      * `...Energy...`. The default is read off six days of one machine's history: p99 is 0.276 W and
      * p99.9 is 1.108 W per application per sample, so 1.5 W fires for the handful of applications
      * that genuinely cost something. One watt sustained across a working day is roughly 8 Wh, about
-     * 15% of a typical MacBook battery.
+     * 15% of a typical MacBook battery. Those percentiles cover every sample in that window, on AC
+     * and on battery alike, while the rule fires only on battery; the battery-only distribution was
+     * not measured separately, so the default is a bound on all samples rather than on the ones it
+     * will actually be compared against.
      *
      * It governs its own regime and nothing else: this threshold applies where the kernel's energy
      * counter is live, [applicationBatteryImpactScore] where it is not, and a zero on either one

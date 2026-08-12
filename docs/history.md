@@ -514,8 +514,9 @@ written before it.
 
 `alert.key` is the rule's key: `swap`, `swap-out` and `battery-low` for the
 global rules; `cpu:`, `memory:`, `disk-write:`, `battery-impact:` and `power:`
-prefixed to the application key for the per-application ones. A key appears at
-most once per sample.
+prefixed to the application key for the per-application ones; and
+`orphan:process:<pid>:<startedAt>` for the one rule keyed to a process rather
+than to an application. A key appears at most once per sample.
 
 `battery-impact:` and `power:` are the two forms of one rule and never both
 appear for the same sample: `power:` is what a sample whose processes reported

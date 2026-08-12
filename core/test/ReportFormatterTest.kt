@@ -83,9 +83,11 @@ class ReportFormatterTest {
     /**
      * The heading and the list have to move together: an accounted heading over the score-ranked
      * list is the failure this switch can introduce, and a row assertion alone would miss it. The
-     * whole table is compared rather than one line — `topEnergy` drops `bravo` and `delta`, which
-     * draw nothing, and orders what is left by watts instead of by score, so membership, order and
-     * the row shape all fail separately here.
+     * whole table is compared rather than one line — `topEnergy` puts `charlie` where the score
+     * ranking has `bravo`, and orders what is left by watts, so membership, order and the row shape
+     * all fail separately here. What this fixture cannot separate is the `> 0` filter, because
+     * three of its five processes draw power and the table takes three;
+     * [theAccountedTableIsShorterThanTopProcessCountWhenOnlySomeApplicationsDraw] does that.
      */
     @Test
     fun theBatteryImpactTableLeadsWithWattsWhenTheCounterIsAccounted() {
@@ -103,21 +105,36 @@ class ReportFormatterTest {
     }
 
     /**
+     * The accounted list drops what draws nothing instead of printing zero rows, so it renders
+     * fewer rows than `topProcessCount` while applications with a score to show still exist —
+     * `bravo` carries a score of 4.0 and appears in every other table of the same report.
+     */
+    @Test
+    fun theAccountedTableIsShorterThanTopProcessCountWhenOnlySomeApplicationsDraw() {
+        val output = ReportFormatter.text(rankingReport().copy(topProcessCount = 5))
+
+        assertEquals(
+            listOf(
+                "1. alpha (PID 11): 900.0 mW, 4.0 wakeups/s, 8.0 MiB/s I/O",
+                "2. charlie (PID 13): 200.0 mW, 1.0 wakeups/s, 1.0 MiB/s I/O",
+                "3. echo (PID 15): 50.0 mW, 2.0 wakeups/s, 4.0 MiB/s I/O",
+            ),
+            tableRows(output, "Likely application battery impact (accounted power)"),
+        )
+        assertEquals(
+            listOf("alpha", "bravo", "echo", "charlie", "delta"),
+            rankedNames(output, "Top application CPU"),
+        )
+    }
+
+    /**
      * A sample where every process reads zero is a sample the kernel counter is dead in, and the
      * table is then exactly what it has always been: the heuristic score, ranked by score, with no
      * watt figure anywhere in it.
      */
     @Test
     fun theBatteryImpactTableKeepsTheHeuristicScoreWhenNothingIsAccounted() {
-        val report = MonitoringReport(
-            usage = systemUsage(
-                processes = rankingReport().usage.processes.map { it.copy(energyWatts = 0.0) },
-            ),
-            alerts = emptyList(),
-            topProcessCount = 3,
-        )
-
-        val output = ReportFormatter.text(report)
+        val output = ReportFormatter.text(zeroEnergyReport())
 
         assertFalse("(accounted power)" in output)
         assertEquals(

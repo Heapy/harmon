@@ -219,18 +219,6 @@ class ReportJsonTest {
     }
 }
 
-/**
- * [rankingReport] with the kernel counter dead: every process reads zero watts, which is the only
- * way a sample says the counter never answered.
- */
-private fun zeroEnergyReport(): MonitoringReport = MonitoringReport(
-    usage = systemUsage(
-        processes = rankingReport().usage.processes.map { it.copy(energyWatts = 0.0) },
-    ),
-    alerts = emptyList(),
-    topProcessCount = 3,
-)
-
 /** The slices [rankingReport] has to produce, one line per slice, in selection order. */
 private val EXPECTED_RANKED_SLICES = """
     applications.topCpu=alpha, bravo, echo

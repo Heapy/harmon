@@ -338,9 +338,11 @@ data class SystemUsage(
      *
      * The bridge zero-initializes `struct rusage_info_v6` and falls back to `RUSAGE_INFO_V4` when
      * `RUSAGE_INFO_V6` is refused with `EINVAL`, which leaves `ri_energy_nj` at zero on a kernel
-     * too old to carry it. A dead counter is therefore indistinguishable from a machine whose
-     * processes all slept, except that the second case does not happen: a sample with any process
-     * drawing power is a sample the counter is alive in.
+     * too old to carry it. A dead counter is therefore indistinguishable from a sample whose
+     * processes every one slept or first appeared this interval — `UsageCalculator` reports zero
+     * for a process the previous snapshot did not carry — and the reading is one way round only:
+     * a sample with any process drawing power is a sample the counter is alive in, while a sample
+     * without one is only probably a sample it is dead in.
      */
     val energyAccounted: Boolean
         get() = processes.any { it.energyWatts > 0.0 }

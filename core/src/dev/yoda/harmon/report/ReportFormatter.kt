@@ -65,10 +65,10 @@ object ReportFormatter {
         )
         /*
          * Which metric leads is decided once per sample, not per row: a process reading zero watts
-         * on a machine whose counter works has genuinely slept, so mixing watts into some rows and
-         * the score into others would produce a column that is not comparable with itself. The
-         * heading carries the regime because the same line would otherwise mean different things
-         * on two machines with nothing to say so.
+         * on a machine whose counter works has genuinely slept, or first appeared this interval,
+         * so mixing watts into some rows and the score into others would produce a column that is
+         * not comparable with itself. The heading carries the regime because the same line would
+         * otherwise mean different things on two machines with nothing to say so.
          */
         val energyAccounted = usage.energyAccounted
         appendApplicationTable(

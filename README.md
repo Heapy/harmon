@@ -110,11 +110,12 @@ CPU % + wakeups/s × 0.25 + physical disk I/O MiB/s × 2
 ```
 
 The score is not a wattmeter, and where the accounted counter reports it is no
-longer what Harmon ranks or alerts on. Which of the two leads is decided once
-per sample rather than per application: any process reading above zero watts
-makes the whole sample accounted. The battery-impact table names the regime in
-its heading — `(accounted power)` or `(heuristic score)` — and the JSON payload
-carries `energyAccounted` for the same reason. The score is still calculated for
+longer what Harmon alerts on, nor what the text report ranks by; the JSON
+payload keeps both rankings with their own sorts. Which of the two leads is
+decided once per sample rather than per application: any process reading above
+zero watts makes the whole sample accounted. The battery-impact table names the
+regime in its heading — `(accounted power)` or `(heuristic score)` — and the
+JSON payload carries `energyAccounted` for the same reason. The score is still calculated for
 every sample, carried in the JSON payload and stored in `history.db` either way;
 on a machine whose counter reads zero it remains the only battery signal there
 is. Its wakeup weight is 5 to 12.5 times heavier than in the reconstructions of
@@ -135,7 +136,10 @@ Thresholds tuned against the old numbers must be retuned.
 `applicationCpuAlertPercent` and `applicationBatteryImpactAlertScore` lowered
 to compensate for the understated values now fire on almost every sample; the
 same keys left at a level the old numbers could never reach begin alerting for
-the first time.
+the first time. `applicationBatteryImpactAlertScore` is worth retuning only for
+a machine whose energy counter reads zero: where it reports, that key is not
+consulted at all and `applicationPowerAlertWatts` governs battery-drain alerts
+instead.
 
 Because the meaning of the CPU counters on the wire changed, the collector
 protocol version is now 2. The collector (root LaunchDaemon) and the agent
