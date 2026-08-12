@@ -5,6 +5,10 @@ onceSampleSeconds=2
 topProcessCount=8
 maxAlertsPerCategory=3
 
+# The loopback-only process tree is sampled independently every second.
+webUiEnabled=true
+webSampleSeconds=1
+
 # Days kept in ~/Library/Application Support/Harmon/history.db. Zero disables history.
 # Accepted range: 0 to 3650.
 historyRetentionDays=7

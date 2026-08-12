@@ -10,6 +10,18 @@ import kotlin.test.assertTrue
 
 class CliParserTest {
     @Test
+    fun parsesUiAndRejectsOptions() {
+        assertEquals(Command.Ui, CliParser.parse(arrayOf("ui")))
+        listOf(
+            arrayOf("ui", "--config", "/tmp/config"),
+            arrayOf("ui", "--sample-seconds", "1"),
+            arrayOf("ui", "--notify"),
+        ).forEach { arguments ->
+            assertFailsWith<CliException> { CliParser.parse(arguments) }
+        }
+    }
+
+    @Test
     fun parsesProcessDiagnosticsCommand() {
         val command = assertIs<Command.Diagnose>(
             CliParser.parse(

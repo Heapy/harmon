@@ -19,6 +19,8 @@ class ConfigLoaderTest {
             "processCpuAlertPercent=0",
             "applicationMemoryAlertMiB=4096",
             "systemNotifications=no",
+            "webUiEnabled=false",
+            "webSampleSeconds=3",
             "webhookUrl=https://example.test/events",
         )
 
@@ -26,7 +28,21 @@ class ConfigLoaderTest {
         assertNull(config.thresholds.applicationCpuPercent)
         assertEquals(4_096L, config.thresholds.applicationMemoryMiB)
         assertEquals(false, config.notifications.systemEnabled)
+        assertEquals(false, config.webUiEnabled)
+        assertEquals(3, config.webSampleSeconds)
         assertEquals("https://example.test/events", config.notifications.webhookUrl)
+    }
+
+    @Test
+    fun enablesTheLoopbackUiByDefaultAndValidatesItsSampleInterval() {
+        val defaults = parseConfig()
+
+        assertEquals(true, defaults.webUiEnabled)
+        assertEquals(1, defaults.webSampleSeconds)
+        assertContains(defaults.redactedDescription(), "webUiEnabled=true")
+        assertEquals(10, parseConfig("webSampleSeconds=10").webSampleSeconds)
+        assertFailsWith<ConfigException> { parseConfig("webSampleSeconds=0") }
+        assertFailsWith<ConfigException> { parseConfig("webSampleSeconds=11") }
     }
 
     @Test

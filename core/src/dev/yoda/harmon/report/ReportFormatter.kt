@@ -221,6 +221,7 @@ object ReportFormatter {
                 title = title,
                 subtitle = subtitle,
                 reportText = reportText,
+                report = report,
             ),
             json = ReportJson.encode(report, newAlertKeys),
         )

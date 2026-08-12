@@ -8,8 +8,8 @@ root access out of Notification Center, Telegram, webhooks, and future UI code.
 | Component | Binary | launchd domain | Effective user | Responsibilities |
 |---|---|---|---:|---|
 | Collector | `harmon-collector` | system LaunchDaemon | root | Read process, VM, swap, CPU, storage, and power counters; serve snapshots |
-| Agent | `harmon` | Aqua LaunchAgent | login user | Schedule samples, calculate deltas, group applications, evaluate rules, log, notify, and store history |
-| CLI | `harmon` | interactive user process | caller | Run one-shot reports, diagnostics, config checks, and notification tests |
+| Agent | `harmon` | Aqua LaunchAgent | login user | Schedule samples, calculate deltas, group applications, evaluate rules, log, notify, store history, and serve the local process UI |
+| CLI | `harmon` | interactive user process | caller | Run one-shot reports, diagnostics, config checks and notification tests, or open the running UI |
 
 The release contains two Kotlin/Native executables. Installation puts
 `harmon-collector` under the root-owned
@@ -113,6 +113,7 @@ sequenceDiagram
     participant L as launchd
     participant C as Root collector
     participant A as User agent
+    participant U as Local browser
     participant D as Notification destination
 
     L->>C: Start system LaunchDaemon
@@ -127,6 +128,12 @@ sequenceDiagram
     C-->>A: Versioned JSON frame
     A->>A: Calculate rates and application totals
     A->>D: Push only the alerts that just started firing
+    par Independent live sampler
+        A->>C: Capture on webSampleSeconds cadence
+        C-->>A: Fresh snapshot for process tree
+        U->>A: Authenticated GET /api/live
+        A-->>U: Self and descendant totals
+    end
 ```
 
 The collector is request-driven rather than continuously polling. One accepted
@@ -288,7 +295,8 @@ intended only for a socket under `/tmp` and does not improve process access.
 - Notifications never run in the collector and cannot terminate it.
 - Before a system notification is posted, the agent atomically replaces the
   private `Reports/latest.html` file. The notification carries only that local
-  path, and its default click action opens the file through macOS.
+  path, and its default click action opens the self-contained snapshot through
+  macOS.
 - macOS rejects the modern UserNotifications scheduling API from a launchd
   job. The agent therefore uses the launchd-compatible Notification Center
   fallback. A future foreground UI component can adopt the modern API.
@@ -321,18 +329,28 @@ the LaunchDaemon executes only the root-owned helper path. The shared surface
 is deliberately limited to the pure model/protocol/policy code in `core` and
 the IPC bridge; Darwin probes enter only through `bridge-probe`.
 
-## Future UI
+## Local process UI
 
-A UI should run as the login user and consume the same agent-side
-`SystemUsage`/`MonitoringReport` model. It should not gain root privileges.
+`harmon run` owns a second `CollectorClient` and `UsageCalculator` for the web
+view. Its one-second default cadence is independent of the main monitoring
+loop, so opening or disabling the UI cannot move the baseline used for alerts
+and history. Sampling and the HTTP accept loop run on separate serial GCD
+queues. A failed live capture keeps the last good tree visible as stale and is
+retried on the configured `webSampleSeconds` cadence.
 
-The agent already persists bounded time-series data: `history.db` holds every
-sample for the retention window, and `docs/history.md` is its schema. What is
-missing is a read path shaped for a UI rather than for `sqlite3` — the store
-exposes one query today, the alert state it resumes after a restart.
+The server binds `127.0.0.1` on a random free port. Every HTML/API request must
+carry a new 256-bit per-run token. The port and token are atomically published
+in the user's `0600` `live-ui.endpoint`; `harmon ui` reads that file and asks
+macOS to open the authenticated URL. Responses opt out of caching, referrers,
+external resources, and MIME sniffing. No CORS permission is emitted.
 
-Possible evolutions are:
+The browser receives one row per PID. The shared core builder handles missing
+parents and cycles, aggregates readable descendants with saturating arithmetic,
+and marks totals partial when an inaccessible placeholder occurs in that
+branch. ULong counters and process start times cross JSON as decimal strings,
+so JavaScript sorts them with `BigInt` without losing identity or overflow
+information. The page ships pinned Preact without npm or a bundling step.
 
-- add a separate read-only user socket owned by the agent;
-- keep the existing collector protocol private to the agent;
-- version storage schemas independently from collector IPC.
+Notification snapshots use the same renderer. Their bootstrap payload and
+Preact module are embedded in `latest.html`, so a `file://` view neither needs
+the running server nor fetches a CDN resource.

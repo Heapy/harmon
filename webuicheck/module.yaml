@@ -1,0 +1,12 @@
+product:
+  type: macos/app
+  platforms: [macosArm64]
+
+apply: [../harmon.module-template.yaml]
+
+dependencies:
+  - ..
+
+settings:
+  native:
+    entryPoint: dev.yoda.harmon.webuicheck.main

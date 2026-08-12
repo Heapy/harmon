@@ -53,6 +53,8 @@ data class NotificationConfig(
     val timeoutSeconds: Long = 15,
 )
 
+val WEB_SAMPLE_SECONDS_RANGE: LongRange = 1L..10L
+
 data class HarmonConfig(
     val collectorSocket: String = "/var/run/harmon.collector.sock",
     val intervalSeconds: Long = 300,
@@ -65,6 +67,8 @@ data class HarmonConfig(
     val terminalApplications: Set<String> = DEFAULT_TERMINAL_APPLICATIONS,
     val thresholds: AlertThresholds = AlertThresholds(),
     val notifications: NotificationConfig = NotificationConfig(),
+    val webUiEnabled: Boolean = true,
+    val webSampleSeconds: Long = 1,
 ) {
     fun redactedDescription(): String = buildString {
         appendLine("collectorSocket=$collectorSocket")
@@ -74,6 +78,8 @@ data class HarmonConfig(
         appendLine("maxAlertsPerCategory=$maxAlertsPerCategory")
         appendLine("orphanAlerts=$orphanAlerts")
         appendLine("historyRetentionDays=${historyRetentionDays ?: 0}")
+        appendLine("webUiEnabled=$webUiEnabled")
+        appendLine("webSampleSeconds=$webSampleSeconds")
         appendLine("terminalApplications=${terminalApplications.joinToString(",")}")
         appendLine("applicationCpuAlertPercent=${thresholds.applicationCpuPercent ?: 0}")
         appendLine("applicationMemoryAlertMiB=${thresholds.applicationMemoryMiB ?: 0}")
@@ -139,6 +145,8 @@ object ConfigLoader {
         "maxAlertsPerCategory",
         "orphanAlerts",
         "historyRetentionDays",
+        "webUiEnabled",
+        "webSampleSeconds",
         "terminalApplications",
         "applicationCpuAlertPercent",
         "applicationMemoryAlertMiB",
@@ -301,6 +309,11 @@ object ConfigLoader {
                     notificationDefaults.timeoutSeconds,
                 ),
             ),
+            webUiEnabled = values.boolean("webUiEnabled", defaults.webUiEnabled),
+            webSampleSeconds = values.positiveLong(
+                "webSampleSeconds",
+                defaults.webSampleSeconds,
+            ),
         )
         validate(config)
         return config
@@ -352,6 +365,12 @@ object ConfigLoader {
         }
         if (config.maxAlertsPerCategory !in 1..20) {
             throw ConfigException("maxAlertsPerCategory must be between 1 and 20")
+        }
+        if (config.webSampleSeconds !in WEB_SAMPLE_SECONDS_RANGE) {
+            throw ConfigException(
+                "webSampleSeconds must be between ${WEB_SAMPLE_SECONDS_RANGE.first} " +
+                    "and ${WEB_SAMPLE_SECONDS_RANGE.last}",
+            )
         }
         // Bound typos that would silently turn pruning into unbounded retention.
         config.historyRetentionDays?.let { days ->

@@ -19,9 +19,10 @@ Use the checked-in Kotlin Toolchain wrapper; this is not a Gradle project.
 ./kotlin build --variant release
 ```
 
-Run the debug build before tests. `SelftestBridgeTest` executes the `selftest`
-binary, which `./kotlin test` does not link. Build outputs and local smoke-test
-commands are documented in [`README.md`](README.md#build-and-test).
+Run the debug build before tests. `SelftestBridgeTest` executes `selftest`, and
+the JVM Playwright tests execute `webuicheck`; `./kotlin test` does not link
+either binary. Build outputs and local smoke-test commands are documented in
+[`README.md`](README.md#build-and-test).
 
 Every module must apply `harmon.module-template.yaml`; root Kotlin settings do
 not propagate to child modules.
@@ -42,6 +43,14 @@ not propagate to child modules.
 Read [`docs/architecture.md`](docs/architecture.md) before changing process
 boundaries and [`docs/collection.md`](docs/collection.md) before changing
 collection limits, metric calculations, grouping, or alert semantics.
+
+## Live process UI
+
+Keep process snapshots, payloads, page rendering, and sampling policy in
+`core`; keep the loopback HTTP server and app-specific wiring under
+`src/dev/yoda/harmon/web`. `webuicheck` is the deterministic native fixture for
+the JVM Playwright suite in `webuitest`; build before running
+`./kotlin test -m webuitest`.
 
 ## Native layer
 

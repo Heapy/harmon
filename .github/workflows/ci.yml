@@ -24,6 +24,12 @@ jobs:
           key: kotlin-toolchain-${{ runner.os }}-${{ hashFiles('kotlin', 'module.yaml') }}
           restore-keys: kotlin-toolchain-${{ runner.os }}-
 
+      - name: Cache Playwright browsers
+        uses: actions/cache@v6
+        with:
+          path: ~/Library/Caches/ms-playwright
+          key: playwright-1.62.0-${{ runner.os }}-${{ runner.arch }}
+
       - name: Build
         run: ./kotlin build
 

@@ -75,6 +75,7 @@ bin/harmon
 libexec/harmon-collector
 share/harmon/Harmon.Info.plist
 share/harmon/Harmon.icns
+share/harmon/PREACT-LICENSE
 share/harmon/harmon.conf.example
 ```
 

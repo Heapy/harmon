@@ -93,6 +93,7 @@ class UserUninstall(
         bootoutIfLoaded("gui/$userId/$LEGACY_AGENT_LABEL")
         fileSystem.removeFileIfExists(paths.agentPlist)
         fileSystem.removeFileIfExists(paths.legacyAgentPlist)
+        fileSystem.removeFileIfExists(paths.liveUiEndpoint)
         removeLegacyCommandLink(paths)
 
         // Legacy installs may be executing this command from inside Harmon.app.

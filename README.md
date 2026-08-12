@@ -5,7 +5,8 @@ samples processes every few minutes, groups helpers into their owning
 application, explains memory and storage pressure, and can notify Notification
 Center, Telegram, or an HTTPS webhook.
 
-The project currently has no UI. It runs as two launchd services:
+It runs as two launchd services and exposes a private, loopback-only process UI
+from the user agent:
 
 ```mermaid
 flowchart LR
@@ -13,6 +14,7 @@ flowchart LR
     S -->|length-prefixed kotlinx.serialization JSON| LA[User LaunchAgent]
     LA --> R[Reports and alert rules]
     LA --> H[(history.db)]
+    LA --> U[Preact process tree]
     R --> N[Notification Center]
     R --> T[Telegram]
     R --> W[Webhook]
@@ -166,10 +168,18 @@ resolves Kotlin 2.4.10.
 ./kotlin test
 ```
 
-Build before test. The test run drives two external harnesses over the native
-C bridge, and one of them is the `selftest` executable, which only
-`./kotlin build` produces; a missing or outdated `selftest` binary fails the
-test suite rather than being skipped.
+Build before test. The test run drives the C bridge harness and `selftest`, then
+the Kotlin/JVM Playwright suite spawns the native `webuicheck` fixture. Both
+native executables are produced only by `./kotlin build`; a missing or stale
+fixture fails rather than being skipped. Run only the browser suite with:
+
+```shell
+./kotlin test -m webuitest
+HARMON_WEBUITEST_HEADED=1 ./kotlin test -m webuitest
+```
+
+Playwright supplies its Node driver; the project has no npm install or frontend
+build step.
 
 The C harness can also be run on its own — it needs no Kotlin build, since the
 script compiles it every time — with an optional name prefix to select one
@@ -232,6 +242,7 @@ harmon test-notifications [--config PATH]
 harmon setup
 harmon setup --system --uid UID --gid GID
 harmon status
+harmon ui
 harmon --help
 harmon --version
 ```
@@ -240,6 +251,22 @@ launchd owns `harmon-collector` in a normal installation; it is not a `harmon`
 subcommand. With no command, `harmon` starts the user-agent loop. `once` takes
 two collector snapshots and prints one report. `diagnose` also prints grouping,
 attribution coverage, and process-access failures.
+
+`harmon ui` opens the authenticated local process monitor published by the
+running user agent. The page is an htop-like PID tree, not an application-group
+view: each row shows CPU Self/Total and Memory Self/Total, where Total includes
+every readable descendant. Sibling sets are recursively sorted by the selected
+metric, with Memory Total descending as the default. Search accepts process
+names and PIDs, keeps matching ancestors visible, and includes a matched
+process's subtree. Roots and their first child level start expanded.
+
+The live view samples through its own collector client every second by default;
+it does not alter the alert/history baseline or `intervalSeconds`. Snapshot
+freezes the current browser view without stopping the agent, and Resume returns
+to live updates. The server chooses a fresh loopback port and 256-bit token on
+every start. Its endpoint manifest is user-only at
+`~/Library/Application Support/Harmon/live-ui.endpoint`; the token is never
+written to logs.
 
 `--sample-seconds` is the gap between those two snapshots and accepts 1 to 300
 seconds inclusive. A value outside that range, or one that is not an integer,
@@ -257,6 +284,8 @@ Important defaults:
 ```properties
 collectorSocket=/var/run/harmon.collector.sock
 intervalSeconds=300
+webUiEnabled=true
+webSampleSeconds=1
 historyRetentionDays=7
 orphanAlerts=true
 applicationCpuAlertPercent=150
@@ -270,6 +299,10 @@ batteryLowAlertPercent=20
 systemNotifications=true
 notifyEverySample=false
 ```
+
+`webSampleSeconds` accepts 1 through 10. `webUiEnabled=false` disables only the
+loopback server and its independent collector sampling; alerting, notifications,
+and history continue normally.
 
 A threshold of `0` disables that rule. `orphanAlerts` is the one alert rule
 without a threshold — losing a parent is an event, not a quantity, so there is
@@ -410,8 +443,10 @@ Notification Center delivery uses the background-only Harmon application
 bundle installed under `~/Library/Application Support/Harmon/Harmon.app`.
 Each system notification atomically updates a private local report at
 `~/Library/Application Support/Harmon/Reports/latest.html`. Clicking the
-notification opens that complete report in the default browser. No scripts or
-remote resources are embedded in the HTML, and Script Editor is not involved.
+notification opens that complete report in the default browser. No remote
+resources are fetched: the snapshot contains the same pinned Preact 10.29.1
+tree UI as the live page and a raw-text `<noscript>` fallback. Script Editor is
+not involved.
 The launchd agent uses the compatible Notification Center path because current
 macOS releases reject the modern UserNotifications API from a launchd job.
 
@@ -572,6 +607,7 @@ test/          root CLI/factory/harness tests, plus the C harness in test/native
 launchd/       Harmon.app metadata and icon
 scripts/       compatibility install/uninstall entry points, release tools, and C tests
 docs/          architecture, metric semantics, and the history schema
+third_party/   licenses for source-vendored dependencies
 LICENSE        GPL-3.0-only license text
 ```
 
@@ -579,3 +615,6 @@ LICENSE        GPL-3.0-only license text
 
 Harmon is licensed under the
 [GNU General Public License version 3 only](LICENSE) (`GPL-3.0-only`).
+The embedded Preact module remains under its
+[MIT license](third_party/preact/LICENSE), which is also shipped as
+`share/harmon/PREACT-LICENSE` in release archives.

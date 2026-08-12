@@ -1,0 +1,6 @@
+product: jvm/lib
+
+apply: [../harmon.module-template.yaml]
+
+test-dependencies:
+  - $libs.playwright

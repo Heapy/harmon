@@ -1,8 +1,10 @@
 [versions]
+playwright = "1.62.0"
 sqldelight = "2.3.2"
 sql-psi = "0.7.3"
 
 [libraries]
+playwright = { module = "com.microsoft.playwright:playwright", version.ref = "playwright" }
 # Build-time SQLDelight compiler dependencies; never linked into the native binary.
 sqldelight-compiler-env = { module = "app.cash.sqldelight:compiler-env", version.ref = "sqldelight" }
 sqldelight-core = { module = "app.cash.sqldelight:core", version.ref = "sqldelight" }

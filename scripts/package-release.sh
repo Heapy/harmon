@@ -106,6 +106,8 @@ STAGE="$TEMP_DIR/$STAGE_NAME"
     "$STAGE/share/harmon/Harmon.icns"
 /bin/cp "$PROJECT_DIR/config/harmon.conf.example" \
     "$STAGE/share/harmon/harmon.conf.example"
+/bin/cp "$PROJECT_DIR/third_party/preact/LICENSE" \
+    "$STAGE/share/harmon/PREACT-LICENSE"
 /bin/chmod 0644 "$STAGE/share/harmon/"*
 
 if /usr/bin/grep -q '@HARMON_VERSION@' "$STAGE/share/harmon/Harmon.Info.plist"; then
@@ -128,7 +130,7 @@ if [[ "$("$STAGE/libexec/harmon-collector" --version)" != "harmon-collector $VER
     exit 1
 fi
 
-EXPECTED_FILES=$'bin/harmon\nlibexec/harmon-collector\nshare/harmon/Harmon.Info.plist\nshare/harmon/Harmon.icns\nshare/harmon/harmon.conf.example'
+EXPECTED_FILES=$'bin/harmon\nlibexec/harmon-collector\nshare/harmon/Harmon.Info.plist\nshare/harmon/Harmon.icns\nshare/harmon/PREACT-LICENSE\nshare/harmon/harmon.conf.example'
 ACTUAL_FILES=$(
     cd "$STAGE"
     /usr/bin/find . -type f -print |
@@ -136,7 +138,7 @@ ACTUAL_FILES=$(
         LC_ALL=C /usr/bin/sort
 )
 if [[ "$ACTUAL_FILES" != "$EXPECTED_FILES" ]]; then
-    echo "Release staging layout is not the expected five files:" >&2
+    echo "Release staging layout is not the expected file set:" >&2
     echo "$ACTUAL_FILES" >&2
     exit 1
 fi
@@ -221,7 +223,7 @@ PROVENANCE="$OUTPUT_DIR/$ARCHIVE_NAME.provenance.json"
     '  "version": "'"$VERSION"'",' \
     '  "gitCommit": "'"$COMMIT"'",' \
     '  "platform": "macos-arm64",' \
-    '  "contents": ["bin/harmon", "libexec/harmon-collector", "share/harmon/Harmon.Info.plist", "share/harmon/Harmon.icns", "share/harmon/harmon.conf.example"]' \
+    '  "contents": ["bin/harmon", "libexec/harmon-collector", "share/harmon/Harmon.Info.plist", "share/harmon/Harmon.icns", "share/harmon/PREACT-LICENSE", "share/harmon/harmon.conf.example"]' \
     '}' > "$PROVENANCE"
 /usr/bin/ruby -rjson -e 'JSON.parse(File.read(ARGV.fetch(0)))' "$PROVENANCE"
 

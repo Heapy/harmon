@@ -98,6 +98,48 @@ static inline int hm_http_post_json(
     return result == CURLE_OK ? 0 : (int)result;
 }
 
+static inline int hm_http_get_status(
+    const char *url,
+    long timeout_seconds,
+    HMHttpResult *output
+) {
+    if (url == NULL || output == NULL) {
+        return EINVAL;
+    }
+
+    memset(output, 0, sizeof(*output));
+    CURL *request = curl_easy_init();
+    if (request == NULL) {
+        snprintf(output->error, sizeof(output->error), "curl_easy_init failed");
+        return ENOMEM;
+    }
+
+    curl_easy_setopt(request, CURLOPT_URL, url);
+    curl_easy_setopt(request, CURLOPT_CONNECTTIMEOUT, timeout_seconds);
+    curl_easy_setopt(request, CURLOPT_TIMEOUT, timeout_seconds);
+    curl_easy_setopt(request, CURLOPT_NOSIGNAL, 1L);
+    curl_easy_setopt(request, CURLOPT_PROXY, "");
+    curl_easy_setopt(request, CURLOPT_USERAGENT, "harmon/0.1.0");
+    curl_easy_setopt(request, CURLOPT_WRITEFUNCTION, hm_discard_http_response);
+    curl_easy_setopt(request, CURLOPT_ERRORBUFFER, output->error);
+
+    CURLcode result = curl_easy_perform(request);
+    output->curl_code = (int32_t)result;
+    if (result == CURLE_OK) {
+        curl_easy_getinfo(request, CURLINFO_RESPONSE_CODE, &output->status_code);
+    } else if (output->error[0] == '\0') {
+        snprintf(
+            output->error,
+            sizeof(output->error),
+            "%s",
+            curl_easy_strerror(result)
+        );
+    }
+
+    curl_easy_cleanup(request);
+    return result == CURLE_OK ? 0 : (int)result;
+}
+
 #ifdef __cplusplus
 }
 #endif

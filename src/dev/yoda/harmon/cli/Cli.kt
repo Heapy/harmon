@@ -18,10 +18,12 @@ object HarmonApplication {
     fun run(
         arguments: Array<String>,
         serviceFactory: (HarmonConfig, History?) -> HarmonService,
+        runService: (HarmonConfig, History?) -> Nothing,
         historyFactory: (HarmonConfig) -> History?,
         setup: (SetupRequest) -> Unit,
         status: () -> Int,
         uninstall: (UninstallRequest) -> Unit,
+        openUi: () -> Unit,
     ) {
         val command = try {
             CliParser.parse(arguments)
@@ -36,7 +38,7 @@ object HarmonApplication {
             Command.Help -> println(CliParser.help())
             Command.Version -> println("harmon ${BuildInfo.VERSION}")
             is Command.Run -> withConfig(command.configPath) { config ->
-                serviceFactory(config, historyFactory(config)).runForever()
+                runService(config, historyFactory(config))
             }
             is Command.Once -> withConfig(command.configPath) { config ->
                 val service = serviceFactory(config, null)
@@ -94,6 +96,14 @@ object HarmonApplication {
                     }
                 } catch (failure: Throwable) {
                     printError("status error: ${failureDescription(failure)}")
+                    exitProcess(1)
+                }
+            }
+            Command.Ui -> {
+                try {
+                    openUi()
+                } catch (failure: Throwable) {
+                    printError("ui error: ${failureDescription(failure)}")
                     exitProcess(1)
                 }
             }
@@ -176,6 +186,8 @@ sealed interface Command {
     ) : Command
 
     data object Status : Command
+
+    data object Ui : Command
 
     data class Uninstall(
         val system: Boolean,
@@ -260,6 +272,13 @@ object CliParser {
                 }
                 Command.Status
             }
+            "ui" -> {
+                rejectSampleOptions(sampleSeconds, notify)
+                if (configPath != null) {
+                    throw CliException("--config is not available for 'ui'")
+                }
+                Command.Ui
+            }
             else -> throw CliException("unknown command '$commandName'")
         }
     }
@@ -276,6 +295,7 @@ object CliParser {
           harmon setup
           harmon setup --system --uid UID --gid GID
           harmon status
+          harmon ui
           harmon uninstall
           harmon uninstall --system --uid UID
           harmon --help
@@ -297,6 +317,9 @@ object CliParser {
 
         status is read-only and exits non-zero when the installed copies,
         collector protocol, socket, or launchd jobs need setup.
+
+        ui opens the authenticated loopback process tree published by the
+        running user agent.
 
         uninstall removes both services and deployed binaries while preserving
         configuration, logs, reports, and sample history. Its --system form is

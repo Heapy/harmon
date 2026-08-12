@@ -8,6 +8,8 @@ modules:
   - ./history-sqlite
   - ./plugins/sqldelight-gen
   - ./selftest
+  - ./webuicheck
+  - ./webuitest
 
 plugins:
   - ./plugins/sqldelight-gen

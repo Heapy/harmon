@@ -716,8 +716,10 @@ parent pids, executable paths and the moment a process was handed to launchd.
 is created at all; `docs/history.md` is the reference for what a stored sample
 holds. `once` and `diagnose` write nothing.
 
-No network request occurs unless Telegram or a webhook is configured and a
-notification is due.
+No outbound network request occurs unless Telegram or a webhook is configured
+and a notification is due. With `webUiEnabled=true`, the user agent also serves
+authenticated read-only HTML/JSON on a random `127.0.0.1` port; it never binds a
+non-loopback interface.
 
 ## Additional macOS signals worth considering
 

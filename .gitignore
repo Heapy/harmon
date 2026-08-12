@@ -8,3 +8,4 @@ build/
 dist/
 out/
 local.properties
+webuitest/test-results/

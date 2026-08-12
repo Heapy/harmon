@@ -240,6 +240,7 @@ class SetupWorkflowTest {
         val paths = UserSetupPaths.forHome(TEST_HOME)
         fileSystem.files[paths.agentPlist] = "agent plist"
         fileSystem.files[paths.legacyAgentPlist] = "legacy plist"
+        fileSystem.files[paths.liveUiEndpoint] = "stale endpoint"
         fileSystem.files[paths.config] = "custom=true"
         fileSystem.files["${paths.supportDirectory}/history.db"] = "history"
         fileSystem.files["${paths.logDirectory}/agent.log"] = "log"
@@ -257,6 +258,7 @@ class SetupWorkflowTest {
 
         assertFalse(paths.agentPlist in fileSystem.files)
         assertFalse(paths.legacyAgentPlist in fileSystem.files)
+        assertFalse(paths.liveUiEndpoint in fileSystem.files)
         assertFalse(paths.legacyCommandLink in fileSystem.symlinks)
         assertFalse(paths.installedAgent in fileSystem.files)
         assertEquals("custom=true", fileSystem.files[paths.config])

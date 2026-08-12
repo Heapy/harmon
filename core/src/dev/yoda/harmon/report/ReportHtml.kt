@@ -1,7 +1,23 @@
 package dev.yoda.harmon.report
 
+import dev.yoda.harmon.model.MonitoringReport
+
 /** Produces a self-contained local report without scripts or remote resources. */
 object ReportHtml {
+    fun document(
+        title: String,
+        subtitle: String,
+        reportText: String,
+        report: MonitoringReport,
+    ): String = ProcessPage.document(
+        payloadJson = WebUiPayloadJson.encode(
+            WebUiPayloadFactory.staticSnapshot(report, reportText),
+        ),
+        mode = "snapshot",
+        title = "$title — $subtitle",
+        fallbackText = reportText,
+    )
+
     fun document(
         title: String,
         subtitle: String,
