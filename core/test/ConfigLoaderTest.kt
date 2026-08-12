@@ -70,10 +70,6 @@ class ConfigLoaderTest {
         assertContains(warnings.single(), "line 1")
     }
 
-    /**
-     * `onceSampleSeconds`, `--sample-seconds` and `HarmonService.sampleOnce` share one range, so
-     * a config file cannot set a window the other two would reject.
-     */
     @Test
     fun rejectsASampleWindowOutsideTheSharedRange() {
         val failure = assertFailsWith<ConfigException> {
@@ -143,11 +139,6 @@ class ConfigLoaderTest {
         }
     }
 
-    /**
-     * Userinfo is not a host. libcurl resolves each of these to `evil.example`, so reading the
-     * part before the `@` as the host would send the payload and its bearer token to an arbitrary
-     * server over plaintext HTTP — which is the one thing the loopback exemption exists to stop.
-     */
     @Test
     fun doesNotMistakeLocalhostInUserinfoForTheHost() {
         listOf(
@@ -163,7 +154,6 @@ class ConfigLoaderTest {
         }
     }
 
-    /** Userinfo in front of a genuine loopback host is still loopback, and still cleartext-safe. */
     @Test
     fun acceptsCredentialsInFrontOfALoopbackHost() {
         val config = parseConfig("webhookUrl=http://user:secret@127.0.0.1:9000/hook")
@@ -196,12 +186,6 @@ class ConfigLoaderTest {
         }
     }
 
-    /**
-     * The upper bound exists because the failure at the other end is silent. `7000` is the typo for
-     * `7` that costs nothing to make, and it parses into a cutoff no stored sample is ever older
-     * than — so the pass deletes nothing, the file grows for as long as the agent runs, and nothing
-     * anywhere says a word about it.
-     */
     @Test
     fun rejectsAHistoryRetentionLongerThanAnyUseForTheData() {
         assertEquals(3_650L, parseConfig("historyRetentionDays=3650").historyRetentionDays)
@@ -214,10 +198,6 @@ class ConfigLoaderTest {
         )
     }
 
-    /**
-     * The one rule with no threshold to zero out. Every other one is disabled by setting its
-     * number to zero, so this key is what keeps that promise for orphan alerts.
-     */
     @Test
     fun readsTheOrphanAlertSwitchAndLeavesItOnByDefault() {
         assertEquals(true, parseConfig().orphanAlerts)
@@ -238,13 +218,6 @@ class ConfigLoaderTest {
         assertContains(assertNotNull(failure.message), "orphanAlerts must be true or false")
     }
 
-    /**
-     * The watt threshold reads exactly like its neighbours: absent is the default, zero is off.
-     *
-     * Zero mattering here is the whole point of the key being separate from
-     * `applicationBatteryImpactAlertScore` — one silences the accounted-power rule, the other the
-     * heuristic, and neither falls back to the other.
-     */
     @Test
     fun readsTheApplicationPowerThresholdAndTakesZeroAsDisabled() {
         assertEquals(1.5, parseConfig().thresholds.applicationPowerWatts)
@@ -275,7 +248,6 @@ class ConfigLoaderTest {
         )
     }
 
-    /** `check-config` prints the running configuration, so a disabled rule has to read as disabled. */
     @Test
     fun reportsTheApplicationPowerThresholdEvenWhenItIsDisabled() {
         assertContains(parseConfig().redactedDescription(), "applicationPowerAlertWatts=1.5")
@@ -285,7 +257,6 @@ class ConfigLoaderTest {
         )
     }
 
-    /** `check-config` is where a user finds out history is off, so the key has to appear disabled. */
     @Test
     fun reportsTheHistoryRetentionEvenWhenItIsDisabled() {
         assertContains(parseConfig().redactedDescription(), "historyRetentionDays=7")
@@ -296,11 +267,5 @@ class ConfigLoaderTest {
     }
 }
 
-/**
- * A config file and nothing else — no environment, no warning sink.
- *
- * Which is what almost every test here wants. The two that call `ConfigLoader.parse` directly are
- * the two with something to say about the other arguments.
- */
 private fun parseConfig(vararg lines: String): HarmonConfig =
     ConfigLoader.parse(lines = lines.asSequence(), environment = emptyMap())

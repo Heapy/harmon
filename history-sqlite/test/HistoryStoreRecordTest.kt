@@ -9,13 +9,6 @@ import kotlin.test.assertFails
 import kotlin.test.assertTrue
 import kotlin.time.Instant
 
-/**
- * Every table one stored sample writes to.
- *
- * `alert_state` and `agent_state` are deliberately absent: they are the agent's own state rather
- * than the sample's, they hold one row however many samples were written, and the test that has to
- * see them roll back compares their contents rather than their counts.
- */
 private val SAMPLE_TABLES = listOf(
     "sample",
     "process",
@@ -26,35 +19,12 @@ private val SAMPLE_TABLES = listOf(
     "alert_delivery",
 )
 
-/**
- * [SAMPLE_TABLES] without `alert`, which `aFailedWriteLeavesNothingOfItsSample` drops and can no
- * longer count. `alert_delivery` is written after `alert` and so never reached by that failing
- * sample; it stays because the first sample fills it, and a rollback that took the wrong rows would
- * show.
- */
 private val SURVIVING_TABLES = SAMPLE_TABLES - "alert"
 
-/**
- * Fails the write on the very last statement `record` runs, and only that statement.
- *
- * `BEFORE INSERT` rather than a dropped table, because the table has to survive: `alert_state` is
- * rewritten one statement earlier and the point of the test is to read back what was in it before.
- * `RAISE(ABORT, …)` undoes its own statement and nothing else, so whatever the rest of the
- * transaction leaves behind is left behind by the transaction rather than by the trigger.
- */
 private const val AGENT_STATE_REFUSES_WRITES =
     "CREATE TRIGGER agent_state_is_closed BEFORE INSERT ON agent_state " +
         "BEGIN SELECT RAISE(ABORT, 'agent_state is closed'); END"
 
-/**
- * Covers `HistoryStore.record` against the database the agent actually writes to.
- *
- * The scratch home is not a detail here. `record` reads the id of the sample it just wrote from
- * `last_insert_rowid()`, which is per connection, and the configured driver keeps a writer apart
- * from a pool of readers — so the id is only correct while the read stays inside the writing
- * transaction. On `inMemoryDriver` there is one connection and foreign keys are off, and both of
- * those failures pass unnoticed.
- */
 class HistoryStoreRecordTest {
 
     @Test
@@ -101,26 +71,6 @@ class HistoryStoreRecordTest {
         }
     }
 
-    /**
-     * Dropping `alert` fails the write halfway through, after the sample, its processes, its
-     * application and both lookup rows are already in. A partial sample is worse than a missing one
-     * — a process count read back from it would be a lie no reader could detect — so what matters
-     * is not that `record` threw but that nothing of the sample is left.
-     *
-     * `alert` rather than one of the tables written earlier, and that choice is the whole test.
-     * Drop a table retention itself names — `application_sample`, say, which
-     * `deleteOrphanApplications` reads — and two things go wrong at once that have nothing to do
-     * with a rollback: `pruneIfDue` starts logging a retention failure on every sample it is due
-     * on, and `countRows("application_sample")` below has no table left to answer from. Retention
-     * never names `alert`, so the failure lands where it is meant to. The message is asserted for
-     * the same reason: it is the only evidence the write reached the alert insert rather than
-     * falling over on the way to it.
-     *
-     * The sample recorded first is what gives the counts something to be. Every row below belongs
-     * to it, so an assertion of "unchanged" is an assertion that the second sample left nothing —
-     * and the second report names a different application and different processes, so its lookup
-     * rows would be new rows rather than conflicts.
-     */
     @Test
     fun aFailedWriteLeavesNothingOfItsSample() = withScratchHome { home ->
         withHistoryStore(home) { store ->
@@ -144,21 +94,6 @@ class HistoryStoreRecordTest {
         }
     }
 
-    /**
-     * The other half of the same transaction: `alert_state` and `agent_state` are written last, and
-     * they have to fall with the sample they were written for.
-     *
-     * The test above cannot see this. Its failure lands on the alert insert, which comes before
-     * either state table is touched — so lifting both writes into a `database.transaction` of their
-     * own, the regression `record`'s KDoc warns against, leaves it green. This one fails on the very
-     * last statement of the transaction instead, past everything it has to undo, which is why the
-     * trigger exists at all.
-     *
-     * The second snapshot is empty on purpose: `replaceAlertState` clears the table before it writes
-     * anything, so the key asserted below is one the failing write had already deleted. Its being
-     * there afterwards is the rollback, and the sample counter it is measured against — restored to
-     * the value of the sample before — is the same statement's other half.
-     */
     @Test
     fun aFailedWriteLeavesTheAlertStateOfTheSampleBeforeIt() = withScratchHome { home ->
         withHistoryStore(home) { store ->
@@ -194,10 +129,6 @@ class HistoryStoreRecordTest {
         }
     }
 
-    /**
-     * What the lookup tables are for: an application seen 288 times a day and a process that outlives
-     * the interval must each cost one row, whatever the sample count.
-     */
     @Test
     fun aSecondSampleReusesTheLookupRows() = withScratchHome { home ->
         withHistoryStore(home) { store ->
@@ -219,11 +150,6 @@ class HistoryStoreRecordTest {
     }
 }
 
-/**
- * A report with both kinds of application group — two processes inside one bundle and one outside
- * any bundle — plus an alert of each kind, so nothing `record` writes is exercised by an empty
- * list.
- */
 private fun recordedReport(): MonitoringReport = MonitoringReport(
     usage = systemUsage(
         processes = listOf(
@@ -246,10 +172,6 @@ private fun recordedReport(): MonitoringReport = MonitoringReport(
     suppressedAlertKeys = listOf("memory:loose"),
 )
 
-/**
- * A second sample that shares nothing with [recordedReport] — another moment, another bundle,
- * another set of pids — so every table it touches would gain a row rather than conflict with one.
- */
 private fun secondReport(): MonitoringReport = MonitoringReport(
     usage = systemUsage(
         processes = listOf(
@@ -266,17 +188,11 @@ private fun secondReport(): MonitoringReport = MonitoringReport(
     suppressedAlertKeys = listOf("memory:drifter"),
 )
 
-/**
- * The alert state the first sample leaves behind: one key still firing, with a backoff it earned and
- * a counter no other number in this file shares, so a value read back from either table can only
- * have come from here.
- */
 private fun firingState(): AlertStateSnapshot = AlertStateSnapshot(
     sampleCounter = 41,
     keys = mapOf("cpu:Marked" to AlertKeyState(settled = false, failures = 3, retryAtSample = 44)),
 )
 
-/** The state the failing sample would have replaced it with: nothing firing, one sample later. */
 private fun settledState(): AlertStateSnapshot =
     AlertStateSnapshot(sampleCounter = 42, keys = emptyMap())
 

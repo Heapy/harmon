@@ -6,12 +6,6 @@ import kotlin.time.Instant
 
 class HistoryTimestampTest {
 
-    /**
-     * The bug this exists to prevent: `Instant.toString()` is variable width, and `'.'` sorts below
-     * `'Z'`, so half a second past the minute compares *less* than the minute itself. Both the
-     * history's `ORDER BY captured_at` and its retention cutoff are string comparisons, so that
-     * inversion would shuffle the timeline and hide rows from the delete.
-     */
     @Test
     fun lexicographicOrderFollowsTimeEvenAcrossAFraction() {
         val onTheSecond = Instant.parse("2026-07-29T00:05:00Z")
@@ -46,10 +40,6 @@ class HistoryTimestampTest {
         }
     }
 
-    /**
-     * A whole-minute instant is the one case where a java.time-style formatter would drop `:00` and
-     * produce a 17-character string, which would then sort below every other second in the minute.
-     */
     @Test
     fun truncatesTowardsTheSecondAndKeepsZeroSeconds() {
         assertEquals(

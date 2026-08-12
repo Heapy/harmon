@@ -5,11 +5,6 @@ import kotlin.test.assertTrue
 
 class SqlConversionsTest {
 
-    /**
-     * `ULong.MAX_VALUE.toLong()` is `-1`, and a negative byte count is indistinguishable on the
-     * read side from a value that was always negative. Clamping keeps every stored number
-     * readable as what it means.
-     */
     @Test
     fun clampsAValueAboveTheSignedBoundaryInsteadOfWrappingItNegative() {
         val stored = ULong.MAX_VALUE.toSqlLong()

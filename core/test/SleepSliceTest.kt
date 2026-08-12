@@ -38,12 +38,6 @@ class SleepSliceTest {
         assertEquals(2uL, sleepSliceMillis(remainingNs))
     }
 
-    /**
-     * With system notifications on, the slice is spent inside the CoreFoundation run loop. The
-     * agent has no run loop sources at all before its first delivery, so that probe returns at
-     * once and the rest of the slice has to be spent parked — re-entering the run loop instead
-     * would busy-poll the whole interval.
-     */
     @Test
     fun spendsTheWholeSliceWithSystemNotificationsOn() {
         val started = TimeSource.Monotonic.markNow()

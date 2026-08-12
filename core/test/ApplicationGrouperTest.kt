@@ -207,12 +207,6 @@ class ApplicationGrouperTest {
         assertEquals(null, applications.single { it.rootPid == 601 }.bundlePath)
     }
 
-    /**
-     * The bundle name is lower-cased before the lookup, so a set written the way a user writes an
-     * application name has to match anyway. A list built in code — rather than parsed out of a
-     * config file, which already lower-cases it — would otherwise match nothing at all and
-     * silently drop the terminal boundary.
-     */
     @Test
     fun matchesTheTerminalListRegardlessOfItsCase() {
         val applications = ApplicationGrouper(setOf("Terminal"))

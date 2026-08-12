@@ -5,22 +5,13 @@ import dev.yoda.harmon.model.ApplicationUsage
 import dev.yoda.harmon.model.ProcessUsage
 
 /**
- * Resolves a readable process to its outermost macOS application bundle.
- *
- * A process whose executable is outside an `.app` bundle inherits the bundle
- * of its nearest readable ancestor, unless that bundle is one of
- * [terminalApplications] — bundle names matched case-insensitively, an empty
- * set meaning no terminal boundaries at all. Processes without an application
- * bundle remain independent groups.
+ * Resolves each process to its outermost `.app`, inheriting the nearest readable ancestor unless
+ * that bundle is a configured terminal boundary. Processes without a bundle remain singletons.
  */
 class ApplicationGrouper(
     terminalApplications: Set<String> = DEFAULT_TERMINAL_APPLICATIONS,
 ) {
-    /**
-     * Folded here rather than trusted from the caller: the comparison below is against a
-     * lower-cased bundle name, so a set built in code — `setOf("Ghostty")` — would otherwise
-     * match nothing at all and silently drop the terminal boundary.
-     */
+    // Normalize callers constructed in code as well as values parsed by ConfigLoader.
     private val terminalApplications = terminalApplications.mapTo(mutableSetOf()) { it.lowercase() }
 
     fun group(processes: List<ProcessUsage>): List<ApplicationUsage> {
@@ -138,11 +129,7 @@ class ApplicationGrouper(
         )
     }
 
-    /**
-     * The marker is searched case-insensitively in the original string: an index
-     * taken from [lowercase] does not address this string, because case folding
-     * can lengthen it (`İ` becomes two characters).
-     */
+    /** Uses a case-insensitive index on the original string; Unicode lowercasing can change length. */
     private fun String.outermostApplicationBundle(): String? {
         val markerIndex = indexOf(APP_BUNDLE_MARKER, ignoreCase = true)
         if (markerIndex < 0) {

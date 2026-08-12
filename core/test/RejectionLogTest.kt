@@ -10,11 +10,6 @@ import kotlin.time.Duration.Companion.seconds
 import kotlin.time.Instant
 
 class RejectionLogTest {
-    /**
-     * The socket is reachable by every local account on a stock install, so a rejected peer is
-     * attacker-controlled and can arrive as fast as `connect` returns. One line per rejection let
-     * any local user fill the root-owned, unrotated collector log and with it the boot volume.
-     */
     @Test
     fun writesOneRejectionLineAWindowHoweverManyPeersAreRejected() {
         val rejectionLog = RejectionLog(interval = 60.seconds)
@@ -44,7 +39,6 @@ class RejectionLogTest {
         assertContains(nextWindow, "and 1 more since the last line")
     }
 
-    /** A wall clock that jumped backwards must end the window, not silence the log until it. */
     @Test
     fun keepsLoggingAfterTheClockJumpedBackwards() {
         val rejectionLog = RejectionLog(interval = 60.seconds)

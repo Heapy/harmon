@@ -64,17 +64,7 @@ class UsageCalculator(
         )
     }
 
-    /**
-     * Every pid the previous snapshot could put a name to, built once per call rather than
-     * per process: the only place a dead parent can still be named is that snapshot, and
-     * every process in the loop resolves against the same map.
-     *
-     * `processIssues` is read as well as `processes`, and it is read first so a full sample
-     * wins over an issue for the same pid. A process the collector could not measure still
-     * arrives with its pid and, usually, its name, and it is exactly the kind of process a
-     * parent tends to be — a supervisor whose `proc_pid_rusage` was refused would otherwise
-     * make the alert about it name a bare pid, in the case where naming it matters most.
-     */
+    /** Includes issues so an unreadable parent can still be named; full samples take precedence. */
     private fun buildNamesByPid(previous: RawSystemSnapshot): Map<Int, String> = buildMap {
         for (issue in previous.processIssues) {
             issue.name?.let { put(issue.pid, it) }
@@ -85,29 +75,8 @@ class UsageCalculator(
     }
 
     /**
-     * Reports the parent a process had one sample ago when this sample shows a different
-     * one, and null otherwise.
-     *
-     * A process absent from [previous] yields null rather than a transition. That is what
-     * keeps a deliberate double fork quiet: such a process is first seen already detached,
-     * so there is no earlier parent to compare against. It also settles pid reuse, because
-     * the lookup key is the whole identity — a different process wearing a recycled pid has
-     * a different `startedAt` and simply misses.
-     *
-     * A parent pid that is not positive on either side is not a pid at all. The collector
-     * pre-sets the field to 0 and leaves it there whenever `proc_pidinfo(PROC_PIDTBSDINFO)`
-     * does not return a whole struct, while still emitting the sample — the sample is decided
-     * by `proc_pid_rusage` alone. So a process whose metadata read failed in one sample and
-     * succeeded in the next would otherwise read as a `0 -> 1` transition and be reported as
-     * having lost a parent that never existed. Zero is the only such value the collector
-     * produces; the guard is written for every non-positive one because that is the reading
-     * `DarwinSystemCollector` already takes on the issue path, where `takeIf { it > 0 }` maps
-     * anything else to a null parent, and a guard narrower than that one would disagree with
-     * it the day a kernel answered with something stranger.
-     *
-     * The result says the parent changed, nothing more. Whether the new parent being pid 1
-     * makes this an orphan worth reporting is left to the consumer, so this calculator stays
-     * a pure function of the two snapshots.
+     * Compares full process identity and ignores missing/non-positive metadata, preventing pid reuse
+     * and failed parent reads from becoming false reparenting events.
      */
     private fun detectReparenting(
         previous: RawProcessSample?,
@@ -384,8 +353,7 @@ class UsageCalculator(
         const val NANOJOULES_PER_JOULE = 1_000_000_000.0
         const val BYTES_PER_MEBIBYTE = 1_048_576.0
 
-        // This is deliberately a transparent heuristic, not Activity Monitor's
-        // private "Energy Impact" metric.
+        // Transparent fallback heuristic; this is not Activity Monitor's private Energy Impact.
         const val WAKEUP_SCORE_WEIGHT = 0.25
         const val IO_SCORE_WEIGHT = 2.0
     }

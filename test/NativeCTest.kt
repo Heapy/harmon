@@ -1,14 +1,6 @@
 import kotlin.test.Test
 import kotlin.test.assertEquals
 
-/**
- * Every check `scripts/test-native.sh` is expected to run.
- *
- * The set is spelled out rather than derived from the output: a check that stops being executed —
- * because a suite lost its call, or a `#if` swallowed it — would otherwise disappear without a
- * single line turning red. The price is that a new check is a two-file change: the `CHECK` call and
- * its name here, or the run fails as `unexpected`.
- */
 private val C_HARNESS_CHECKS = setOf(
     "pure.constants-are-pinned",
     "pure.saturating-add-zero",
@@ -108,17 +100,6 @@ class NativeCTest {
         assertHarnessSucceeded(runNativeHarness(cTestHarness()), C_HARNESS_CHECKS)
     }
 
-    /**
-     * The same checks over the same bridge, compiled under AddressSanitizer and
-     * UndefinedBehaviorSanitizer.
-     *
-     * It is not the checks this pass is about — they pass either way — but everything they cannot
-     * see: an overflow past an allocation, a use after free, a signed overflow. A `malloc` one byte
-     * short of the terminator in `hm_receive_json_frame` leaves every check of the ordinary pass
-     * green and stops this one with a `heap-buffer-overflow` in `hm_receive_json_frame`, reported
-     * here as a death on signal 6. Leaks are not part of it: LeakSanitizer does not run on macOS, so the two
-     * that matter are measured by checks of their own.
-     */
     @Test
     fun runsTheCHarnessUnderSanitizers() {
         assertHarnessSucceeded(
@@ -131,7 +112,6 @@ class NativeCTest {
     fun reportsADeliberateFailure() =
         assertReportsDeliberateFailure(cTestHarness(), foreignFilter = "pure.")
 
-    /** The same sentinel `selftest` prints, for the reason CLAUDE.md gives in the protocol paragraph. */
     @Test
     fun reportsThatAFilterSelectedNothing() {
         val run = runNativeHarness(cTestHarness(), listOf("no-such-suite."))
@@ -140,7 +120,6 @@ class NativeCTest {
         assertHarnessSucceeded(run, setOf("harness.no-checks-selected"))
     }
 
-    /** A mistyped flag must not be taken for a name filter: CLAUDE.md, the protocol paragraph. */
     @Test
     fun rejectsAnUnknownFlag() = assertRejectsAnUnknownFlag(cTestHarness())
 }

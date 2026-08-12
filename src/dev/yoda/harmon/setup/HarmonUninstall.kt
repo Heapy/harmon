@@ -95,8 +95,7 @@ class UserUninstall(
         fileSystem.removeFileIfExists(paths.legacyAgentPlist)
         removeLegacyCommandLink(paths)
 
-        // Keep Harmon.app until sudo returns: executablePath can itself point
-        // into this bundle on machines installed by the old source script.
+        // Legacy installs may be executing this command from inside Harmon.app.
         commandRunner.requireSuccess(
             arguments = listOf(
                 "/usr/bin/sudo",

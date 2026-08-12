@@ -6,17 +6,6 @@ import kotlin.test.assertEquals
 import kotlin.test.assertNull
 import kotlin.time.Instant
 
-/**
- * Proves the premise the whole history design rests on: SQLDelight's native driver reaches a real
- * SQLite from the TEST binary.
- *
- * KTC-5573 keeps a module's own cinterop klib out of every test binary, which is why
- * `dev.yoda.harmon.nativebridge` cannot be called from here. `native-driver` carries its cinterop
- * in a third-party klib instead, and those link fine — this test is the standing evidence.
- *
- * Column-by-column verification of the write path lives in `HistorySampleRowTest`; what is checked
- * here is that the driver, the schema and the generated queries work at all.
- */
 class HistoryDriverSmokeTest {
 
     @Test
@@ -72,11 +61,6 @@ class HistoryDriverSmokeTest {
         assertEquals("2026-07-29T00:00:00Z", remaining.single().captured_at)
     }
 
-    /**
-     * `PRAGMA journal_mode` returns a row, so sqliter's `execute()` rejects it and it has to go
-     * through `executeQuery`. An in-memory database answers MEMORY rather than WAL; what is being
-     * pinned here is the calling convention, which a file-backed store depends on.
-     */
     @Test
     fun journalModePragmaGoesThroughExecuteQuery() = withInMemoryDriver { driver ->
         val mode = driver.pragma("journal_mode") { it.getString(0) }

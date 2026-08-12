@@ -12,23 +12,14 @@ import kotlin.time.Duration.Companion.days
 import kotlin.time.Duration.Companion.seconds
 import kotlin.time.Instant
 
-/** The interval the shipped configuration samples at, and the one the TTL is counted in. */
 private const val INTERVAL_SECONDS = 300L
 
-/** Enough samples that a key still waiting is waiting on a bug rather than on the backoff. */
 private const val PUSHABLE_SAMPLE_LIMIT = 100
 
 private val SAVED_AT = Instant.parse("2026-07-29T00:00:00Z")
 
-/** Covers the pure alert-state snapshot and freshness policy used across an agent restart. */
 class AlertStateSnapshotTest {
 
-    /**
-     * The point of putting the sample counter in the snapshot. `retryAtSample` is an absolute sample
-     * number, so keys restored against a counter starting at zero would be waiting for a sample
-     * thousands of intervals out — an alert with an earned backoff would never be pushed again,
-     * which is a worse outcome than the duplicate push restoring exists to prevent.
-     */
     @Test
     fun aRestoredKeyWaitsOutExactlyTheBackoffItHadLeft() {
         val alerts = listOf(alert("cpu:firefox"))
@@ -53,10 +44,6 @@ class AlertStateSnapshotTest {
         )
     }
 
-    /**
-     * Two intervals is a launchd restart with slack. Restoring what an agent saw a day ago would hand
-     * the hysteresis in `AlertAnalyzer` a lowered clear threshold for a machine that has moved on.
-     */
     @Test
     fun aSnapshotStaysFreshForTwoIntervalsAndNoLonger() {
         assertTrue(isSnapshotFresh(SAVED_AT, SAVED_AT, INTERVAL_SECONDS))
@@ -69,10 +56,6 @@ class AlertStateSnapshotTest {
         )
     }
 
-    /**
-     * An NTP step or a time-zone update can put the clock behind the last sample. The age of the
-     * snapshot is then unknowable, and the safe reading of an unknown age is "too old".
-     */
     @Test
     fun aSnapshotSavedAfterTheCurrentMomentIsNotFresh() {
         assertFalse(isSnapshotFresh(SAVED_AT, SAVED_AT - 1.seconds, INTERVAL_SECONDS))
@@ -80,11 +63,6 @@ class AlertStateSnapshotTest {
     }
 }
 
-/**
- * How many samples [state] takes before it will push one of [alerts] again, committing a sample at a
- * time with nothing delivered and nothing failing — the machine still over its threshold and the
- * channel still not answering.
- */
 private fun samplesUntilPushable(state: AlertState, alerts: List<Alert>): Int {
     val keys = alerts.mapTo(mutableSetOf()) { it.key }
     var samples = 0

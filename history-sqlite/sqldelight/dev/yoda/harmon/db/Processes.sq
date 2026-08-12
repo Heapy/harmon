@@ -1,35 +1,5 @@
--- The process lookup, keyed by identity rather than by pid alone: pids are recycled within minutes
--- on a busy machine, and started_at is the only thing separating one tenant of a pid from the next.
---
--- name, uid and parent_pid are frozen at first sighting, because the insert conflicts into a
--- no-op. A process that renames itself later keeps the name it was first seen under; correcting
--- that would cost an UPDATE per process per sample — ~222 000 writes a day — to fix something that
--- almost never changes.
---
--- executable_path is the exception, and only in the one direction that cannot be a rename: null to
--- non-null. The path is unreadable while the collector runs unprivileged over another user's
--- process, and it was unreadable for any process whose binary had been replaced until the bridge
--- learned to fall back to the saved exec path. Frozen, such a row stays null for the life of the
--- process — days, for a long-running session — and everything that groups by path silently loses
--- it. The insert's conflict clause fills it instead, which costs a write only for the rows that
--- are actually null, and never overwrites a path already stored.
---
--- reparented_at records the one moment a live process was seen to change parent to pid 1, and it is
--- written by markReparented below rather than by the insert. Two naming and typing choices here are
--- not arbitrary:
---
--- The column is called reparented_at, not orphaned_at, because "orphan" is already taken in this
--- schema: deleteOrphanProcesses and deleteOrphanApplications call a row with no referencing children
--- an orphan. The POSIX sense of the word — a process whose parent died — survives only in the alert
--- key the agent emits, which is user-facing; inside the schema the column says what was observed, a
--- reparenting, and leaves "orphan" to mean what the retention queries already mean by it.
---
--- The type is a time string, not REFERENCES sample(id). Retention deletes old samples, so an
--- ON DELETE CASCADE would take the process row with them and a SET NULL would erase the fact itself
--- once the sample that carried it left the window. A timestamp survives the pruning of the sample it
--- was written in — which is all it claims: once the last process_sample naming the process leaves
--- the window, deleteOrphanProcesses below takes the row and the stamp with it. It is written in the
--- same ISO-8601 representation as sample.captured_at.
+-- Identity is pid plus start time. First-seen metadata is frozen except a null executable path may
+-- be filled later. reparented_at is a timestamp so it survives deletion of the triggering sample.
 CREATE TABLE process (
   id              INTEGER PRIMARY KEY AUTOINCREMENT,
   pid             INTEGER NOT NULL,
@@ -42,22 +12,8 @@ CREATE TABLE process (
   UNIQUE (pid, started_at)
 );
 
--- One row per process per sample, ~222 000 a day. Everything repeatable about a process lives in the
--- lookup above so that only ids and numbers repeat here.
---
--- application_id stays null for every process ApplicationGrouper could not tie to an .app bundle:
--- such a process becomes its own singleton group, and singleton groups are deliberately not stored.
--- Null therefore means "runs outside a bundle", never "not resolved yet".
---
--- process_id and application_id deliberately carry NO REFERENCES clause, unlike sample_id. The
--- driver turns foreign_keys on, and SQLite proves a parent has no children by scanning the child
--- table once per deleted parent row — with no index on the child column that is one full scan of
--- this table, the largest in the schema, for every row deleteOrphanProcesses or
--- deleteOrphanApplications removes. Measured at this schema's shape (800 000 child rows, 200 orphan
--- parents): 5.66 s of CPU with the clauses against 0.13 s without, spent inside the pass's write
--- transaction while the next sample waits on it. Nothing is bought back: retention collects orphans
--- by an explicit NOT IN over exactly these columns, so a row a REFERENCES clause would refuse to
--- orphan is a row NOT IN never selects in the first place.
+-- Unbundled singleton groups have a null application_id. process_id and application_id omit foreign
+-- keys deliberately: explicit orphan cleanup avoids a full child-table scan per deleted parent.
 CREATE TABLE process_sample (
   sample_id                             INTEGER NOT NULL REFERENCES sample(id) ON DELETE CASCADE,
   process_id                            INTEGER NOT NULL,
@@ -71,8 +27,7 @@ CREATE TABLE process_sample (
   resident_bytes                        INTEGER NOT NULL,
   wired_bytes                           INTEGER NOT NULL,
   lifetime_max_physical_footprint_bytes INTEGER NOT NULL,
-  -- Null when the kernel refused the compressed-memory attribution for this process, and null rather
-  -- than 0 is the point: 0 bytes compressed is a reading.
+  -- Null means attribution was unavailable; zero is a measured reading.
   compressed_or_paged_out_bytes         INTEGER,
   virtual_memory_region_count           INTEGER,
 
@@ -94,12 +49,7 @@ CREATE TABLE process_sample (
   battery_impact_score                  REAL NOT NULL
 );
 
--- Reading one moment back and dropping one window both start from sample_id; without this index
--- either walks a week of rows. The mirror image, (process_id, sample_id) for "this process over
--- time", is deliberately absent: another ~222 000 index entries a day to speed up a question that a
--- full scan of the window answers in a couple of seconds. Leaving process_id unindexed is only
--- affordable because it carries no REFERENCES clause: under an enforced foreign key an unindexed
--- child column costs a scan per deleted parent row, a price the read path never gets to weigh.
+-- Supports sample reads and cascades. process_id stays unindexed for lower write amplification.
 CREATE INDEX process_sample_sample_id ON process_sample(sample_id);
 
 insertProcess:
@@ -108,25 +58,13 @@ VALUES (?, ?, ?, ?, ?, ?)
 ON CONFLICT (pid, started_at) DO UPDATE SET executable_path = excluded.executable_path
 WHERE process.executable_path IS NULL AND excluded.executable_path IS NOT NULL;
 
--- A separate statement rather than another column in the upsert above, for the same reason that
--- upsert stays as narrow as it is: it runs for every process on every sample, and its conflict
--- clause is written so that it writes nothing on the overwhelmingly common path. Carrying
--- reparented_at through it would put the column into ~222 000 statements a day to record an event
--- that fires zero times a day on a healthy machine. This statement runs only when a process was
--- actually seen changing parent, so on that healthy machine it never runs at all.
---
--- reparented_at IS NULL makes the write idempotent. The transition is visible in exactly one sample,
--- but a repeated sample, a re-run over the same data, or a future rule that revisits the process must
--- not move the timestamp: the fact being stored is when the parent was lost, not when it was last
--- noticed to be missing.
+-- Separate from the frequent upsert and idempotent so later observations cannot move the event.
 markReparented:
 UPDATE process
 SET reparented_at = ?
 WHERE id = ? AND reparented_at IS NULL;
 
--- The id is read back instead of taken from last_insert_rowid(): on the second sighting of a process
--- the insert above does nothing, and last_insert_rowid() still points at whatever row was written
--- before it — in a sample transaction, another process entirely.
+-- ON CONFLICT may write nothing, so last_insert_rowid() could name an unrelated prior insert.
 selectProcessId:
 SELECT id
 FROM process
@@ -173,13 +111,7 @@ FROM process_sample
 WHERE sample_id = ?
 ORDER BY process_id;
 
--- Run after the retention delete: a process whose last sample left the window is dead weight here,
--- and the lookup would otherwise grow with process churn forever.
---
--- NOT IN rather than a correlated NOT EXISTS, which is not a matter of taste at this size. There is
--- deliberately no index on process_sample(process_id), so NOT EXISTS becomes a correlated scalar
--- subquery that rescans a week of process_sample — over a million rows — once per lookup row. NOT IN
--- scans it once and probes the result through a bloom filter.
+-- NOT IN scans the deliberately unindexed child column once instead of once per lookup row.
 deleteOrphanProcesses:
 DELETE FROM process
 WHERE id NOT IN (SELECT process_id FROM process_sample);

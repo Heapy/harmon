@@ -28,7 +28,6 @@ class NotificationFactoryTest {
         assertFalse(dispatcher.isEmpty)
     }
 
-    /** Telegram needs both halves; half a configuration must not produce a channel. */
     @Test
     fun buildsATelegramChannelOnlyWhenBothTokenAndChatIdAreSet() {
         val tokenOnly = NotificationDispatcher.from(

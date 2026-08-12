@@ -63,13 +63,7 @@ object ReportFormatter {
             applications = rankings.topMemory,
             metric = { Format.bytes(it.physicalFootprintBytes) },
         )
-        /*
-         * Which metric leads is decided once per sample, not per row: a process reading zero watts
-         * on a machine whose counter works has genuinely slept, or first appeared this interval,
-         * so mixing watts into some rows and the score into others would produce a column that is
-         * not comparable with itself. The heading carries the regime because the same line would
-         * otherwise mean different things on two machines with nothing to say so.
-         */
+        // One regime per sample keeps every row in the column comparable.
         val energyAccounted = usage.energyAccounted
         appendApplicationTable(
             heading = "Likely application battery impact " +
@@ -121,11 +115,7 @@ object ReportFormatter {
                 appendLine("- ${alert.severity.name.lowercase()}: ${alert.message}")
             }
             if (report.suppressedAlertKeys.isNotEmpty()) {
-                /*
-                 * "matching" rather than "over threshold": the orphan rule has no threshold to be
-                 * over, and printing that one of its keys crossed one would name a number the user
-                 * cannot find in the configuration.
-                 */
+                // "matching" also covers the orphan rule, which has no threshold.
                 appendLine(
                     "- ${report.suppressedAlertKeys.size} more matching, " +
                         "past maxAlertsPerCategory: " +
@@ -198,13 +188,7 @@ object ReportFormatter {
         )
     }.trimEnd()
 
-    /**
-     * The push itself carries only [highlighted] — the alerts the caller decided to put in front
-     * of the user — while the attached HTML and JSON carry the whole [report], so the reader
-     * still sees the full picture. [newAlertKeys] is separate from [highlighted] because a caller
-     * pushing every active alert on every sample must still be able to say which of them are new.
-     * [reportText] is accepted already rendered to avoid a second pass over the same report.
-     */
+    /** The notification highlights selected alerts; attached HTML and JSON retain the full report. */
     fun notification(
         report: MonitoringReport,
         highlighted: List<Alert> = report.alerts,

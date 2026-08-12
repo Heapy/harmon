@@ -1,26 +1,6 @@
 #ifndef HARMON_TEST_HARNESS_H
 #define HARMON_TEST_HARNESS_H
 
-/*
- * Build scheme, fixed once so that later suites slot in without touching the
- * entry point:
- *
- *   - `main.c` owns `main`, the harness state, the prefix filter, the alarm and
- *     the `--self-check` flag; it calls every suite declared below in order;
- *   - every `*_test.c` defines exactly one `hm_run_*_tests(void)` suite, reports
- *     under exactly one name prefix, and has no `main` of its own;
- *   - `anchors.h` carries what more than one suite needs to compare a sample
- *     against a second reading of the same source;
- *   - `scripts/test-native.sh` regenerates the three bridge headers from their
- *     `.def` files and compiles every C source under `test/native` into one
- *     binary on every run.
- *
- * The output protocol this harness shares with `selftest` is described once, in
- * the "How the native layer is tested" section of CLAUDE.md. In short:
- *
- *   ok   suite.check-name
- *   fail suite.check-name: expected 3, got 4
- */
 
 #include <stdarg.h>
 #include <stddef.h>
@@ -28,13 +8,6 @@
 #include <string.h>
 #include <unistd.h>
 
-/*
- * Whether this build is the sanitized one `scripts/test-native.sh --sanitize`
- * produces. Five checks need to know, and each says why where it branches: the
- * shadow map of AddressSanitizer turns the address space into six figures of
- * regions, and its allocator replaces the one `malloc_zone_statistics` reports on
- * and never hands a freed block straight back.
- */
 #if defined(__has_feature)
 #  if __has_feature(address_sanitizer)
 #    define HM_TEST_SANITIZED 1
@@ -50,12 +23,6 @@
 #include <malloc/malloc.h>
 #endif
 
-/*
- * Bytes held in live heap allocations, which is how both leak checks measure a
- * `free` that is not there. Each allocator is asked with its own accounting call;
- * measured, both report growth 0 over 64 allocations of 64 KiB that are released
- * and the full 4 MiB over 64 that are not.
- */
 static inline size_t hm_test_heap_bytes_in_use(void) {
 #if HM_TEST_SANITIZED
     return __sanitizer_get_current_allocated_bytes();
@@ -66,35 +33,8 @@ static inline size_t hm_test_heap_bytes_in_use(void) {
 #endif
 }
 
-/*
- * How long a whole run may take before `main` dies on SIGALRM. It lives here
- * rather than in `main.c` because every child the suites fork has to bound
- * itself by the same number: `fork` clears the parent's alarm, so a child that
- * outlives a parent killed by one would hold the harness's output pipe open and
- * hang the reader in `NativeHarness.kt` instead of hanging the harness. Such a
- * child closes stdout *and* stderr, which are the same pipe under the `2>&1` the
- * bridge runs the harness with.
- *
- * `selftest` arms the same alarm under `TIMEOUT_SECONDS` in `selftest/src/main.kt`.
- * CLAUDE.md states it as one property of both harnesses; the two are separate
- * binaries in separate languages with no shared place to put a constant, so each
- * names the other instead.
- */
 #define HM_TEST_TIMEOUT_SECONDS 60
 
-/*
- * Never returns. What every child these suites start does instead of doing work,
- * and the three lines before the wait are what keeps a hung run from hanging
- * `./kotlin test`: `fork` cleared the alarm `main` armed, and a child that
- * outlives a parent killed by one would hold the harness's output pipe open —
- * both descriptors, because the bridge runs every command with `2>&1`.
- *
- * `main` reaches it through `--park` so that a child can also arrive here by
- * exec'ing a *copy* of this binary, which is what the two exec-path checks need
- * and what no system binary can serve: a copy of one is outside the trust cache
- * and the kernel kills it before it runs a line. `alarm` survives `execve`, so
- * such a child is bounded by the same number without arming anything twice.
- */
 static inline void hm_test_park_forever(void) {
     alarm(HM_TEST_TIMEOUT_SECONDS);
     close(STDOUT_FILENO);
@@ -121,17 +61,6 @@ static inline int hm_test_selected(const char *name) {
         strncmp(name, hm_test_filter, strlen(hm_test_filter)) == 0;
 }
 
-/*
- * Whether a suite reporting names under `prefix` can contribute anything to the
- * current filter, and so whether it is worth running at all. The filter gates
- * execution and not just reporting: an unselected suite would otherwise still
- * fork children, burn CPU and open sockets, and a crash inside it would still
- * take down a run that never wanted it.
- *
- * Either string may be the shorter one — `socket.` selects the whole socket
- * suite, `socket.accept` selects two of its checks — so the comparison runs over
- * the length of the shorter.
- */
 static inline int hm_test_suite_selected(const char *prefix) {
     if (hm_test_filter == NULL) {
         return 1;
@@ -167,10 +96,6 @@ static inline void hm_test_report(
     fflush(stdout);
 }
 
-/*
- * The detail is printed only for a failure, so it may reference values that are
- * meaningless when the condition holds.
- */
 #define CHECK(name, condition, ...) \
     hm_test_report((name), (condition) ? 1 : 0, __VA_ARGS__)
 

@@ -4,26 +4,11 @@
 
 #include "harness.h"
 
-/*
- * Sockets created by the framing and socket suites do not inherit the send and
- * receive timeouts the bridge sets on its own descriptors, so a missed wakeup
- * would hang `./kotlin test` forever. The alarm — `HM_TEST_TIMEOUT_SECONDS` in
- * `harness.h`, shared with every child the suites fork — turns that into a signal
- * the Kotlin bridge reports as an abnormal termination.
- */
 
 int hm_test_failures = 0;
 int hm_test_reported = 0;
 const char *hm_test_filter = NULL;
 
-/*
- * The name prefix each suite reports under, so that a filtered run skips the
- * suites it cannot select instead of running them and swallowing their output.
- * A suite missing from this table is not run at all; a prefix that disagrees with
- * what the suite reports costs a filtered run the suite entirely, and the
- * unfiltered run that `./kotlin test` performs is the one that compares the
- * reported names against the expected list.
- */
 typedef struct {
     void (*run)(void);
     const char *prefix;
@@ -45,14 +30,8 @@ int main(int argc, char **argv) {
         if (strcmp(argv[index], "--self-check") == 0) {
             self_check = 1;
         } else if (strcmp(argv[index], "--park") == 0) {
-            /*
-             * Runs no check and never returns: this is the harness as a child of itself, which
-             * `processes.exec-path-survives-a-deleted-binary` execs a deletable copy of. Handled
-             * before anything is reported, so a copy started by hand prints nothing either.
-             */
             hm_test_park_forever();
         } else if (argv[index][0] == '-' || hm_test_filter != NULL) {
-            /* Why a dash is a usage error: CLAUDE.md, the protocol paragraph. */
             fprintf(stderr, "usage: %s [--self-check|--park] [name-prefix]\n", argv[0]);
             return 2;
         } else {
@@ -68,10 +47,6 @@ int main(int argc, char **argv) {
         }
     }
 
-    /*
-     * Why the filter is dropped before the deliberate failure: CLAUDE.md, the
-     * protocol paragraph. Nothing after this point reads the filter.
-     */
     if (self_check) {
         hm_test_filter = NULL;
         CHECK(
@@ -81,7 +56,6 @@ int main(int argc, char **argv) {
         );
     }
 
-    /* Why an empty selection still prints a line: CLAUDE.md, the protocol paragraph. */
     if (hm_test_reported == 0) {
         printf("ok   harness.no-checks-selected\n");
     }

@@ -24,13 +24,10 @@ import kotlin.time.TimeSource
 
 private const val MIB = 1_048_576uL
 
-/** Well above the 2,048 MiB default threshold. */
 private val ALERTING_FOOTPRINT = 5_000uL * MIB
 
-/** Below 90% of the threshold, so hysteresis does not keep the alert firing. */
 private val QUIET_FOOTPRINT = 512uL * MIB
 
-/** Between 90% and 100% of the threshold: alerts only while the key is already firing. */
 private val HYSTERESIS_FOOTPRINT = 1_950uL * MIB
 
 class HarmonServiceAlertFlowTest {
@@ -57,12 +54,6 @@ class HarmonServiceAlertFlowTest {
         assertEquals(2, channel.payloads.size)
     }
 
-    /**
-     * A channel that can never succeed — a typo'd webhook URL, a revoked token — must not turn
-     * Notification Center into an endless banner loop. Each push carries a fresh identifier, so
-     * nothing coalesces them: the retries widen instead. The alert is never given up on, because
-     * its condition still holds.
-     */
     @Test
     fun spreadsOutRetriesOfAnAlertWhoseDeliveryNeverSucceeds() {
         val channel = RecordingChannel(successful = { false })
@@ -114,11 +105,6 @@ class HarmonServiceAlertFlowTest {
         assertEquals("Harmon: system sample", channel.payloads[2].title)
     }
 
-    /**
-     * `notifyEverySample` widens what the push shows, not what counts as new. A consumer reading
-     * the payload still has to be able to tell a fresh alert from one that has been firing for an
-     * hour, so the edge detection keeps running underneath.
-     */
     @Test
     fun notifyEverySampleStillNamesOnlyTheAlertsThatAreNewOnThisSample() {
         val channel = RecordingChannel()
@@ -132,14 +118,6 @@ class HarmonServiceAlertFlowTest {
         assertTrue(channel.payloads[1].text.endsWith("memory"), "the push still carries it")
     }
 
-    /**
-     * The flaky channel `notifyEverySample` has to survive. That mode pushes on every sample
-     * regardless, so it records no failures and defers nothing — more failures in a row than the
-     * backoff threshold still produce a push per sample and no retry deferral. The key therefore
-     * stays unsettled and the payload that finally lands names it as new; were it deferred
-     * instead, that payload would carry the alert without naming it, the next sample would settle
-     * it, and a consumer acting on `newAlertKeys` would never see the alert at all.
-     */
     @Test
     fun notifyEverySamplePushesEverySampleAndNamesTheRecoveredKeyAsNew() {
         val channel = RecordingChannel(
@@ -169,13 +147,6 @@ class HarmonServiceAlertFlowTest {
         assertTrue(landed.text.endsWith("memory"))
     }
 
-    /**
-     * Every key the cap leaves out is named, in the text and in the JSON, whether it had been
-     * reported before or not. A demoted one would otherwise read as cleared to a consumer diffing
-     * the alert list, while the alert state holds it as firing and never pushes it again; a key
-     * over its threshold for the first time would vanish from the sample entirely, and the count
-     * a reader takes for the whole overflow would be smaller than the overflow.
-     */
     @Test
     fun namesEveryKeyOverThresholdThatDidNotFitTheCappedReport() {
         val channel = RecordingChannel()
@@ -191,8 +162,6 @@ class HarmonServiceAlertFlowTest {
 
         service.handleSample(crowdedSnapshot(0uL, crowded), crowdedSnapshot(1uL, crowded))
 
-        // the smallest of the four was over the threshold on the very first sample, with no
-        // earlier report to be demoted from
         assertContains(
             reports.last { it.startsWith("Harmon sample") },
             "1 more matching, past maxAlertsPerCategory: memory:process:13:100",
@@ -202,7 +171,6 @@ class HarmonServiceAlertFlowTest {
             suppressedAlertKeysOf(channel.payloads.last()),
         )
 
-        // the fourth application overtakes the others, demoting the smallest firing key
         val overtaken = listOf(5_000uL, 4_000uL, 3_000uL, 6_000uL).map { it * MIB }
         service.handleSample(crowdedSnapshot(1uL, overtaken), crowdedSnapshot(2uL, overtaken))
 
@@ -216,11 +184,6 @@ class HarmonServiceAlertFlowTest {
         )
     }
 
-    /**
-     * With no channels there is nothing to observe on the wire, so the state update shows up
-     * through hysteresis: the second sample sits below the threshold but above its cleared bound,
-     * and only stays alerting because the first sample committed the key as firing.
-     */
     @Test
     fun anEmptyDispatcherDoesNotBlockTheStateUpdate() {
         val reports = mutableListOf<String>()
@@ -262,10 +225,6 @@ class HarmonServiceAlertFlowTest {
         assertFalse(reports.single().contains("Alerts:"))
     }
 
-    /**
-     * The agent loop is a daemon: a collector that is down for one interval must not end it, and
-     * the window must stay where it was, so the next capture still has something to diff against.
-     */
     @Test
     fun aFailedCaptureIsLoggedAndLeavesTheWindowWhereItWas() {
         val reports = mutableListOf<String>()
@@ -290,11 +249,6 @@ class HarmonServiceAlertFlowTest {
         assertTrue(reports.single().contains("Alerts:"))
     }
 
-    /**
-     * A pair that cannot be turned into a usage window still advances the window, otherwise the
-     * broken snapshot would be replayed against every following capture and the agent would log
-     * the same failure forever.
-     */
     @Test
     fun aSampleThatBlowsUpIsNotReplayedAgainstTheNextCapture() {
         val reports = mutableListOf<String>()
@@ -310,7 +264,6 @@ class HarmonServiceAlertFlowTest {
             logError = { errors += it },
         )
 
-        // a previous snapshot from the future: the monotonic clock cannot go backwards
         val afterFailure = service.runCycle(snapshot(5uL, QUIET_FOOTPRINT))
         service.runCycle(afterFailure)
 
@@ -318,12 +271,6 @@ class HarmonServiceAlertFlowTest {
         assertEquals(1, reports.size)
     }
 
-    /**
-     * Building the dispatcher builds the system channel, and that boots AppKit. Commands that
-     * never push must not pay for it, so the holder has to stay untouched — even on a sample that
-     * would have alerted. The window is also the one thing `sampleOnce` measures, so the second
-     * it spends waiting is asserted rather than merely endured.
-     */
     @Test
     fun sampleOnceWaitsOutItsWindowWithoutBuildingTheDispatcher() {
         var initializations = 0
@@ -361,10 +308,6 @@ class HarmonServiceAlertFlowTest {
         }
     }
 
-    /**
-     * `once --notify` runs with fresh state, so every active alert is new and the payload has to
-     * say so. It also accepts the already rendered text, so the report is not rendered twice.
-     */
     @Test
     fun deliverPushesTheWholeReportAndTreatsEveryAlertAsNew() {
         val channel = RecordingChannel()
@@ -389,10 +332,6 @@ class HarmonServiceAlertFlowTest {
         assertEquals("Notification test", channel.payloads.single().subtitle)
     }
 
-    /**
-     * launchd splits an agent's stdout and stderr into two files. A channel that failed belongs
-     * in the error one, otherwise nobody reading the logs after a silent night finds it.
-     */
     @Test
     fun logsAFailedChannelToTheErrorStreamAndASucceedingOneToTheNormalOne() {
         val messages = mutableListOf<String>()
@@ -440,10 +379,6 @@ class HarmonServiceAlertFlowTest {
         assertEquals(1, channel.payloads.size)
     }
 
-    /**
-     * Building the dispatcher runs arbitrary AppKit code and can fail. The sample has to survive
-     * it: the agent loop is a daemon, and a thrown push would otherwise end it.
-     */
     @Test
     fun logsADeliveryFailureInsteadOfPropagatingIt() {
         val errors = mutableListOf<String>()
@@ -460,12 +395,6 @@ class HarmonServiceAlertFlowTest {
         assertTrue(errors.single().contains("dispatcher unavailable"), errors.toString())
     }
 
-    /**
-     * Two things at once: the sample after a thrown delivery is handled normally, and the throwing
-     * sample still committed its state. The second footprint sits below the threshold, so it only
-     * alerts — and only reaches the channel — because the failed sample committed the key as
-     * firing (see [aFootprintBelowTheThresholdAlertsOnlyBecauseOfTheCommittedState]).
-     */
     @Test
     fun handlesTheNextSampleAfterADeliveryThrows() {
         var attempts = 0
@@ -493,7 +422,6 @@ class HarmonServiceAlertFlowTest {
         assertTrue(channel.payloads.single().text.endsWith("memory"))
     }
 
-    /** Guards the ordering: nothing about the dispatcher may be read before the push decision. */
     @Test
     fun aSampleWithoutNewAlertsLeavesTheDispatcherUnbuilt() {
         var initializations = 0
@@ -550,7 +478,6 @@ private fun snapshot(seconds: ULong, footprint: ULong): RawSystemSnapshot = rawS
     processes = listOf(rawProcess(footprint = footprint)),
 )
 
-/** One unrelated application per footprint, so they compete for the per-category alert slots. */
 private fun crowdedSnapshot(seconds: ULong, footprints: List<ULong>): RawSystemSnapshot =
     rawSnapshot(
         monotonicNs = seconds * 1_000_000_000uL,
@@ -569,7 +496,6 @@ private class ScriptedCollector(vararg snapshots: RawSystemSnapshot) : SystemCol
     override fun capture(): RawSystemSnapshot = remaining.removeFirst()
 }
 
-/** Down for exactly one capture, the way a collector restarting under launchd is. */
 private class FlakyCollector(private val snapshot: RawSystemSnapshot) : SystemCollector {
     private var attempts = 0
 

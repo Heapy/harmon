@@ -7,15 +7,6 @@ import kotlin.test.assertNotEquals
 import kotlin.test.assertNotNull
 import kotlin.test.assertNull
 
-/**
- * Round-trips the `application` lookup and every column of `application_sample` through a real
- * SQLite.
- *
- * As in `HistorySampleRowTest` and `HistoryProcessRowTest`, the values come from a local builder
- * rather than `TestFixtures`: a transposed pair of same-typed columns survives the fixture, where
- * `userCpuPercent == cpuPercent` and most rates are zero. Here every field carries a value no other
- * field carries.
- */
 class HistoryApplicationRowTest {
 
     @Test
@@ -66,11 +57,6 @@ class HistoryApplicationRowTest {
         assertEquals(44.5, stored.battery_impact_score)
     }
 
-    /**
-     * The singleton group `ApplicationGrouper` hands to every process outside an `.app` bundle would
-     * repeat a `process_sample` row for no gain, so it leaves no trace in either table. Both kinds of
-     * group go through the loop `record` will run, so the test cannot pass by storing nothing at all.
-     */
     @Test
     fun aGroupWithoutABundleIsNotStoredAtAll() = withInMemoryDatabase { database ->
         val applications = database.applicationsQueries
@@ -94,10 +80,6 @@ class HistoryApplicationRowTest {
         assertEquals(1, applications.selectApplicationSamples(sampleId).executeAsList().size)
     }
 
-    /**
-     * The lookup is what makes the design pay: an application seen 288 times a day must cost one row,
-     * and two applications must not collapse into one.
-     */
     @Test
     fun theLookupHoldsOneRowPerApplicationKey() = withInMemoryDatabase { database ->
         val applications = database.applicationsQueries
@@ -119,10 +101,6 @@ class HistoryApplicationRowTest {
     }
 }
 
-/**
- * An `ApplicationUsage` in which no two columns of `application` or `application_sample` share a
- * value. Deliberately not in `TestFixtures`: its whole purpose is to be unrealistic.
- */
 private fun markedApplication(): ApplicationUsage = ApplicationUsage(
     id = "bundle:00000000deadbeef",
     name = "Marked",

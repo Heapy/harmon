@@ -3,12 +3,6 @@
 #include "anchors.h"
 #include "harness.h"
 
-/*
- * The arithmetic helpers of the bridge, and at the end of the file the harness's
- * own in `anchors.h`. Every one of them is `static inline` and free of side
- * effects, so the checks below are exact equalities rather than plausibility
- * bounds — the only suite in the harness that can afford them.
- */
 
 static void hm_check_saturating_add(void) {
     CHECK(
@@ -23,7 +17,6 @@ static void hm_check_saturating_add(void) {
         "expected 3, got %llu",
         (unsigned long long)hm_saturating_add_u64(1, 2)
     );
-    /* The largest sum that is still exact must not be mistaken for an overflow. */
     CHECK(
         "pure.saturating-add-reaches-max",
         hm_saturating_add_u64(UINT64_MAX - 1, 1) == UINT64_MAX,
@@ -48,7 +41,6 @@ static void hm_check_saturating_add(void) {
 }
 
 static void hm_check_saturating_multiply(void) {
-    /* A zero factor short-circuits before the division that guards the product. */
     CHECK(
         "pure.saturating-multiply-by-zero",
         hm_saturating_multiply_u64(0, UINT64_MAX) == 0 &&
@@ -66,7 +58,6 @@ static void hm_check_saturating_multiply(void) {
         (unsigned long long)hm_saturating_multiply_u64(1, UINT64_MAX),
         (unsigned long long)hm_saturating_multiply_u64(UINT64_MAX, 1)
     );
-    /* The largest product that still fits, one below the clamp. */
     CHECK(
         "pure.saturating-multiply-reaches-max",
         hm_saturating_multiply_u64(UINT64_MAX / 2, 2) == UINT64_MAX - 1,
@@ -74,7 +65,6 @@ static void hm_check_saturating_multiply(void) {
         (unsigned long long)(UINT64_MAX - 1),
         (unsigned long long)hm_saturating_multiply_u64(UINT64_MAX / 2, 2)
     );
-    /* 2^32 * 2^32 is exactly 2^64: the first product that does not fit. */
     CHECK(
         "pure.saturating-multiply-clamps",
         hm_saturating_multiply_u64(1ULL << 32, 1ULL << 32) == UINT64_MAX,
@@ -84,11 +74,6 @@ static void hm_check_saturating_multiply(void) {
     );
 }
 
-/*
- * The kernel reports its per-process counters as int32_t that has already
- * wrapped, so the conversion must reinterpret the bits rather than sign-extend
- * them: a negative input is a large counter, never a negative one.
- */
 static void hm_check_uint32_counter(void) {
     CHECK(
         "pure.uint32-counter-zero",
@@ -116,14 +101,6 @@ static void hm_check_uint32_counter(void) {
     );
 }
 
-/*
- * Sizing of the intermediate PID list. The property that matters is structural:
- * whatever the caller reserved is already in `output_capacity`, so taking the
- * larger of the two arguments keeps the list from ever being the narrower one —
- * no constant here has to mirror anything in Kotlin. The checks below pin the
- * two ends (a count that failed, a count that dwarfs the arrays) and both
- * saturation points.
- */
 static void hm_check_process_list_capacity(void) {
     const int headroom = HM_PROCESS_LIST_HEADROOM;
     CHECK(
@@ -149,11 +126,6 @@ static void hm_check_process_list_capacity(void) {
         4096 + headroom,
         hm_process_list_capacity(4096, 1024)
     );
-    /*
-     * The ceiling is the one place the invariant yields: a byte size beyond it
-     * would overflow the int proc_listallpids takes. HM_MAX_PROCESS_LIST minus
-     * the headroom is the last count that still gets its full headroom.
-     */
     const int last_exact = HM_MAX_PROCESS_LIST - headroom;
     CHECK(
         "pure.list-capacity-clamps-at-maximum",
@@ -190,14 +162,6 @@ static int hm_compare_candidates(
     return hm_compare_process_candidates(&left, &right);
 }
 
-/*
- * `hm_list_processes` sorts its attribution candidates with this comparator, so
- * the order it imposes decides which processes get their memory attributed at
- * all. qsort is not a stable sort, which is exactly why the comparator breaks
- * ties by index instead of returning 0: equal footprints must still come out in
- * a fixed order, or the tail of the budget would land on a different process on
- * every sample.
- */
 static void hm_check_candidate_order(void) {
     CHECK(
         "pure.candidates-order-by-footprint",
@@ -273,33 +237,8 @@ static void hm_check_candidate_order(void) {
     );
 }
 
-/*
- * How far the two clock readings below may sit apart. They are taken on
- * consecutive lines and measured 125 ns apart here, but the pair straddles
- * whatever the scheduler decides to do between them, and a single preemption
- * outlasts any millisecond bound: an earlier revision allowed 5 ms, which is
- * half a macOS quantum, and would have failed for a reason indistinguishable
- * from the regression below.
- *
- * Two seconds is chosen against that regression instead of against the clocks. A
- * transposed timebase converts by 3/125 rather than 125/3, i.e. 1736 times short,
- * so it is off by days on an uptime of days and still off by four seconds on an
- * uptime of four. Only a machine that booted two seconds ago could hide it.
- */
 #define HM_UPTIME_TOLERANCE_NS 2000000000ULL
 
-/*
- * Checked against a second clock rather than against the same arithmetic the
- * bridge performs. Recomputing `ticks * numer / denom` here would agree with
- * `hm_mach_time_to_ns` for any change that kept the two in step — a swapped
- * numerator and denominator included — whereas CLOCK_UPTIME_RAW counts the same
- * interval the bridge is converting to and is derived independently. On this
- * machine (timebase 125/3) the two readings came out identical to within 125 ns;
- * a transposed timebase would be 40 times off an uptime measured in days.
- *
- * The conversion of zero stays a separate check: it is the one input the bridge
- * short-circuits whatever the timebase says.
- */
 static void hm_check_mach_time(void) {
     mach_timebase_info_data_t timebase = {0, 0};
     if (mach_timebase_info(&timebase) != KERN_SUCCESS) {
@@ -329,24 +268,6 @@ static void hm_check_mach_time(void) {
     );
 }
 
-/*
- * The scale of `hm_monotonic_time_ns`, which is the divisor of every rate and CPU
- * percentage the collector computes: it turns two readings into an interval, and
- * an interval a thousand times too short turns 3 % of a core into 3000 %.
- *
- * Nothing else checks it. The check above anchors `hm_mach_time_to_ns`, a
- * different function on a different clock, and `binding.monotonic-clock-advances`
- * in `selftest` asserts only that two readings come back in order — which they do
- * whatever the seconds are multiplied by. Scaling `tv_sec` by 1e6 instead of 1e9
- * passed every check in both harnesses.
- *
- * `clock_gettime_nsec_np` reads the same clock through a different entry point
- * and does the arithmetic inside libsystem, so it is an anchor rather than the
- * same expression written twice. The two lines are consecutive; the allowance is
- * the one the check above uses, and for the same reason — it is chosen against
- * the regression, not against the clocks. A wrong scale is off by the whole
- * uptime, seconds after boot.
- */
 static void hm_check_monotonic_time(void) {
     const uint64_t reported = hm_monotonic_time_ns();
     const uint64_t anchor = clock_gettime_nsec_np(CLOCK_MONOTONIC);
@@ -364,32 +285,6 @@ static void hm_check_monotonic_time(void) {
     );
 }
 
-/*
- * The constants the rest of the harness reads out of the bridge instead of
- * spelling out, and the two the Kotlin side reads the same way.
- *
- * Every other check that touches one of them takes it from the same `#define` it
- * is testing, so shrinking the constant moves both sides at once and nothing
- * turns red. `HM_PROCESS_NAME_SIZE` at 16 was green across every other check while
- * truncating every process name on the machine to fifteen characters — the names
- * application grouping keys off — because `processes.own-sample-carries-metadata`
- * compares the name as a prefix and the metadata check declares its own buffer as
- * `char name[HM_PROCESS_NAME_SIZE]`.
- *
- * So the values are written out here, once, as the contract they are. The two
- * issue reasons are a contract with `DarwinSystemCollector.toReason()`, which
- * compares `reason` against `HM_PROCESS_ISSUE_CAPACITY` and treats everything
- * else as the rusage branch; the sizing constants are the ones
- * `hm_process_list_capacity` applies. A deliberate change to any of them changes
- * this line too, which is the point: it is the one place where the change is
- * visible rather than implied.
- *
- * `HM_MAX_PROCESS_LIST` is here for exactly that reason and was missing for a
- * while: `pure.list-capacity-clamps-at-maximum` builds all four of its
- * expectations out of the same `#define` it is testing, so a ceiling lowered to
- * the point of truncating the PID list on a busy machine moved both sides at once
- * and stayed green.
- */
 static void hm_check_constants(void) {
     CHECK(
         "pure.constants-are-pinned",
@@ -415,29 +310,6 @@ static void hm_check_constants(void) {
     );
 }
 
-/*
- * The harness's own comparison helpers, in `anchors.h`. They are as pure as the
- * bridge's own, and they are the sole gate on nine anchored checks across
- * `snapshot_test.c`, `processes_test.c` and `attribution_test.c`: those checks
- * see the second reading they compare only through `hm_absolute_difference`, one
- * of the two table loops, or a `hm_lowest`/`hm_highest` pair. A helper that
- * silently agrees with everything therefore turns them green over a broken
- * bridge, and each of the corruptions below was measured doing exactly that —
- * applied together with a bridge defect, all other checks stayed green:
- *
- *   - `hm_absolute_difference` returning 0 hides a transposed swap used/avail
- *     pair, transposed processor user/system ticks, a battery percentage off by
- *     a factor of ten and a monotonic clock scaled by 1e6;
- *   - a table loop that always continues hides transposed storage read/write
- *     times, a zeroed `compressed_bytes` and transposed rusage user/system time;
- *   - `hm_below` returning 0 hides `wired_bytes` forced to 0;
- *   - a widened `hm_lowest_int`/`hm_highest_int` hides a PID list truncated to a
- *     quarter of the machine, which is the regression the harness exists for.
- *
- * So they are pinned the same way the bridge's pure functions are: exact values,
- * both argument orders, the degenerate input and the boundary each one exists
- * for.
- */
 static void hm_check_anchor_arithmetic(void) {
     CHECK(
         "pure.anchor-absolute-difference",
@@ -451,7 +323,6 @@ static void hm_check_anchor_arithmetic(void) {
         (unsigned long long)hm_absolute_difference(5, 5),
         (unsigned long long)hm_absolute_difference(UINT64_MAX, 0)
     );
-    /* The floor is the whole point: a bracket's low edge must not wrap to 2^64. */
     CHECK(
         "pure.anchor-below-floors-at-zero",
         hm_below(10, 4) == 6 && hm_below(4, 4) == 0 && hm_below(4, 10) == 0 &&
@@ -482,11 +353,6 @@ static void hm_check_anchor_arithmetic(void) {
         (unsigned long long)hm_highest(4, 4),
         (unsigned long long)hm_highest(0, UINT64_MAX)
     );
-    /*
-     * The `int` pair takes a negative argument as well: `proc_listallpids`
-     * reports a failed count as -1, and the process bracket is built out of two
-     * of those counts, so the comparison has to be the signed one.
-     */
     CHECK(
         "pure.anchor-lowest-and-highest-int",
         hm_lowest_int(3, 9) == 3 && hm_lowest_int(9, 3) == 3 &&
@@ -505,16 +371,7 @@ static void hm_check_anchor_arithmetic(void) {
     );
 }
 
-/*
- * The two table loops, over tables built so that both ways of breaking a loop
- * fail: the first entry is inside its allowance and a later one is outside, so a
- * loop that always continues reports nothing and a loop that always reports the
- * first entry names the wrong field. A second outlier behind the first makes
- * "the first" a claim rather than a coincidence, and the values written back are
- * pinned too — they are what the failure message of every anchored check prints.
- */
 static void hm_check_anchor_tables(void) {
-    /* 100 apart at a tolerance of 100 is inside it; 101 is not. */
     const HMAnchoredField anchored[] = {
         {"agrees-exactly", 4096, 4096, 0},
         {"at-the-tolerance", 4096, 4196, 100},
@@ -535,7 +392,6 @@ static void hm_check_anchor_tables(void) {
         (unsigned long long)anchor
     );
 
-    /* The same allowance read from both sides, so neither direction reports. */
     const HMAnchoredField agreeing[] = {
         {"agrees-exactly", 4096, 4096, 0},
         {"below-the-anchor", 4096, 4196, 100},
@@ -553,7 +409,6 @@ static void hm_check_anchor_tables(void) {
         (unsigned long long)anchor
     );
 
-    /* Both edges of a bracket are inside it; one below and one above are not. */
     const HMBracketedField bracketed[] = {
         {"a-degenerate-range", 4096, 4096, 4096},
         {"at-the-low-edge", 1024, 1024, 8192},

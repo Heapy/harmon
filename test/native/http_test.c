@@ -2,16 +2,6 @@
 
 #include "harness.h"
 
-/*
- * The curl write callback of the webhook and Telegram senders. Returning
- * anything other than the full byte count aborts the transfer, so the body has
- * to be counted even though it is thrown away.
- *
- * This used to sit in pure_test.c while every native function lived in one
- * header. Keeping it there after the bridge split would make that otherwise
- * probe-only translation unit depend on libcurl, or tempt us to test a duplicate
- * callback instead of the implementation hm_http_post_json actually installs.
- */
 static void hm_check_discard_http_response(void) {
     char body[] = "{\"ok\":true}";
     const size_t consumed = hm_discard_http_response(body, 7, 11, NULL);

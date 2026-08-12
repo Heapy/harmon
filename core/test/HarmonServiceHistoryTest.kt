@@ -18,10 +18,8 @@ import kotlin.time.Instant
 
 private const val HISTORY_TEST_MEBIBYTE = 1_048_576uL
 
-/** Well above the 2,048 MiB default threshold. */
 private val HISTORY_OVER_THRESHOLD = 5_000uL * HISTORY_TEST_MEBIBYTE
 
-/** Between 90% and 100% of the threshold: alerts only while the key is already firing. */
 private val HISTORY_WITHIN_HYSTERESIS = 1_950uL * HISTORY_TEST_MEBIBYTE
 
 private const val HISTORY_FIRING_KEY = "memory:process:42:100"

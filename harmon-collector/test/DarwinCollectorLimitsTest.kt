@@ -4,11 +4,6 @@ import kotlin.test.assertFailsWith
 import kotlin.test.assertTrue
 
 class DarwinCollectorLimitsTest {
-    /**
-     * Every limit is checked at construction rather than at the first capture: the collector runs
-     * as a root daemon under launchd, and a bad limit has to stop it before it starts serving,
-     * not on some later sample.
-     */
     @Test
     fun rejectsALimitThatCannotBeHonoured() {
         listOf<Pair<String, () -> DarwinSystemCollector>>(
@@ -28,11 +23,6 @@ class DarwinCollectorLimitsTest {
         }
     }
 
-    /**
-     * Zero is not a broken limit but a switch: it turns compressed-memory attribution off, which
-     * is the cheapest way to run the collector on a machine where the VM-region walk costs more
-     * than the numbers are worth.
-     */
     @Test
     fun acceptsAZeroRegionBudgetAsAWayToTurnAttributionOff() {
         DarwinSystemCollector(attributionRegionBudget = 0)

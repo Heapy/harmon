@@ -8,78 +8,12 @@
 #include "anchors.h"
 #include "harness.h"
 
-/*
- * The listing, the sample it writes about this process, and the issue array that
- * says why the rest are missing from it.
- *
- * The suite reads live machine state, so what it can prove depends on the account
- * it runs as, in two opposite directions.
- *
- * Not root: `processes.samples-are-well-formed` requires every sampled pid to be
- * positive, which holds only because proc_pid_rusage denies pid 0 — kernel_task,
- * which proc_listallpids does report — to an ordinary user.
- * `socket.accept-rejects-foreign-uid` in the socket suite has the same
- * requirement for a different reason. Running the harness as root is not
- * supported, and CLAUDE.md says so.
- *
- * Enough processes of its own: the capacity branch only fires once the sample
- * array is full, so `processes.issues-are-well-formed` needs the account to own
- * the `HM_LISTING_SAMPLE_CAPACITY` rusage-readable processes that fill it, and
- * `processes.issue-metadata-matches-a-fresh-read` a further
- * `HM_ISSUE_METADATA_MINIMUM` behind them. A desktop session is far past both
- * (585 here) and a freshly booted CI runner under a service account need not be,
- * so `hm_top_up_own_processes` makes the condition rather than asking for it.
- *
- * Enough processes of *other* users: `processes.rusage-issue-path-matches-a-fresh-read`
- * and `processes.rusage-issue-uid-is-unknown` read the rusage branch, whose whole
- * population is processes this account cannot read — 275 of them here, and every
- * macOS carries a hundred of root's. That one cannot be made, so both fail naming
- * what they counted, and CLAUDE.md records the requirement.
- */
 
-/*
- * How far `total_processes` may sit from a count taken moments earlier. Process
- * churn over the microseconds between the two calls is a handful at most, while
- * the regression this guards against — an intermediate PID list narrower than
- * the machine, the shape of 881195d — costs hundreds.
- */
 #define HM_PROCESS_COUNT_TOLERANCE 64
 
-/*
- * How much of the issue array may disagree with a second read of the same pids,
- * and how much of it has to be compared for the comparison to mean anything.
- *
- * Neither number is a tolerance on the bridge: a process that execs between the
- * two reads changes its own name and path, and one that exits is skipped
- * entirely, so a live machine produces the occasional legitimate disagreement.
- * Measured here: 0 disagreements over 174 to 177 comparable issues, six runs out
- * of six. The thinnest mutation measured — a parent pid hard-coded to 1, which
- * many processes legitimately have — still disagreed on 24 % of them, against a
- * budget of 6.25 %.
- */
 #define HM_ISSUE_METADATA_MINIMUM 32
 #define HM_ISSUE_METADATA_MISMATCH_DIVISOR 16
 
-/*
- * The narrow listing that `hm_check_process_listing` takes for five checks, and
- * how many processes of this account it takes for them to mean anything.
- *
- * The sample array has to fill before the capacity branch fires at all, and
- * `HM_ISSUE_METADATA_MINIMUM` processes of this account have to reach the issue
- * array behind it with metadata a second read can compare. Both are properties of
- * the account rather than of the bridge, so the check makes them the way
- * `processes.own-sample-matches-a-fresh-rusage` makes its own: it counts the
- * rusage-readable processes first and forks the shortfall, which is nothing at
- * all on the desktop session measured here (585 of them) and a few dozen on a
- * freshly booted CI runner under a service account. proc_listallpids answers
- * newest first, so children forked immediately before the listing occupy the
- * front of it; topping up by the shortfall alone leaves a machine that already
- * qualifies with exactly the process mix it would have had.
- *
- * The margin above the two minima is for the processes that exit between the
- * count and the listing. The cap keeps a machine that reports an implausible
- * count from forking without bound.
- */
 #define HM_LISTING_SAMPLE_CAPACITY 64
 #define HM_LISTING_ISSUE_CAPACITY 256
 #define HM_LISTING_OWN_MARGIN 16
@@ -87,22 +21,12 @@
     (HM_LISTING_SAMPLE_CAPACITY + HM_ISSUE_METADATA_MINIMUM + HM_LISTING_OWN_MARGIN)
 #define HM_LISTING_TOP_UP_LIMIT HM_LISTING_OWN_MINIMUM
 
-/* What the account brought to the listing, and what this check added to it. */
 typedef struct {
     int owned;
     pid_t *placeholders;
     int forks;
 } HMOwnProcesses;
 
-/*
- * The saved exec path of `pid`, verbatim: relative whenever the process was
- * started that way, and empty when the region cannot be read at all.
- *
- * Deliberately without the absolute-path filter the bridge applies. Two of the
- * checks below have to separate "the bridge refused a relative path" from "there
- * was nothing there to refuse", and a reader that had already dropped the
- * relative ones could not tell them apart.
- */
 static int hm_test_saved_exec_path(pid_t pid, char *out, size_t out_size) {
     out[0] = '\0';
     int name[3] = {CTL_KERN, KERN_PROCARGS2, (int)pid};
@@ -127,17 +51,6 @@ static int hm_test_saved_exec_path(pid_t pid, char *out, size_t out_size) {
     return found;
 }
 
-/*
- * A second read of one process's executable path, in the order the bridge reads
- * it: `proc_pidpath`, and the saved exec path only when that fails and only when
- * it is absolute.
- *
- * Mirroring the fallback is the point, the same way the name anchor mirrors
- * proc_name → `pbi_name` → `pbi_comm`: what the two anchors below assert is that
- * `hm_read_process_metadata` performed this sequence, so an anchor that stopped
- * at `proc_pidpath` would call every process with a replaced binary a
- * disagreement — four of them here, all of them right.
- */
 static void hm_fresh_exec_path(pid_t pid, char *out, size_t out_size) {
     memset(out, 0, out_size);
     if (proc_pidpath(pid, out, (uint32_t)out_size) > 0) {
@@ -151,11 +64,6 @@ static void hm_fresh_exec_path(pid_t pid, char *out, size_t out_size) {
     }
 }
 
-/*
- * The processes this account can read the rusage of, which is exactly the
- * population `hm_list_processes` turns into samples. Counting them with the same
- * call the bridge uses is the only way to know whether the sample array can fill.
- */
 static int hm_count_readable_processes(void) {
     const int capacity = hm_count_processes() + HM_PROCESS_LIST_HEADROOM;
     pid_t *pids = (pid_t *)calloc((size_t)capacity, sizeof(pid_t));
@@ -219,26 +127,6 @@ static void hm_release_own_processes(HMOwnProcesses *own) {
     own->forks = 0;
 }
 
-/*
- * The metadata on the issue path, against a second read the test performs
- * itself. `processes.issues-are-well-formed` is satisfied by the zeroed struct
- * the fields start from, so without this the whole `hm_read_process_metadata`
- * call could go and nothing would notice. It also covers what that function puts
- * where: a hard-coded uid, a parent pid that is always 1, a `proc_pidpath` that
- * is never called.
- *
- * This covers the *capacity* branch only, and it is the branch
- * `hm_check_process_listing` produces (247 of its 256 issues here). A pid whose `proc_bsdinfo` cannot
- * be read at all is skipped, and that is exactly the population of the other
- * branch: `PROC_PIDTBSDINFO` is refused for another user's process, 0 of 275
- * readable here, so anchoring against it would compare nothing.
- * `processes.rusage-issue-path-matches-a-fresh-read` covers the rusage branch
- * instead, over the one field that survives the refusal.
- *
- * The second read mirrors the bridge's fallback order — proc_name first, then
- * `pbi_name` and `pbi_comm`, and `proc_pidpath` before the saved exec path —
- * because that order is the mapping under test.
- */
 static void hm_check_issue_metadata(
     const HMProcessIssue *issues,
     int written_issues,
@@ -314,13 +202,6 @@ static void hm_check_issue_metadata(
     );
 }
 
-/*
- * The caller reports `total` as the number of processes on the machine and
- * `written` as the number it could measure, so a total below the written count
- * would understate coverage. Issues are capped by their own array, while
- * `inaccessible` counts every miss including the ones that did not fit, which is
- * why every listed pid has to end up in exactly one of the two.
- */
 static void hm_check_listing_consistency(
     int written,
     int total,
@@ -348,14 +229,6 @@ static void hm_check_listing_consistency(
     );
 }
 
-/*
- * `total` comes out of the same listing the samples do, so every invariant
- * `hm_check_listing_consistency` asserts survives a PID list truncated to a fraction of the machine: the numbers stay
- * consistent with each other and understate the machine together. Only a count
- * taken independently notices, which is the whole reason
- * `hm_process_list_capacity` sizes that list from the caller's capacity as well
- * as from a fresh count.
- */
 static void hm_check_total_against_a_fresh_count(int total, int before, int after) {
     CHECK(
         "processes.total-matches-a-fresh-count",
@@ -371,7 +244,6 @@ static void hm_check_total_against_a_fresh_count(int total, int before, int afte
     );
 }
 
-/* What is wrong with the first sample that is not well formed, or NULL. */
 static const char *hm_malformed_sample(const HMProcessSample *sample) {
     if (sample->pid <= 0) {
         return "pid is not positive";
@@ -380,14 +252,6 @@ static const char *hm_malformed_sample(const HMProcessSample *sample) {
         return "name is not terminated within HM_PROCESS_NAME_SIZE";
     }
     if (sample->name[0] == '\0') {
-        /*
-         * A guard, not coverage of the `pid-N` fallback that makes it hold: on a
-         * live machine proc_name answers for every process the caller can read
-         * the rusage of, so this branch never fires and deleting the fallback
-         * leaves the check green. Reaching it needs a process that vanishes
-         * between the rusage read and the metadata read, which cannot be forced
-         * from outside — CLAUDE.md lists the fallback among the accepted gaps.
-         */
         return "name is empty";
     }
     if (memchr(sample->executable_path, '\0', sizeof(sample->executable_path)) == NULL) {
@@ -416,13 +280,7 @@ static void hm_check_samples_are_well_formed(const HMProcessSample *samples, int
     );
 }
 
-/* What is wrong with the first issue that is not well formed, or NULL. */
 static const char *hm_malformed_issue(const HMProcessIssue *issue) {
-    /*
-     * A pid of zero is allowed on purpose: proc_listallpids reports kernel_task,
-     * whose rusage an ordinary user cannot read, so it arrives as an issue rather
-     * than as a sample.
-     */
     if (issue->pid < 0) {
         return "pid is negative";
     }
@@ -442,18 +300,6 @@ static const char *hm_malformed_issue(const HMProcessIssue *issue) {
     return NULL;
 }
 
-/*
- * The issue array is where the caller learns why a process is missing from the
- * sample. With the sample array far narrower than the machine the capacity branch
- * fires for most of the listing, so a run that produced no capacity issue at all
- * means that branch stopped being reached — and a reason that is neither
- * constant, or a name running past its array, would reach the report unnoticed.
- *
- * What the metadata on an issue actually says is a separate check: everything
- * asserted here is satisfied by the memset that precedes the
- * `hm_read_process_metadata` call, so deleting that call leaves this green.
- * `processes.issue-metadata-matches-a-fresh-read` is what reads the fields.
- */
 static void hm_check_issues_are_well_formed(
     const HMProcessIssue *issues,
     int written_issues,
@@ -491,14 +337,6 @@ static void hm_check_issues_are_well_formed(
     );
 }
 
-/*
- * One listing feeds five checks. Attribution is switched off (both budgets zero):
- * the walk it would perform is what the attribution checks cover directly, and
- * running it over every sample here would cost seconds and prove nothing new.
- *
- * The sample array is deliberately far narrower than the machine, so that the
- * capacity branch — and with it the issue array — is exercised on every run.
- */
 static void hm_check_process_listing(void) {
     HMProcessSample *samples = (HMProcessSample *)calloc(
         HM_LISTING_SAMPLE_CAPACITY,
@@ -549,21 +387,6 @@ static void hm_check_process_listing(void) {
     free(issues);
 }
 
-/*
- * The sample the harness reports about itself, against what the harness knows
- * about itself.
- *
- * This is the only check that reads the four fields `hm_read_process_metadata`
- * fills on the sample path. Deleting the call from that path leaves every other
- * `processes.*` check green — the `pid-N` fallback refills the name, which is all
- * `processes.samples-are-well-formed` asks for — and so does replacing the
- * guarded fallback with an unconditional `pid-%d`, which would hand application
- * grouping a machine of processes named after their pids.
- *
- * proc_name truncates a long name, so the name is compared as a prefix of the
- * basename `proc_pidpath` reports rather than as its equal; the path itself is
- * compared whole.
- */
 static void hm_check_own_metadata(const HMProcessSample *own, int written, const char *own_path) {
     const char *separator = strrchr(own_path, '/');
     const char *own_name = separator != NULL ? separator + 1 : own_path;
@@ -592,15 +415,6 @@ static void hm_check_own_metadata(const HMProcessSample *own, int written, const
     );
 }
 
-/*
- * Both readings of this process, which every field of its sample is bracketed by.
- *
- * A bracket rather than a tolerance, because the bridge reads its value between
- * the two: a counter that only grows is pinned exactly by them, whatever the
- * machine did in between, and no allowance has to be guessed. Only the figures
- * that also fall — the residency ones — carry slack. `anchors.h` holds the table
- * the pair is compared through.
- */
 typedef struct {
     struct rusage_info_v6 usage;
     struct proc_taskinfo task;
@@ -626,28 +440,8 @@ static HMOwnAnchor hm_read_own_anchor(void) {
     return anchor;
 }
 
-/*
- * How far the three residency figures may sit outside the pair that brackets
- * them. They are the only fields of the sample that both rise and fall, and the
- * listing allocates and touches megabytes between the two readings; measured
- * here, the pair moved 16 KiB — one page — over the listing. The allowance is
- * far below the distance between the fields it separates (5.8 MB resident
- * against 1.5 MB of footprint on this process).
- */
 #define HM_OWN_RESIDENCY_SLACK (4ULL * 1024ULL * 1024ULL)
 
-/*
- * What `hm_check_own_listing` did to this process before the readings, and
- * whether each of it took.
- *
- * Four fields of the sample say nothing about an untouched harness — it reads and
- * writes no disk, runs one thread and wires no memory — so the check makes those
- * conditions itself. Each preparation can fail for a reason that belongs to the
- * machine and not to the bridge: a kernel that refuses `mlock`, a filesystem that
- * serves the read from cache despite `F_NOCACHE`, a `pthread_create` that does
- * not. Carrying the outcome to the check is what lets the failure name that
- * instead of reading as a mapping regression.
- */
 typedef struct {
     uint64_t written_bytes;
     uint64_t read_bytes;
@@ -657,34 +451,6 @@ typedef struct {
     int parked;
 } HMOwnPreparations;
 
-/*
- * Every number the bridge copies out of `proc_pid_rusage` and `PROC_PIDTASKINFO`,
- * against the same two calls made by the test around the listing.
- *
- * Nothing else in either harness reads this mapping. `own-sample-carries-metadata`
- * reads the four metadata fields, and `selftest` bounds the footprint, the
- * *sum* of the two CPU times and two counters against zero — so every "right
- * number in the wrong field" mutation survives all of them: user against system
- * time, disk bytes read against written, `resident_bytes` filled from
- * `ri_phys_footprint`, faults against copy-on-write faults, `thread_count` from
- * `pti_numrunning`, a `started_at` of zero, `pageins` from `ri_interrupt_wkups`.
- * All eight fields reach the report through `DarwinSystemCollector`.
- *
- * An untouched harness leaves four of the fields unable to say anything: it
- * neither reads nor writes a disk, it runs one thread, and it wires no memory, so
- * `disk_bytes_read` equals `disk_bytes_written` at zero, `thread_count` equals
- * `running_thread_count`, and `wired_bytes` sits at a zero the bracket cannot
- * tell from a hard-coded one. `hm_check_own_listing` therefore gives it 4 MiB of
- * flushed writes, 1 MiB read back past the cache, a parked thread and 16 MiB of
- * locked memory before taking the readings, and the check below asserts that each
- * of those took effect.
- *
- * The two time fields are converted with the bridge's own `hm_mach_time_to_ns`
- * and the four 32-bit counters widened with its own `hm_uint32_counter`, so this
- * check is about which field went where and not about that arithmetic; the
- * arithmetic is `pure.mach-time-matches-uptime-clock` and the `pure.uint32-*`
- * checks.
- */
 static void hm_check_own_fields(
     const HMProcessSample *own,
     const HMOwnAnchor *before,
@@ -842,26 +608,6 @@ static void hm_check_own_fields(
     uint64_t high = 0;
     const char *mismatch = HM_FIRST_OUTSIDE_RANGE(fields, &reported, &low, &high);
 
-    /*
-     * The four pairs a transposition would hide in are asserted to differ, so
-     * that a green result means the comparison could have separated them: the two
-     * CPU times, the two disk directions, the two thread counts and the two
-     * residency figures.
-     *
-     * Two fields need more than that, because a bracket whose low end is zero
-     * accepts a field that is always zero: `disk_bytes_read` unless the read back
-     * before the listing reached the device, and `wired_bytes` unless the lock
-     * before it holds more than the residency slack. Both preparations are
-     * asserted rather than assumed, and the detail quotes what each of them did —
-     * a machine that refuses `mlock`, or serves the read from cache, says so in
-     * those words instead of leaving two fields quietly unchecked or looking like
-     * a mapping regression.
-     *
-     * The sanitized build is the one machine known not to lock: AddressSanitizer
-     * intercepts `mlock` and makes it a no-op — measured, it returns 0 while
-     * `ri_wired_size` stays at 0 — so the demand is the ordinary pass's, which is
-     * where `wired_bytes` is pinned. The read back works under both.
-     */
     const int separated = last->ri_user_time != last->ri_system_time &&
         last->ri_diskio_bytesread != last->ri_diskio_byteswritten &&
         last_task->pti_threadnum != last_task->pti_numrunning &&
@@ -910,39 +656,9 @@ static void hm_check_own_fields(
     );
 }
 
-/*
- * How many issues of the rusage branch have to be comparable against a fresh
- * `proc_pidpath`, and how many of them may disagree. The population is the
- * processes of other users — 275 of them here, of which 274 had a readable path —
- * and it is the branch `DarwinSystemCollector` actually takes: its sample array is
- * `MIN_PROCESS_CAPACITY` wide plus headroom, so the capacity branch never fires
- * and every issue it reports comes from here.
- *
- * The minimum is lower than the one `processes.issue-metadata-matches-a-fresh-read`
- * asks for because the population is smaller: an account that owns most of the
- * machine leaves few processes it cannot read the rusage of. It is also the one
- * requirement of this suite that cannot be made rather than asked for — a test
- * cannot start a process of another user — so both checks over this branch print
- * what they counted and say whose property it is. Every macOS carries a hundred
- * of root's, so the floor is far below what any machine offers.
- */
 #define HM_RUSAGE_ISSUE_MINIMUM 16
 #define HM_RUSAGE_ISSUE_MISMATCH_DIVISOR 16
 
-/*
- * The executable path of an issue the rusage branch produced, against a fresh
- * read of it — `hm_fresh_exec_path`, so the fallback the bridge applies is part
- * of what is compared rather than a source of disagreement.
- *
- * The sibling check on the narrow listing cannot see this branch at all: it needs
- * `PROC_PIDTBSDINFO` to build its anchor, and that call is refused for exactly
- * the processes the rusage branch reports — 0 of 275 were readable here. So
- * deleting `hm_read_process_metadata` from the rusage branch of
- * `hm_list_processes` used to leave both harnesses green while emptying the only
- * field of an issue that survives the refusal: proc_name is refused as well, and
- * the uid stays UINT32_MAX by design, but `proc_pidpath` answers for another
- * user's process and the report shows what it says.
- */
 static void hm_check_rusage_issue_paths(const HMProcessIssue *issues, int written_issues) {
     int compared = 0;
     int mismatched = 0;
@@ -986,29 +702,6 @@ static void hm_check_rusage_issue_paths(const HMProcessIssue *issues, int writte
     );
 }
 
-/*
- * The uid of an issue the rusage branch produced, against a fresh
- * `PROC_PIDTBSDINFO`, in both directions: a process whose metadata the caller
- * cannot read has to be reported as unknown, and one whose metadata it can read
- * has to be reported with that uid.
- *
- * `UINT32_MAX` is the only way the bridge has of saying "unknown" —
- * `DarwinSystemCollector.toNullableUid()` maps exactly that value to null, and
- * the report prints "unknown" for it. Nothing else in either harness reads the
- * uid of a rusage issue: the metadata check next door needs `PROC_PIDTBSDINFO` to
- * build its anchor and skips every issue of this branch for that very reason, and
- * the path check compares only the path. So `*uid = 0` in
- * `hm_read_process_metadata` used to leave every other check green while turning
- * every process the collector could not read into root's — 276 of 276 issues on
- * this machine.
- *
- * A refusal is told from a process that has since exited by `kill(pid, 0)`,
- * whose ESRCH is the one thing that says "gone" rather than "not yours". The
- * mismatch allowance is the sibling check's, and for the same reason: a pid
- * reused between the listing and this loop would otherwise be a failure about the
- * machine. The sentinel mutation moves every issue at once and clears it by two
- * orders of magnitude.
- */
 #define HM_ISSUE_UID_MINIMUM 16
 #define HM_ISSUE_UID_MISMATCH_DIVISOR 16
 
@@ -1074,28 +767,6 @@ static void hm_check_rusage_issue_uids(const HMProcessIssue *issues, int written
     );
 }
 
-/*
- * Moves both disk figures of this process off zero before the readings are taken,
- * which is what lets the bracket separate `disk_bytes_read` from
- * `disk_bytes_written` — and each of them from a hard-coded zero. A harness that
- * has touched no disk reports both as 0, and a bracket that starts at 0 accepts a
- * field that is always 0.
- *
- * `F_FULLFSYNC` rather than `fsync`, because only that reaches the device.
- * `F_NOCACHE` on the same descriptor before the write is what makes the read
- * back count: without it the pages are still in the unified buffer cache and the
- * read is served from memory — measured, `ri_diskio_bytesread` stayed at 0 with
- * the flush alone. Measured with it, five runs out of five: 4194304 bytes written
- * and exactly 1048576 read, and the two stay different numbers as the
- * transposition guard needs them to be. Reading a file this process did not just
- * write is not an alternative — `/usr/lib/dyld` gave 413696 bytes on one run and
- * 0 on the next, depending on what the cache already held.
- *
- * What each step managed is carried back rather than dropped: on a machine whose
- * filesystem answers the read from somewhere other than the device, the
- * difference between "the bridge stopped filling `disk_bytes_read`" and "this run
- * never read a byte off a disk" is exactly this outcome.
- */
 #define HM_OWN_DISK_BYTES (4 * 1024 * 1024)
 #define HM_OWN_DISK_READ_BYTES (1024 * 1024)
 
@@ -1135,20 +806,6 @@ static void hm_write_to_disk(HMOwnPreparations *prepared) {
     close(descriptor);
 }
 
-/*
- * Wires memory so that `ri_wired_size` is a number this process chose rather than
- * the 0 every ordinary process reports. Without it the bracket around
- * `wired_bytes` runs from 0 to the 4 MiB of residency slack, and everything below
- * 4 MiB passes — a hard-coded zero, and `ri_resident_size / 4` with it. Wiring
- * 16 MiB puts the low end of the bracket at 12 MiB, which both of those fail.
- *
- * Measured here: `mlock` of 16 MiB succeeds for an ordinary user and moves
- * `ri_wired_size` from 0 to exactly 16777216. Neither limit that could refuse it
- * is anywhere near: RLIMIT_MEMLOCK is unlimited by default on macOS, and
- * `vm.user_wire_limit` is a fraction of the memory installed (30 GB here). A
- * machine that refuses the lock all the same leaves the field where it was, and
- * the check quotes the errno rather than skipping.
- */
 #define HM_OWN_WIRED_BYTES (16 * 1024 * 1024)
 
 typedef struct {
@@ -1194,13 +851,6 @@ static void hm_release_wired_memory(HMWiredMemory *wired) {
     wired->locked = 0;
 }
 
-/*
- * Parks a second thread for as long as the listing takes, so that
- * `pti_threadnum` (2) and `pti_numrunning` (1) are different numbers while the
- * bridge reads them. It blocks on a pipe rather than sleeping: a sleeper is
- * counted the same way, but a spinner would be running and the two counters would
- * agree again.
- */
 typedef struct {
     int wake[2];
     int parked;
@@ -1214,13 +864,6 @@ static void *hm_park_thread(void *argument) {
     return NULL;
 }
 
-/*
- * Waits until the kernel stops counting the second thread as running, so that
- * `pti_threadnum` and `pti_numrunning` are two different numbers in both
- * readings. A thread just created reads as running for a moment — measured, in
- * the first of ten rounds and none of the others — and over a range that starts
- * at 2 a `running_thread_count` filled from `pti_threadnum` would pass.
- */
 #define HM_PARK_ATTEMPTS 100
 
 static void hm_wait_for_the_park(void) {
@@ -1238,13 +881,6 @@ static void hm_wait_for_the_park(void) {
     }
 }
 
-/*
- * The full-width listing, and the four checks that read it.
- *
- * Full width so that this process is in it: the slots the narrow listing uses are
- * filled long before a pid this recent. The width is also what makes the issue
- * array the rusage branch's, which is the branch the collector takes.
- */
 static void hm_check_own_listing(void) {
     const int capacity = hm_count_processes() + HM_PROCESS_LIST_HEADROOM;
     const int issue_capacity = HM_LISTING_ISSUE_CAPACITY;
@@ -1355,19 +991,6 @@ static int hm_listing_rejects(
     return result == -1 && errno == EINVAL;
 }
 
-/*
- * The PID list `hm_list_processes` allocates for itself, and the `free` at the
- * end of it. Nothing in the return value says whether that call is there, and the
- * caller is a root daemon that samples for as long as the machine is up: deleting
- * it leaks the list on every sample, about 4 KB each here, for as long as harmon
- * runs. AddressSanitizer does not cover it either — LeakSanitizer refuses to start
- * on macOS — so it is measured the way the framing suite measures its own leak,
- * by asking the allocator what it holds.
- *
- * Measured over 16 listings of this machine's 917 processes: 0 bytes of growth
- * with the `free` in place, 81920 without it, three runs each. The tolerance is a
- * fifth of that, and the round count is what keeps the check at 11 ms.
- */
 #define HM_LEAK_LISTING_ROUNDS 16
 #define HM_LEAK_LISTING_TOLERANCE_BYTES (16 * 1024)
 #define HM_LEAK_LISTING_CAPACITY 64
@@ -1407,7 +1030,6 @@ static void hm_check_listing_frees_its_pid_list(void) {
     }
 
     int written_issues = 0;
-    /* One listing first, so that first-touch allocations stay out of the window. */
     int written = hm_take_narrow_listing(samples, issues, &written_issues);
     const size_t before = hm_test_heap_bytes_in_use();
     for (int round = 0; round < HM_LEAK_LISTING_ROUNDS; ++round) {
@@ -1432,19 +1054,9 @@ static void hm_check_listing_frees_its_pid_list(void) {
     free(issues);
 }
 
-/*
- * Where the two exec-path checks build the binaries they delete, and how long
- * they will wait for a child to finish exec'ing one. The wait is bounded in
- * milliseconds against a fork+exec of this binary — 132 KiB, or 564 KiB
- * sanitized — which needs one or two of them; the bound is what keeps a machine
- * that cannot exec the copy at all from sitting in this loop until the harness
- * alarm, and a child that never execs is reported as `ready=0` rather than as a
- * bridge that lost the path.
- */
 #define HM_EXEC_PATH_DIRECTORY "/tmp/harmon-exec-path-XXXXXX"
 #define HM_EXEC_ATTEMPTS 1000
 
-/* A child of this harness running a copy of this binary that the test then deletes. */
 typedef struct {
     pid_t pid;
     char path[HM_PROCESS_PATH_SIZE];
@@ -1484,20 +1096,6 @@ static int hm_copy_executable(const char *from, const char *to) {
     return copied;
 }
 
-/*
- * A child parked in a private copy of `binary`, started through an absolute path
- * or through `./name` from the copy's own directory.
- *
- * The copy is of this harness rather than of something small and idle like
- * `/bin/cat` because a copy of a system binary does not run at all on Apple
- * silicon: the original is trusted through the kernel's trust cache rather than
- * through anything inside the file, and the copy is killed on exec before it
- * reaches a line of its own. This binary is signed ad-hoc by the compiler that
- * built it moments earlier, so a copy of it is as runnable as the original —
- * measured both ways here — and `--park` is the argument that makes it hold
- * still. Copying is the point: the checks delete the file out from under a
- * process that is still running it.
- */
 static HMDeletedBinary hm_start_deleted_binary(
     const char *binary,
     const char *directory,
@@ -1532,14 +1130,6 @@ static HMDeletedBinary hm_start_deleted_binary(
     return child;
 }
 
-/*
- * Whether the child has finished exec'ing its copy, which the unlink has to wait
- * for: a binary deleted before the exec reaches it fails the exec instead of the
- * path lookup, and the check would then be measuring a child that never ran.
- * `proc_pidpath` answering with the copy's path is the exec having completed —
- * for the relative child too, because it resolves what the process is running
- * rather than what it was named.
- */
 static int hm_wait_for_exec(pid_t pid, const char *path) {
     for (int attempt = 0; attempt < HM_EXEC_ATTEMPTS; ++attempt) {
         char seen[HM_PROCESS_PATH_SIZE];
@@ -1563,35 +1153,11 @@ static void hm_release_deleted_binary(HMDeletedBinary *child) {
     unlink(child->path);
 }
 
-/*
- * The fallback `hm_read_process_metadata` reaches for once `proc_pidpath` has
- * refused, over the two processes the machine cannot be asked to provide.
- *
- * Both children are running a file that no longer exists, which is the state
- * every process is left in by an in-place upgrade of the prefix it was started
- * from — four codex sessions here, out of an nvm prefix a later install
- * replaced, and the whole reason the fallback exists. `proc_pidpath` fails with
- * ENOENT for them while `ps` still shows a path, so a bridge without the
- * fallback reports nothing and everything that groups by path loses them.
- *
- * The second child is the same state reached through `./cat-relative`, and it
- * asserts the opposite: the saved region holds a relative path, and the bridge
- * must refuse it rather than store it. Storing it would be worse than the empty
- * string it replaces — `./server` is not an identity, and every process on the
- * machine started that way would group as one. That is why the check reads the
- * region a second time itself: without that read, an empty result would prove
- * only that nothing was there.
- */
 static void hm_check_exec_path_fallback(void) {
     char own[HM_PROCESS_PATH_SIZE];
     memset(own, 0, sizeof(own));
     char template[] = HM_EXEC_PATH_DIRECTORY;
     char directory[HM_PROCESS_PATH_SIZE];
-    /*
-     * Resolved, because `/tmp` is a symlink to `/private/tmp` and `proc_pidpath` answers with the
-     * real path. Unresolved, the exec would still work and every comparison below would be against
-     * a path the kernel never reports.
-     */
     if (proc_pidpath(getpid(), own, (uint32_t)sizeof(own)) <= 0 ||
         mkdtemp(template) == NULL ||
         realpath(template, directory) == NULL) {
@@ -1682,10 +1248,6 @@ static void hm_check_exec_path_fallback(void) {
     rmdir(directory);
 }
 
-/*
- * Rejected arguments never reach the buffers, so the two samples stay
- * deliberately uninitialised: a call that touched them would be the bug.
- */
 static void hm_check_process_listing_invalid_arguments(void) {
     HMProcessSample sample;
     HMProcessIssue issue;

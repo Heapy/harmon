@@ -12,15 +12,6 @@ import kotlin.test.assertEquals
 import kotlin.test.assertNull
 import kotlin.time.Instant
 
-/**
- * Round-trips every column of `sample` through a real SQLite.
- *
- * The values come from a local builder rather than `TestFixtures` on purpose: the fixture has
- * `activeBytes == inactiveBytes`, `userCpuPercent == cpuPercent` and zero in almost every rate, so a
- * transposed pair of same-typed columns would round-trip through it looking correct. Here every one
- * of the fifty columns carries a value no other column carries, which is the only thing that turns
- * this into a real check.
- */
 class HistorySampleRowTest {
 
     @Test
@@ -86,10 +77,6 @@ class HistorySampleRowTest {
         assertEquals(63L, stored.compressed_attribution_failure_count)
     }
 
-    /**
-     * Booleans only have two values, so a single row cannot tell a correct mapping from one that
-     * writes a constant. Flipping all five and reading them back can.
-     */
     @Test
     fun everyBooleanFollowsItsSourceFieldRatherThanAConstant() {
         val marked = markedUsage()
@@ -112,7 +99,6 @@ class HistorySampleRowTest {
         assertEquals(1L, stored.storage_available)
     }
 
-    /** A machine with no battery must read back as "unknown", not as a flat and dead 0 percent. */
     @Test
     fun anAbsentBatteryStaysNullRatherThanZero() {
         val marked = markedUsage()
@@ -130,11 +116,6 @@ class HistorySampleRowTest {
         assertNull(stored.battery_minutes_remaining)
     }
 
-    /**
-     * Counters past the signed boundary are clamped rather than wrapped, so a byte count never
-     * comes back negative. `toSqlLong` owns the rule; this pins that the write path actually goes
-     * through it.
-     */
     @Test
     fun aCounterAboveTheSignedBoundaryIsClampedOnTheWayIn() {
         val marked = markedUsage()
@@ -152,10 +133,6 @@ class HistorySampleRowTest {
     }
 }
 
-/**
- * A `SystemUsage` in which no two columns of `sample` share a value. Deliberately not in
- * `TestFixtures`: its whole purpose is to be unrealistic.
- */
 private fun markedUsage(): SystemUsage = SystemUsage(
     capturedAt = Instant.parse("2026-07-29T00:05:07Z"),
     elapsedSeconds = 300.25,

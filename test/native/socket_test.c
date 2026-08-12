@@ -5,17 +5,6 @@
 
 #include "harness.h"
 
-/*
- * The Unix socket the collector listens on. Two properties of this suite are the
- * reason it exists at all: the server refuses to take over a path it does not
- * recognise as its own stale socket, and `hm_unix_accept` is the access gate —
- * the only thing between a collector running as root and any local process that
- * can reach the socket file. Both are testable without privileges, since a
- * foreign uid can be named without being owned.
- *
- * Every path lives in one `mkdtemp` directory removed at exit, so a failed check
- * cannot leave a socket behind for the next run to trip over.
- */
 
 static char hm_socket_test_directory[PATH_MAX] = "";
 
@@ -46,11 +35,6 @@ static void hm_remove_test_directory(void) {
     hm_socket_test_directory[0] = '\0';
 }
 
-/*
- * Under /tmp rather than TMPDIR: a per-user TMPDIR on macOS is long enough that
- * the socket path would come close to the 104 bytes `sun_path` holds, and the
- * suite would start failing for a reason that has nothing to do with the bridge.
- */
 static int hm_socket_test_path(char *buffer, size_t size, const char *name) {
     if (hm_socket_test_directory[0] == '\0') {
         snprintf(
@@ -68,12 +52,6 @@ static int hm_socket_test_path(char *buffer, size_t size, const char *name) {
     return 0;
 }
 
-/*
- * Every check below opens with the same three lines, and a missing temporary
- * directory has to be reported as the failure of the check that wanted it rather
- * than swallowed — the harness has no way of saying "skipped". Written out eight
- * times it was eight chances to report it under the wrong name.
- */
 #define HM_SOCKET_PATH_OR_FAIL(buffer, name, check)                              \
     do {                                                                         \
         if (hm_socket_test_path((buffer), sizeof(buffer), (name)) != 0) {        \
@@ -96,15 +74,6 @@ static int hm_server_open_rejects(const char *path, int expected_failure) {
     return descriptor == -1 && failure == expected_failure;
 }
 
-/*
- * A path the address cannot hold must be refused before the socket exists:
- * `snprintf` into `sun_path` would otherwise truncate it silently and bind a
- * different path than the caller asked for — one the agent would never find.
- *
- * Both ends of the socket answer for this, and each gets a check of its own
- * because each has its own copy of the guard; what they share is only the three
- * paths to try and the shape of the report, which is this function.
- */
 static void hm_check_bad_paths(
     const char *check,
     int (*rejects)(const char *path, int expected_failure)
@@ -137,12 +106,6 @@ static void hm_check_bad_paths(
     free(long_path);
 }
 
-/*
- * Anything at the path that is not a socket of this user is somebody else's
- * file, and the server unlinks before it binds. Taking over a regular file would
- * delete data the collector has no business touching; the same branch is what
- * stops it from displacing a socket owned by another uid.
- */
 static void hm_check_refuses_foreign_occupant(void) {
     char path[PATH_MAX];
     HM_SOCKET_PATH_OR_FAIL(path, "occupied.sock", "socket.refuses-foreign-occupant");
@@ -177,11 +140,6 @@ static void hm_check_refuses_foreign_occupant(void) {
     unlink(path);
 }
 
-/*
- * The collector's own socket file outlives a crash, so the common case of a
- * restart finds a stale socket of its own uid at the path. Refusing it would
- * make every unclean shutdown need a manual `rm`.
- */
 static void hm_check_replaces_stale_socket(void) {
     char path[PATH_MAX];
     HM_SOCKET_PATH_OR_FAIL(path, "stale.sock", "socket.replaces-stale-socket");
@@ -216,11 +174,6 @@ static void hm_check_replaces_stale_socket(void) {
     unlink(path);
 }
 
-/*
- * The agent runs as the login user and the collector as root, so the group bit
- * is what lets them talk at all; the world bit is what would let any local
- * process query the collector. 0660 is the difference.
- */
 static void hm_check_socket_mode(void) {
     char path[PATH_MAX];
     HM_SOCKET_PATH_OR_FAIL(path, "mode.sock", "socket.mode-is-0660");
@@ -253,11 +206,6 @@ typedef struct {
     int client;
 } HMSocketPairing;
 
-/*
- * A connected pair over a real listening socket. `connect` completes as soon as
- * the connection is queued, so `hm_unix_accept` never blocks here and the alarm
- * in `main.c` stays a backstop rather than the thing that ends the suite.
- */
 static int hm_open_pairing(const char *path, HMSocketPairing *pairing) {
     pairing->server = -1;
     pairing->client = -1;
@@ -286,13 +234,6 @@ static void hm_close_pairing(HMSocketPairing *pairing, const char *path) {
     unlink(path);
 }
 
-/*
- * The client side validates the path on its own, and has to: the agent takes the
- * socket path from configuration, so an unset key arrives here as an empty
- * string and a path longer than `sun_path` arrives silently truncated unless it
- * is refused. Mirrors the guard in `hm_unix_server_open`, hence a check of its
- * own — a copy that stops mirroring is the failure mode.
- */
 static int hm_connect_rejects(const char *path, int expected_failure) {
     errno = 0;
     const int descriptor = hm_unix_connect(path);
@@ -383,21 +324,8 @@ static void hm_check_accept_peer_credentials(void) {
     hm_close_pairing(&pairing, path);
 }
 
-/*
- * What `hm_set_socket_options` puts on every descriptor the bridge opens, read
- * back off the descriptor with the calls that set it. Nothing else in the suite
- * looks at any of it, and each of the three is a production failure of its own:
- * without SO_NOSIGPIPE the collector dies of SIGPIPE when an agent disappears
- * mid-answer, without the timeouts a peer that stops reading blocks it for good
- * instead of for thirty seconds, and without FD_CLOEXEC the listening socket is
- * inherited by everything the collector ever spawns.
- */
 #define HM_SOCKET_OPTION_TIMEOUT_SECONDS 30
 
-/*
- * Room for the longest line `hm_carries_options` writes, which is the timeout
- * mismatch with a `strerror` in it.
- */
 #define HM_SOCKET_DETAIL_BYTES 128
 
 static int hm_carries_options(int descriptor, char *detail, size_t size) {
@@ -510,15 +438,6 @@ static void hm_check_descriptor_options(void) {
     hm_close_pairing(&pairing, path);
 }
 
-/*
- * The access gate. A collector running as root answers whoever it accepts, so a
- * connection from a uid other than the configured one has to be dropped before a
- * single frame is read. The peer uid is reported even then, because the caller
- * logs who was turned away.
- *
- * The check needs a non-root euid to mean anything: root is allowed through
- * unconditionally, so it cannot play the part of the stranger.
- */
 static void hm_check_accept_rejects_foreign_uid(void) {
     char path[PATH_MAX];
     HM_SOCKET_PATH_OR_FAIL(path, "foreign.sock", "socket.accept-rejects-foreign-uid");
@@ -579,11 +498,6 @@ static int hm_remove_socket_rejects(const char *path, int expected_failure) {
     return status == -1 && failure == expected_failure;
 }
 
-/*
- * Shutdown runs this on paths that may never have existed — a collector that
- * failed to bind still tries to clean up — so every bad input has to come back
- * as an error rather than as a signal.
- */
 static void hm_check_remove_bad_input(void) {
     char missing[PATH_MAX];
     HM_SOCKET_PATH_OR_FAIL(missing, "never-created.sock", "socket.remove-handles-bad-input");
@@ -615,6 +529,4 @@ void hm_run_socket_tests(void) {
     hm_check_descriptor_options();
     hm_check_accept_rejects_foreign_uid();
     hm_check_remove_bad_input();
-    /* The directory is removed by the `atexit` handler `hm_socket_test_path`
-     * registers, which covers an early return out of any check as well. */
 }

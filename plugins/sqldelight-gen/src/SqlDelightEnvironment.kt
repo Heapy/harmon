@@ -35,7 +35,7 @@ package app.cash.sqldelight.core
 //   * `forMigrationFiles` has no caller and the migration branches below are unreachable, because
 //     Generate.kt hard-wires deriveSchemaFromMigrations = false and verifyMigrations = false. They
 //     stay because trimming them is what turns the next re-sync into a merge. `.sqm` files
-//     therefore do nothing in this repository; see CLAUDE.md.
+//     therefore do nothing in this repository; see docs/history.md.
 // ---------------------------------------------------------------------------------------------
 
 import app.cash.sqldelight.core.compiler.SqlDelightCompiler

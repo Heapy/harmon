@@ -110,11 +110,6 @@ class UsageCalculatorTest {
         assertEquals(0.0, storage.writeBytesPerSecond)
     }
 
-    /**
-     * A stalled clock is a collection problem, not a programming error: the agent loop logs
-     * [CollectionException] and keeps sampling, while an [IllegalArgumentException] from `require`
-     * reads as a bug and carries no numbers to diagnose it with.
-     */
     @Test
     fun rejectsSnapshotsThatDidNotAdvanceTheMonotonicClock() {
         val previous = rawSnapshot(monotonicNs = 1_000_000_000u, processes = emptyList())
@@ -139,10 +134,6 @@ class UsageCalculatorTest {
         }
     }
 
-    /**
-     * One process drawing power is the whole signal: the counter is a per-kernel capability, so a
-     * single positive reading says it works for every process in the sample.
-     */
     @Test
     fun reportsTheEnergyCounterAsAccountedWhenAnyProcessDrawsPower() {
         fun snapshot(monotonicNs: ULong, energyNanojoules: ULong) = rawSnapshot(
@@ -167,10 +158,6 @@ class UsageCalculatorTest {
         assertEquals(0.0, usage.processes.single { it.name == "idle" }.energyWatts)
     }
 
-    /**
-     * The fallback to `RUSAGE_INFO_V4` leaves `ri_energy_nj` zero-initialized, so a whole sample
-     * reading zero is what a dead counter looks like.
-     */
     @Test
     fun reportsTheEnergyCounterAsUnaccountedWhenEveryProcessReadsZero() {
         val processes = listOf(
@@ -191,10 +178,6 @@ class UsageCalculatorTest {
         assertFalse(UsageCalculator().calculate(previous, current).energyAccounted)
     }
 
-    /**
-     * The configured terminal list has to reach the grouper that actually builds the applications,
-     * not stop at the constructor.
-     */
     @Test
     fun handsTheConfiguredTerminalListToTheApplicationGrouper() {
         val processes = listOf(
@@ -227,10 +210,6 @@ class UsageCalculatorTest {
         assertEquals(listOf(600), withDefaults.single { it.name == "Terminal" }.processIds)
     }
 
-    /**
-     * The transition is the whole signal. A snapshot cannot tell an orphan from a daemon,
-     * so the calculator has to report the parent the process had a sample ago.
-     */
     @Test
     fun reportsThePreviousParentWhenItChanged() {
         val previous = rawSnapshot(
@@ -253,11 +232,6 @@ class UsageCalculatorTest {
         assertEquals(1, process.parentPid)
     }
 
-    /**
-     * A deliberate double fork lands entirely between two samples, so harmon meets the
-     * process already detached. No previous sample means no transition, which is what keeps
-     * `tmux -L` and `ssh -f` from reporting themselves.
-     */
     @Test
     fun reportsNothingForAProcessMissingFromThePreviousSnapshot() {
         val previous = rawSnapshot(monotonicNs = 1_000_000_000u, processes = emptyList())
@@ -273,10 +247,6 @@ class UsageCalculatorTest {
         assertNull(process.reparentedFrom)
     }
 
-    /**
-     * The identity key is (pid, startedAt), so a recycled pid does not resolve to the
-     * process that used to wear it and cannot be mistaken for a transition.
-     */
     @Test
     fun reportsNothingWhenThePidWasReusedByAnotherProcess() {
         val previous = rawSnapshot(
@@ -297,10 +267,6 @@ class UsageCalculatorTest {
         assertNull(process.reparentedFrom)
     }
 
-    /**
-     * The name is what turns the alert into a lead, but it is best effort: a parent already
-     * gone in the previous snapshot leaves the pid alone to identify it.
-     */
     @Test
     fun leavesTheParentNameNullWhenThePreviousSnapshotDidNotCarryIt() {
         val previous = rawSnapshot(
@@ -321,10 +287,6 @@ class UsageCalculatorTest {
         assertEquals(ReparentedFrom(pid = 44268, name = null), process.reparentedFrom)
     }
 
-    /**
-     * The field means "changed its parent", not "was orphaned". Filtering on the new parent
-     * being pid 1 belongs to the alert rule and to the history store, not here.
-     */
     @Test
     fun reportsATransitionToAParentOtherThanPidOne() {
         val previous = rawSnapshot(
@@ -360,13 +322,6 @@ class UsageCalculatorTest {
         assertNull(process.reparentedFrom)
     }
 
-    /**
-     * Parent pid 0 is the collector's "could not read the metadata" sentinel, not a pid: the
-     * bridge pre-sets the field to 0 and leaves it there when `proc_pidinfo` returns a short
-     * struct, while the sample itself is still emitted. A read that failed in one sample and
-     * succeeded in the next must not surface as a process handed to launchd — that alert would
-     * name a parent that never existed, and the stamp it writes to history is permanent.
-     */
     @Test
     fun reportsNothingWhenEitherSampleCouldNotReadTheParent() {
         val recovered = transition(previousParentPid = 0, currentParentPid = 1)
@@ -376,12 +331,6 @@ class UsageCalculatorTest {
         assertNull(lost.reparentedFrom, "n -> 0 is a metadata read that failed")
     }
 
-    /**
-     * The parent is the process most likely to be one the collector could not measure — a
-     * supervisor whose `proc_pid_rusage` was refused arrives as an issue rather than as a sample —
-     * and that is exactly the case where naming it matters. A full sample still wins over an issue
-     * for the same pid.
-     */
     @Test
     fun namesAParentThePreviousSnapshotCouldOnlyRecordAsAnIssue() {
         val previous = rawSnapshot(
@@ -403,11 +352,6 @@ class UsageCalculatorTest {
         assertEquals(ReparentedFrom(pid = 44268, name = "supervisord"), process.reparentedFrom)
     }
 
-    /**
-     * `previousNameByPid` is built once and shared across the loop, which is the shape that would
-     * let one process's answer be applied to every other. Two processes losing two different
-     * parents in one sample are what says it is not.
-     */
     @Test
     fun resolvesEachProcessAgainstItsOwnParent() {
         val previous = rawSnapshot(
@@ -439,10 +383,6 @@ class UsageCalculatorTest {
     }
 }
 
-/**
- * The one process of a two-sample pair, seen under [previousParentPid] and then under
- * [currentParentPid].
- */
 private fun transition(previousParentPid: Int, currentParentPid: Int): ProcessUsage {
     fun snapshot(monotonicNs: ULong, parentPid: Int) = rawSnapshot(
         monotonicNs = monotonicNs,

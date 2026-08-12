@@ -13,12 +13,7 @@ import platform.posix.fgets
 import platform.posix.fopen
 import platform.posix.getenv
 
-/**
- * Applications whose bundle stops being inherited by descendants that live outside it.
- *
- * A terminal launches unrelated commands, so charging them to the terminal would hide whatever
- * they actually are. The list is user-specific — hence a config key rather than a constant.
- */
+/** Bundles that stop unrelated descendant commands from being charged to their terminal. */
 val DEFAULT_TERMINAL_APPLICATIONS: Set<String> = setOf(
     "terminal",
     "iterm2",
@@ -33,13 +28,7 @@ val DEFAULT_TERMINAL_APPLICATIONS: Set<String> = setOf(
     "agterm",
 )
 
-/**
- * How long a single sample window may last, in seconds.
- *
- * The one source of truth for `onceSampleSeconds`, the `--sample-seconds` option and
- * [dev.yoda.harmon.runtime.HarmonService.sampleOnce] — the three places that used to enforce
- * their own, drifting bounds.
- */
+/** Shared bound for configuration, CLI parsing, and one-shot sampling. */
 val SAMPLE_SECONDS_RANGE: LongRange = 1L..300L
 
 data class AlertThresholds(
@@ -49,22 +38,7 @@ data class AlertThresholds(
     val swapUsedMiB: Long? = 1_024,
     val swapOutMiBPerSecond: Double? = 25.0,
     val applicationBatteryImpactScore: Double? = 100.0,
-    /**
-     * Watts an application may draw on battery before it is alerted on.
-     *
-     * Power, not energy, so the key is spelled `applicationPowerAlertWatts` rather than
-     * `...Energy...`. The default is read off six days of one machine's history: p99 is 0.276 W and
-     * p99.9 is 1.108 W per application per sample, so 1.5 W fires for the handful of applications
-     * that genuinely cost something. One watt sustained across a working day is roughly 8 Wh, about
-     * 15% of a typical MacBook battery. Those percentiles cover every sample in that window, on AC
-     * and on battery alike, while the rule fires only on battery; the battery-only distribution was
-     * not measured separately, so the default is a bound on all samples rather than on the ones it
-     * will actually be compared against.
-     *
-     * It governs its own regime and nothing else: this threshold applies where the kernel's energy
-     * counter is live, [applicationBatteryImpactScore] where it is not, and a zero on either one
-     * silences that regime rather than falling back to the other.
-     */
+    /** Used only when the kernel energy counter is available; no fallback occurs when disabled. */
     val applicationPowerWatts: Double? = 1.5,
     val batteryLowPercent: Int? = 20,
 )
@@ -85,26 +59,8 @@ data class HarmonConfig(
     val onceSampleSeconds: Long = 2,
     val topProcessCount: Int = 8,
     val maxAlertsPerCategory: Int = 3,
-    /**
-     * Whether a process losing its parent raises an alert.
-     *
-     * Every other rule is switched off by setting its threshold to zero, and this one has no
-     * threshold to zero: orphanhood is an event, not a quantity, so there is no number a user
-     * could lower until the rule stops matching. A boolean is the honest spelling of the same
-     * promise — the rule stays on unless it is turned off explicitly.
-     *
-     * It lives here rather than in [AlertThresholds] because that type is a set of nullable
-     * numbers a value is compared against, which this is not. [maxAlertsPerCategory] is the
-     * precedent: alert-shaping, but not a threshold, so it sits at the top level too.
-     */
     val orphanAlerts: Boolean = true,
-    /**
-     * Days of samples kept in the history database, or null for no history at all.
-     *
-     * Null rather than zero because the two answers are different actions and not two values of
-     * one: a retention of zero days would be a database opened and emptied on every pass, while
-     * what the key means at zero is that the file is never created.
-     */
+    /** Null disables the database; a non-null value opens it and applies retention. */
     val historyRetentionDays: Long? = 7,
     val terminalApplications: Set<String> = DEFAULT_TERMINAL_APPLICATIONS,
     val thresholds: AlertThresholds = AlertThresholds(),
@@ -162,7 +118,7 @@ class ConfigException(message: String) : IllegalArgumentException(message)
 object ConfigLoader {
     private const val LINE_BUFFER_SIZE = 8_192
 
-    /** 1 TiB. Byte thresholds stay well inside `ULong` and no real machine reaches it. */
+    /** 1 TiB keeps byte conversion inside realistic and unsigned bounds. */
     private const val MAX_THRESHOLD_MIB = 1_048_576L
 
     private val legacyKeyAliases = mapOf(
@@ -171,21 +127,10 @@ object ConfigLoader {
         "batteryImpactAlertScore" to "applicationBatteryImpactAlertScore",
     )
 
-    /**
-     * The one retired key. It no longer does anything, but it must not fail an existing config
-     * file on agent start, so it is reported once and dropped.
-     */
+    /** Accepted and ignored so legacy configuration does not prevent agent startup. */
     private const val DEPRECATED_COOLDOWN_KEY = "alertCooldownSeconds"
 
-    /**
-     * Every key a config file may name that is still the way to name it.
-     *
-     * Public because it is the only enumeration of them: `ExampleConfigTest` reads it to assert
-     * that the shipped `config/harmon.conf.example` carries the lot, which is a check nothing else
-     * performs — a key added here and forgotten there ships a documented setting no example names.
-     * [legacyKeyAliases] is deliberately outside it: those spellings are accepted so an existing
-     * file keeps working, and the example must not teach them to a new one.
-     */
+    /** Public so ExampleConfigTest can keep the shipped example exhaustive. */
     val configurableKeys = setOf(
         "intervalSeconds",
         "collectorSocket",
@@ -408,13 +353,7 @@ object ConfigLoader {
         if (config.maxAlertsPerCategory !in 1..20) {
             throw ConfigException("maxAlertsPerCategory must be between 1 and 20")
         }
-        /*
-         * A retention nobody bounded is a database nobody bounded. `historyRetentionDays=7000`, the
-         * typo for 7 that costs nothing to make, parses cleanly and yields a cutoff no stored
-         * sample is ever older than, so the pass deletes nothing and the file grows for as long as
-         * the agent runs, with nothing anywhere reporting it. Ten years is past any use for the
-         * data and well short of that.
-         */
+        // Bound typos that would silently turn pruning into unbounded retention.
         config.historyRetentionDays?.let { days ->
             if (days !in 1..3_650) {
                 throw ConfigException("historyRetentionDays must be between 0 and 3650")
@@ -453,14 +392,8 @@ object ConfigLoader {
     }
 
     /**
-     * Whether [url] may carry the webhook payload and its bearer token.
-     *
-     * HTTPS goes anywhere; plaintext HTTP only to loopback. The host is taken from after the last
-     * `@` in the authority, because everything before it is userinfo, not a host:
-     * `http://127.0.0.1:80@evil.example/hook` is a request to `evil.example` — libcurl parses it
-     * as `host=evil.example user=127.0.0.1` — and reading the host as `127.0.0.1` would send the
-     * token to an arbitrary server in cleartext. libcurl rejects an authority with a second `@`
-     * outright, so the last one is the delimiter it uses.
+     * Bearer tokens may use plaintext only on 127.0.0.1. Host parsing starts after the last `@` so
+     * userinfo such as `127.0.0.1@evil.example` cannot masquerade as loopback.
      */
     private fun isAllowedWebhookUrl(url: String): Boolean {
         if (url.any { it.isWhitespace() || it.code < 0x20 }) {
@@ -554,10 +487,7 @@ private fun Map<String, String>.boolean(key: String, default: Boolean): Boolean 
         else -> throw ConfigException("$key must be true or false, got '$raw'")
     }
 
-/**
- * A comma-separated list, folded to lower case for case-insensitive matching. The key replaces the
- * default list outright, so an empty value is a deliberate "no entries" rather than "use defaults".
- */
+/** An explicitly empty comma-separated value replaces the default with an empty set. */
 private fun Map<String, String>.lowercaseNameSet(
     key: String,
     default: Set<String>,

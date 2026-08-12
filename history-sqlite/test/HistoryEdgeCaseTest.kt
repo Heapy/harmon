@@ -9,29 +9,8 @@ import kotlin.test.assertNull
 import kotlin.test.assertTrue
 import kotlin.time.Instant
 
-/**
- * The states a real machine reaches in which one of the lists a sample is made of, or one of the
- * subsystems it describes, is simply not there.
- *
- * None of these is hypothetical: a desktop Mac has no battery, an unreadable drive yields no storage
- * counters, a quiet hour produces no alerts, and a sample in which every readable process lives
- * outside an `.app` bundle leaves both application tables empty. Each of them empties a list the
- * write path iterates or a subquery the retention pass compares against — and `NOT IN` over an
- * empty subquery is true for every row, where `NOT IN` over an occupied one is true for almost
- * none.
- *
- * All of it goes through the configured store rather than `inMemoryDriver`: the questions here are
- * about foreign keys and about what a cascade leaves behind, and an in-memory driver has foreign
- * keys off.
- */
 class HistoryEdgeCaseTest {
 
-    /**
-     * The collector can come back with nothing readable — every process refused, or none matched.
-     * The sample is still a reading and still belongs in the series: it says the machine looked
-     * empty at this moment, and dropping it would leave a gap no reader could tell from an agent
-     * that was down.
-     */
     @Test
     fun aSampleWithNoProcessesIsStillWritten() = withScratchHome { home ->
         withHistoryStore(home) { store ->
@@ -44,12 +23,6 @@ class HistoryEdgeCaseTest {
         }
     }
 
-    /**
-     * A desktop Mac reports no battery and an unreadable drive reports no counters, and both have to
-     * survive the write as absences. The battery columns are nullable precisely so that "there is no
-     * battery" cannot read back as "the battery is flat"; `storage_available` says the same about the
-     * rates beside it, which are 0 because nothing was measured rather than because nothing happened.
-     */
     @Test
     fun anAbsentBatteryAndAnUnreadableDriveSurviveTheWholeWritePath() = withScratchHome { home ->
         withHistoryStore(home) { store ->
@@ -63,12 +36,6 @@ class HistoryEdgeCaseTest {
         }
     }
 
-    /**
-     * The ordinary sample: nothing over a threshold, nothing delivered. Every alert table stays empty
-     * for it, and `alert_state` is emptied rather than left holding what the sample before it was
-     * alerting on — a key that stopped firing has to leave, or its return is taken for a repeat and
-     * never pushed.
-     */
     @Test
     fun aQuietSampleClearsTheAlertStateItInherited() = withScratchHome { home ->
         withHistoryStore(home) { store ->
@@ -93,13 +60,6 @@ class HistoryEdgeCaseTest {
         }
     }
 
-    /**
-     * `ApplicationGrouper` wraps every process outside an `.app` in a singleton group of its own, and
-     * those groups are deliberately not stored. On a sample where no process is inside a bundle that
-     * leaves both application tables empty and every `process_sample.application_id` null — the one
-     * arrangement in which that null has to mean "outside a bundle" rather than "the writer stopped
-     * halfway".
-     */
     @Test
     fun aMachineWithNoBundledProcessLeavesTheApplicationTablesEmpty() = withScratchHome { home ->
         withHistoryStore(home) { store ->
@@ -117,17 +77,6 @@ class HistoryEdgeCaseTest {
         }
     }
 
-    /**
-     * The retention pass over samples that never filled the tables it cleans. Both orphan deletes are
-     * `NOT IN (SELECT …)`, and over an empty subquery that predicate holds for every row instead of
-     * for none — so a database that only ever held such samples is exactly where a lookup would be
-     * swept while a sample still names it, or kept forever while none does.
-     *
-     * The application row is planted by hand rather than recorded, and that is the only way this
-     * half of the pass means anything: neither sample writes one, so `countRows("application") == 0`
-     * after the pass would hold just as well before it. Planted, it is a lookup row that `NOT IN`
-     * over an empty `application_sample` has to collect, and the guard below proves it was there.
-     */
     @Test
     fun theRetentionPassSurvivesSamplesThatFilledNothing() = withScratchHome { home ->
         withHistoryStore(home) { store ->
@@ -148,11 +97,6 @@ class HistoryEdgeCaseTest {
         }
     }
 
-    /**
-     * The other half of the pass above: this sample is inside the window, so its lookup rows are in
-     * use and have to stay — even though `application_sample`, the table that decides which
-     * applications are still referenced, holds nothing at all.
-     */
     @Test
     fun anUnbundledSampleInsideTheWindowKeepsItsLookupRows() = withScratchHome { home ->
         withHistoryStore(home) { store ->
@@ -167,19 +111,16 @@ class HistoryEdgeCaseTest {
     }
 }
 
-/** An `application` row no sample of this database ever referenced, for the pass to collect. */
 private const val ORPHANED_APPLICATION =
     "INSERT INTO application(key, name, bundle_path) " +
         "VALUES ('bundle:orphan', 'Orphan', '/Applications/Orphan.app')"
 
-/** A sample in which the collector could read no process at all. */
 private fun emptyMachineReport(): MonitoringReport = MonitoringReport(
     usage = systemUsage(processes = emptyList()),
     alerts = emptyList(),
     topProcessCount = 3,
 )
 
-/** A machine with no battery and no readable storage counters. */
 private fun unequippedMachine(): SystemUsage {
     val usage = systemUsage(processes = listOf(processUsage(pid = 11, name = "solo")))
     return usage.copy(
@@ -194,7 +135,6 @@ private fun unequippedMachine(): SystemUsage {
     )
 }
 
-/** A sample where every process runs outside an `.app`, so every group is a singleton. */
 private fun unbundledReport(): MonitoringReport = MonitoringReport(
     usage = systemUsage(
         processes = listOf(

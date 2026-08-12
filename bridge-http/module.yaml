@@ -1,5 +1,3 @@
-# libcurl bridge used only by the user-facing harmon application.
-
 product:
   type: kmp/lib
   platforms: [macosArm64]

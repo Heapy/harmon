@@ -8,19 +8,8 @@ import kotlin.test.assertEquals
 import kotlin.test.assertNotNull
 import kotlin.test.assertNull
 
-/**
- * Round-trips `alert` and `alert_delivery` through a real SQLite.
- *
- * Unlike the wide numeric tables, these columns need no marked builder: `TestFixtures.alert` already
- * derives the title and the message from the key, so a transposed pair shows up as a swapped string
- * rather than as an identical one.
- */
 class HistoryAlertRowTest {
 
-    /**
-     * Severity is stored as the enum name, so the check that matters is the one that goes back
-     * through `valueOf` — and for every constant, not just the one the fixture defaults to.
-     */
     @Test
     fun aReportedAlertRoundTripsWithItsSeverity() = withInMemoryDatabase { database ->
         val alerts = database.alertsQueries
@@ -47,11 +36,6 @@ class HistoryAlertRowTest {
         assertEquals("message of cpu:WARNING", warning.message)
     }
 
-    /**
-     * A suppressed key is the one thing the report keeps about an alert the per-category cap pushed
-     * out, and it is never pushed again — so the row has to be both stored and still tellable apart
-     * from an alert that really was reported.
-     */
     @Test
     fun aSuppressedKeyIsStoredWithoutTextAndApartFromAReportedAlert() =
         withInMemoryDatabase { database ->
@@ -74,10 +58,6 @@ class HistoryAlertRowTest {
             assertEquals(Severity.WARNING.name, stored.getValue("cpu:alpha").severity)
         }
 
-    /**
-     * A failed channel leaves no trace anywhere else: the report names who was pushed, never who
-     * received it, and the retry backoff keeps a count but no reason. `detail` is that reason.
-     */
     @Test
     fun everyChannelsDeliveryIsStoredIncludingTheFailedOne() = withInMemoryDatabase { database ->
         val alerts = database.alertsQueries

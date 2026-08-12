@@ -44,10 +44,6 @@ class HistoryAlertStateSnapshotTest {
         }
     }
 
-    /**
-     * The store judges the age itself, because the interval it is judged in is already its own.
-     * The counter and keys mean nothing apart, so the whole stale snapshot is discarded.
-     */
     @Test
     fun aSnapshotOlderThanTheTtlIsNotHandedBack() = withScratchHome { home ->
         withHistoryStore(home, intervalSeconds = SNAPSHOT_INTERVAL_SECONDS) { store ->

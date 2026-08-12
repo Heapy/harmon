@@ -5,18 +5,14 @@ product:
 apply: [../harmon.module-template.yaml]
 
 plugins:
-  # Generates the database API owned by this module from sqldelight/*.sq.
   sqldelight-gen: enabled
 
 dependencies:
   - ../core
-  # Unlike the project's own bridge cinterops, this third-party klib is available to this
-  # module's test compilation, so storage tests exercise real SQLite files.
+  # Unlike project cinterops, this third-party klib is reachable from the test compilation.
   - $libs.sqldelight.native.driver
 
 settings:
   kotlin:
-    # The bridge spike proved that linkerOpts declared by a .def cross module boundaries.
-    # This is different: freeCompilerArgs is a per-module compiler setting. Keep it here for
-    # this module's test executable; harmon repeats it for its own final application link.
+    # freeCompilerArgs is module-local; this links the module's test executable.
     freeCompilerArgs: [-linker-option, -lsqlite3]

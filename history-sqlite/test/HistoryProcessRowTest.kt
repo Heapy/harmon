@@ -10,26 +10,12 @@ import kotlin.test.assertEquals
 import kotlin.test.assertNotEquals
 import kotlin.test.assertNull
 
-/** A parent that is not launchd, so a change to it is a reparenting the store must not stamp. */
 private const val OTHER_PARENT_PID = 4242
 
-/** The two processes sampled beside the orphan, which nothing must stamp. */
 private const val QUIET_PID_BEFORE = 10
 
 private const val QUIET_PID_AFTER = 12
 
-/**
- * Round-trips the `process` lookup and every column of `process_sample` through a real SQLite.
- *
- * As in `HistorySampleRowTest`, the values come from a local builder rather than `TestFixtures`:
- * the fixture sets `userCpuPercent == cpuPercent`, `residentBytes == physicalFootprintBytes` and
- * zero in most rates, so a transposed pair of same-typed columns would round-trip through it
- * looking correct. Here every field carries a value no other field carries.
- *
- * `reparented_at` is the one column with no round trip to test, because nothing writes it from a
- * `ProcessUsage` field. It is written by `record`, for the processes it decides are worth stamping,
- * so the tests for it go through a store over a scratch home rather than through the driver here.
- */
 class HistoryProcessRowTest {
 
     @Test
@@ -87,10 +73,6 @@ class HistoryProcessRowTest {
         assertEquals(44.5, stored.battery_impact_score)
     }
 
-    /**
-     * The lookup is what makes the design pay: a process seen 288 times a day must cost one row, and
-     * a pid handed to a new process must not silently inherit the old one's name.
-     */
     @Test
     fun theLookupHoldsOneRowPerProcessIdentity() = withInMemoryDatabase { database ->
         val processes = database.processesQueries
@@ -107,15 +89,6 @@ class HistoryProcessRowTest {
         assertEquals(2, processes.selectProcesses().executeAsList().size)
     }
 
-    /**
-     * The naming half of the row freezes at first sighting, which is the only reason the lookup
-     * costs one write per process rather than 288 a day.
-     *
-     * Worth pinning because the alternative reads like a bug fix: widening the conflict clause so
-     * that a renamed process shows its new name would rewrite every row already written under the
-     * old one, and every assertion above would stay green while it happened. The clause does update
-     * one column, and the case below is the whole of what it may touch.
-     */
     @Test
     fun theNamingColumnsKeepWhatTheProcessWasFirstSeenAs() = withInMemoryDatabase { database ->
         val processes = database.processesQueries
@@ -138,18 +111,6 @@ class HistoryProcessRowTest {
         assertEquals(4241L, lookup.parent_pid)
     }
 
-    /**
-     * A path that was unreadable at first sighting is filled in by the sighting that reads it, and
-     * by no other.
-     *
-     * The one column the freeze above does not cover, because null is not a value the process ever
-     * had — it is the collector saying it could not look. A process whose binary has been replaced
-     * refuses `proc_pidpath` for as long as it runs, which for a long-lived session is days of
-     * samples: frozen, every one of them would carry a null the reports cannot group, and the
-     * bridge learning to read the path would fix nothing for the processes already running. The
-     * second half of the assertion is the direction that must not happen — a path already stored is
-     * not replaced by a later reading of it, or the freeze is gone.
-     */
     @Test
     fun anUnreadablePathIsFilledInOnceItBecomesReadable() = withInMemoryDatabase { database ->
         val processes = database.processesQueries
@@ -169,7 +130,6 @@ class HistoryProcessRowTest {
         )
     }
 
-    /** A refused reading must stay distinguishable from a reading of zero. */
     @Test
     fun anUnavailableFieldStaysNullRatherThanZero() = withInMemoryDatabase { database ->
         val processes = database.processesQueries
@@ -197,11 +157,6 @@ class HistoryProcessRowTest {
         assertNull(stored.virtual_memory_region_count)
     }
 
-    /**
-     * The stamp is the sample's own moment rather than a clock read at the statement, which is what
-     * lets a row in `process` be lined up with the sample that produced it — the two are the same
-     * string, and the assertion says so rather than repeating the literal twice.
-     */
     @Test
     fun aProcessHandedToLaunchdIsStampedWithItsSample() = withScratchHome { home ->
         withHistoryStore(home) { store ->
@@ -217,12 +172,6 @@ class HistoryProcessRowTest {
         }
     }
 
-    /**
-     * `reparentedFrom` says the parent changed and nothing more. Only a change to launchd is a
-     * process that lost its parent; a change to any other pid is a reparenting the store has no
-     * reason to record, and the gate that decides so lives in `record` rather than in the
-     * calculator.
-     */
     @Test
     fun aChangeToAnyOtherParentIsNotStamped() = withScratchHome { home ->
         withHistoryStore(home) { store ->
@@ -232,11 +181,6 @@ class HistoryProcessRowTest {
         }
     }
 
-    /**
-     * The other half of that gate, and the half that keeps every daemon on the machine out of the
-     * column: a process first seen already under launchd has `parentPid == 1` and no transition to
-     * go with it. A stamp written off the parent alone would mark hundreds of rows a day.
-     */
     @Test
     fun aProcessThatWasAlwaysUnderLaunchdIsNotStamped() = withScratchHome { home ->
         withHistoryStore(home) { store ->
@@ -246,12 +190,6 @@ class HistoryProcessRowTest {
         }
     }
 
-    /**
-     * `parent_pid` freezes at first sighting because the lookup insert conflicts into a no-op, and
-     * here that freeze is the feature: the column keeps the parent that died while the new column
-     * records that it did. Stamping through the upsert instead — the obvious shortcut — would
-     * replace the culprit with pid 1 and leave nothing pointing at what went away.
-     */
     @Test
     fun theStampLeavesTheParentThatDiedInPlace() = withScratchHome { home ->
         withHistoryStore(home) { store ->
@@ -264,12 +202,6 @@ class HistoryProcessRowTest {
         }
     }
 
-    /**
-     * What is stored is when the parent was lost, not when the loss was last noticed, so a second
-     * sighting must not move the stamp. `reparented_at IS NULL` in the statement is what holds it
-     * still; the second sample is deliberately taken five minutes later than the first, or an
-     * unguarded write would land the same string and the test would prove nothing.
-     */
     @Test
     fun aSecondSightingDoesNotMoveTheStamp() = withScratchHome { home ->
         withHistoryStore(home) { store ->
@@ -291,16 +223,6 @@ class HistoryProcessRowTest {
         }
     }
 
-    /**
-     * The stamp has to find the row of the process it is about, and one process cannot say that it
-     * does: with a single row in `process`, a `record` that stamped every process it wrote, or
-     * reused one id for all of them, passes every assertion above.
-     *
-     * Three processes, all under launchd, of which only the middle one carries a transition. The
-     * two quiet ones are ordinary daemons — the state a machine is in a few hundred times over —
-     * and they are placed on either side so that neither "the first row" nor "the last row" is the
-     * answer by accident.
-     */
     @Test
     fun onlyTheOrphanAmongItsNeighboursIsStamped() = withScratchHome { home ->
         withHistoryStore(home) { store ->
@@ -318,13 +240,9 @@ class HistoryProcessRowTest {
     }
 }
 
-/**
- * The one row the stamping tests write to `process`, which is also all of it they read back.
- */
 private fun HistoryStore.storedProcess() =
     database.processesQueries.selectProcesses().executeAsOne()
 
-/** One sample holding the orphan of this file between two daemons that never lost anything. */
 private fun sampleAroundOneOrphan(): MonitoringReport = MonitoringReport(
     usage = systemUsage(
         processes = listOf(
@@ -342,10 +260,6 @@ private fun sampleAroundOneOrphan(): MonitoringReport = MonitoringReport(
     topProcessCount = 3,
 )
 
-/**
- * A `ProcessUsage` in which no two columns of `process` or `process_sample` share a value.
- * Deliberately not in `TestFixtures`: its whole purpose is to be unrealistic.
- */
 private fun markedProcess(): ProcessUsage = ProcessUsage(
     identity = ProcessIdentity(pid = 4242, startedAt = 21_000_000_001uL),
     parentPid = 4241,

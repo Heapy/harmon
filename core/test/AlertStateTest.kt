@@ -74,10 +74,6 @@ class AlertStateTest {
         assertEquals(listOf("memory:chrome"), state.newlyActive(both).map { it.key })
     }
 
-    /**
-     * A key the report had no room for is still firing. Committing only the reported alerts would
-     * settle it out of the state and make its return to the top slice look like a fresh alert.
-     */
     @Test
     fun remembersAFiringKeyThatNoReportCarried() {
         val state = AlertState()
@@ -90,11 +86,6 @@ class AlertStateTest {
         assertTrue(state.newlyActive(demoted).isEmpty(), "a demoted key must not re-push")
     }
 
-    /**
-     * A channel that can never succeed — a typo'd webhook URL, a revoked bot token — would push
-     * a fresh banner every interval forever, because Notification Center coalesces nothing. The
-     * retries widen instead.
-     */
     @Test
     fun spreadsOutRetriesOfAKeyThatNeverGetsDelivered() {
         val state = AlertState()
@@ -116,10 +107,6 @@ class AlertStateTest {
         assertEquals(listOf(0, 1, 2, 5, 10), pushedOn)
     }
 
-    /**
-     * The condition still holds, so the alert is still true. Giving up on it permanently is the
-     * silent drop the edge detection exists to avoid; the gap only widens up to a bound.
-     */
     @Test
     fun neverStopsRetryingAStillFiringAlert() {
         val state = AlertState()
@@ -147,11 +134,6 @@ class AlertStateTest {
         )
     }
 
-    /**
-     * The backoff decides when a key is pushed again, not whether it has been delivered. A caller
-     * that pushes on every sample regardless of the backoff reads the unsettled keys, so that the
-     * payload finally carrying a deferred alert still names it as new.
-     */
     @Test
     fun keepsADeferredKeyUnsettledWhileItsRetryIsPostponed() {
         val state = AlertState()
@@ -176,7 +158,6 @@ class AlertStateTest {
         assertTrue(state.newlyActive(alerts).isEmpty())
     }
 
-    /** One channel answering again is evidence the outage is over, so no key stays deferred. */
     @Test
     fun releasesADeferredKeyOnceAnotherDeliverySucceeds() {
         val state = AlertState()
@@ -227,11 +208,6 @@ class AlertStateTest {
         assertEquals(MAX_DELIVERY_RETRY_SAMPLES, deliveryRetryDelaySamples(Int.MAX_VALUE))
     }
 
-    /**
-     * The snapshot is the firing keys and nothing else, which is what makes it small enough to
-     * rewrite every sample: a key that cleared is gone from the state, so it is gone from here too
-     * without a tombstone of any kind.
-     */
     @Test
     fun snapshotHoldsEveryFiringKeyWithTheCounterItsRetryIsMeasuredAgainst() {
         val state = AlertState()
@@ -264,11 +240,6 @@ class AlertStateTest {
         )
     }
 
-    /**
-     * Restoring has to reproduce the state, not approximate it: the failure count decides the next
-     * backoff step, so a key that had failed twice must earn the deferral on its next failure rather
-     * than start counting again.
-     */
     @Test
     fun aRestoredStateAnswersLikeTheOneItWasTakenFrom() {
         val alerts = listOf(alert("cpu:firefox"), alert("memory:chrome"))

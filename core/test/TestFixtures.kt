@@ -148,7 +148,6 @@ fun rawSnapshot(
     processIssues = processIssues,
 )
 
-/** A process the collector could name but could not measure, which is all a snapshot keeps of it. */
 fun rawProcessIssue(
     pid: Int,
     name: String?,
@@ -335,11 +334,6 @@ fun rankingReport(): MonitoringReport = MonitoringReport(
     topProcessCount = 3,
 )
 
-/**
- * [rankingReport] with the kernel counter dead: every process reads zero watts, which is the only
- * way a sample says the counter never answered. The processes go back through [systemUsage] rather
- * than being copied into the existing one, because the application records are grouped from them.
- */
 fun zeroEnergyReport(): MonitoringReport {
     val accounted = rankingReport()
     return accounted.copy(

@@ -13,25 +13,11 @@ import kotlin.time.Duration.Companion.hours
 import kotlin.time.Duration.Companion.seconds
 import kotlin.time.Instant
 
-/** Tables that hold history and are expected to empty out behind a deleted sample. */
 private val HISTORY_TABLES =
     listOf("sample", "process_sample", "application_sample", "alert", "alert_delivery")
 
-/**
- * Covers the retention pass: when it runs, where it cuts, what it takes with it — and, above all,
- * that the write path runs it without being asked.
- *
- * The database tests go through a scratch home rather than `inMemoryDriver`, which is not optional
- * here: an in-memory driver leaves foreign keys off, and every cascade assertion below would pass
- * against a configuration in which the cascade does nothing.
- */
 class RetentionTest {
 
-    /**
-     * The schedule is about how much history piles up between passes, not about a sample count, so
-     * this states that property directly — at intervals that divide the hour and at ones that do
-     * not. The gap may exceed the period by less than one interval and must never fall below it.
-     */
     @Test
     fun theScheduleKeepsAboutAnHourBetweenPasses() {
         for (intervalSeconds in listOf(1L, 30L, 60L, 300L, 500L, 900L, 3_600L)) {
@@ -50,20 +36,11 @@ class RetentionTest {
         }
     }
 
-    /**
-     * Rounding the samples-per-pass down would give zero here and turn the modulo into a division by
-     * zero — or, guarded, into a pass on every sample by accident rather than by decision.
-     */
     @Test
     fun anIntervalLongerThanThePeriodPrunesOnEverySample() {
         assertTrue((0L until 5L).all { shouldPrune(it, PRUNE_PERIOD_SECONDS * 2) })
     }
 
-    /**
-     * Configuration bounds `intervalSeconds` to 1..86400, so nothing in the agent reaches this —
-     * but the floor inside `shouldPrune` is the only thing between a direct call at zero and a
-     * division by zero, and an untested guard is a guard that can be deleted as dead weight.
-     */
     @Test
     fun anIntervalBelowASecondIsFlooredRatherThanDividedBy() {
         for (intervalSeconds in listOf(0L, -1L, -3_600L)) {
@@ -75,11 +52,6 @@ class RetentionTest {
         }
     }
 
-    /**
-     * More than one window, because `historyRetentionDays` is a user-facing knob and seven is only
-     * its default: a cutoff that ignored its argument and hard-coded a week would satisfy any test
-     * written at seven days alone, while silently deleting a month of a user's history.
-     */
     @Test
     fun theCutoffCountsBackFromNowByTheConfiguredNumberOfDays() {
         val now = Instant.parse("2026-07-29T12:00:00Z")
@@ -89,12 +61,6 @@ class RetentionTest {
         assertEquals("2026-06-29T12:00:00Z", retentionCutoff(now, retentionDays = 30))
     }
 
-    /**
-     * The other half of the same question, one level up: that the number the store was configured
-     * with is the number its own default cutoff counts back by. Both samples here are inside the
-     * shipped seven-day window and only one is inside the day this store was given, so a `prune`
-     * that fell back to the default — or to a constant — keeps a sample it was told to drop.
-     */
     @Test
     fun theStorePrunesByTheWindowItWasConfiguredWith() = withScratchHome { home ->
         withHistoryStore(home, retentionDays = 1) { store ->
@@ -113,11 +79,6 @@ class RetentionTest {
         }
     }
 
-    /**
-     * The cutoff is compared against `captured_at` as a string, so it has to be truncated the same
-     * way those are: a fraction on it would sort below every whole second and strand a whole second's
-     * worth of samples past the window.
-     */
     @Test
     fun theCutoffIsTruncatedLikeTheColumnItIsComparedAgainst() {
         assertEquals(
@@ -126,9 +87,6 @@ class RetentionTest {
         )
     }
 
-    /**
-     * `captured_at < cutoff`, so the sample sitting exactly on the boundary lives one pass longer.
-     */
     @Test
     fun aSampleExactlyOnTheCutoffStays() = withScratchHome { home ->
         withHistoryStore(home) { store ->
@@ -145,11 +103,6 @@ class RetentionTest {
         }
     }
 
-    /**
-     * Retention names `sample` and nothing else; every other history table leaves through its
-     * `sample_id` foreign key. Without the driver's `foreignKeyConstraints` those children would all
-     * stay behind, pointing at a sample that no longer exists.
-     */
     @Test
     fun droppingASampleDropsEverythingHangingOffIt() = withScratchHome { home ->
         withHistoryStore(home) { store ->
@@ -166,11 +119,6 @@ class RetentionTest {
         }
     }
 
-    /**
-     * The lookups are the reason history fits on disk, and they are also the one thing the cascade
-     * cannot clean: nothing points at them, they point at nothing. Left alone they would grow with
-     * process churn for as long as the agent runs.
-     */
     @Test
     fun onlyTheLookupRowsNothingPointsAtAreDropped() = withScratchHome { home ->
         withHistoryStore(home) { store ->
@@ -192,17 +140,6 @@ class RetentionTest {
         }
     }
 
-    /**
-     * The reparenting stamp is a time string rather than a `REFERENCES sample(id)` for exactly one
-     * reason, and this is it: the sample that carried the fact leaves the window, and the fact does
-     * not go with it. A foreign key would have taken the whole process row down by cascade, or, set
-     * to null, erased the moment while keeping the row.
-     *
-     * What the stamp does not outlive is the process itself. Once the last `process_sample` naming
-     * it is gone, `deleteOrphanProcesses` takes the lookup row and everything on it — so the second
-     * half of the test back-dates the remaining sample too and finds nothing left. That is the
-     * boundary the design accepts, and it is the one `docs/history.md` states.
-     */
     @Test
     fun theReparentingStampOutlivesTheSampleThatWroteItButNotTheProcess() =
         withScratchHome { home ->
@@ -228,11 +165,6 @@ class RetentionTest {
             }
         }
 
-    /**
-     * `alert_state` and `agent_state` are what the agent knows about itself, not what it saw.
-     * Sweeping them out with the history would push an alert that was already firing a second time
-     * after every restart and reset the backoff a broken channel earned.
-     */
     @Test
     fun theAgentsOwnStateSurvivesTheWholeWindowGoing() = withScratchHome { home ->
         withHistoryStore(home) { store ->
@@ -256,15 +188,6 @@ class RetentionTest {
         }
     }
 
-    /**
-     * The test the rest of this file is worthless without: nothing here calls `prune`. A retention
-     * that only ran when a test asked for it would leave every other assertion above green while the
-     * database grew forever.
-     *
-     * At a 1200-second interval the pass falls on samples 0, 3, 6…, so the three stale samples are
-     * written unmolested and then swept by the fourth `record` — before that sample is written,
-     * which is why the fresh one is the only survivor rather than one of two.
-     */
     @Test
     fun recordRunsTheRetentionPassItself() = withScratchHome { home ->
         withHistoryStore(home, intervalSeconds = 1_200) { store ->
@@ -279,16 +202,6 @@ class RetentionTest {
         }
     }
 
-    /**
-     * The pass has to return the space and not only drop the rows: `auto_vacuum` is INCREMENTAL, so
-     * pages a `DELETE` frees stay inside the file until the vacuum hands them back, and nothing but
-     * the pass ever asks it to.
-     *
-     * The width of the report is the point rather than a detail. `PRAGMA incremental_vacuum` yields
-     * one row per page it returns, a driver path that refuses rows throws on the first one, and on a
-     * database holding two processes per sample the free list is empty and the statement is done
-     * after a single step — so every other test in this file passes over a vacuum that never ran.
-     */
     @Test
     fun theRetentionPassReturnsTheSpaceAndNotOnlyTheRows() = withScratchHome { home ->
         withHistoryStore(home) { store ->
@@ -305,18 +218,6 @@ class RetentionTest {
         }
     }
 
-    /**
-     * A pass that throws costs the space it was going to free and nothing else. The pass runs ahead
-     * of the sample that triggered it, so a failure propagating out of `record` would be swallowed
-     * upstream as a write failure and punch an hourly hole in the series — reported, on top of
-     * that, as `history write failed`, which names the wrong thing entirely.
-     *
-     * The count of failures is the second half and pins the counter. At a 1200-second interval the
-     * pass falls on samples 0, 3 and 6: sample 0 runs against an empty database and succeeds, and
-     * the trigger then breaks the two after it. Were the sample counter to stop advancing on a pass
-     * that threw, sample 3 would go on being sample 3 and every record from there on would prune,
-     * fail and log — four failures instead of two.
-     */
     @Test
     fun aFailingPassCostsTheSpaceRatherThanTheSampleOrTheSamplesAfterIt() = withScratchHome { home ->
         val logged = mutableListOf<String>()
@@ -337,20 +238,12 @@ class RetentionTest {
     }
 }
 
-/** Processes per sample in [crowdedReport]; enough rows that deleting them frees whole pages. */
 private const val CROWD_SIZE = 250
 
-/**
- * A trigger that refuses the retention delete, which is what a full disk or a corrupt page does to
- * it in the field: the pass throws from inside its own transaction, with the sample that triggered
- * it not yet written. `BEFORE DELETE` rather than anything on the insert path, so that only the
- * retention pass is broken and the write it runs ahead of is left intact.
- */
 private const val REFUSE_THE_RETENTION_DELETE =
     "CREATE TRIGGER refuse_delete BEFORE DELETE ON sample " +
         "BEGIN SELECT RAISE(ABORT, 'the disk is full'); END"
 
-/** A sample wide enough to span pages of its own, so that dropping it can give pages back. */
 private fun crowdedReport(): MonitoringReport = MonitoringReport(
     usage = systemUsage(
         processes = (1..CROWD_SIZE).map { pid -> processUsage(pid = pid, name = "process-$pid") },
@@ -360,23 +253,10 @@ private fun crowdedReport(): MonitoringReport = MonitoringReport(
     suppressedAlertKeys = emptyList(),
 )
 
-/**
- * Far enough back that every plausible retention window has already passed it by.
- *
- * Counted back from the machine's own clock rather than written as a date. A fixed instant in the
- * past is only ancient relative to a clock that has reached it: on a machine reading a date before
- * this one — a fresh VM, a dead RTC — a hard-coded 2020 falls *inside* a seven-day window, and
- * every test below then fails for a reason that has nothing to do with retention.
- */
 private val ANCIENT = Clock.System.now() - 3_650.days
 
-/** Inside every plausible retention window, since the cutoff is counted back from it. */
 private val RECENT = Clock.System.now()
 
-/**
- * A report with one bundled application and one process outside any bundle, plus an alert of each
- * kind, so that every table the retention pass has to reach holds at least one row.
- */
 private fun reportOf(
     application: String,
     firstPid: Int,

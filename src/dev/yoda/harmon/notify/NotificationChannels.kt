@@ -28,23 +28,10 @@ import platform.darwin.NSObject
 
 private const val REPORT_PATH_USER_INFO_KEY = "harmonReportPath"
 
-/**
- * How long the delivering thread keeps its run loop alive after handing a notification to
- * Notification Center. `deliverNotification` only enqueues the request, and a process that
- * returns straight into `exit` — every CLI command does — ends before the connection carrying it
- * completes: `usernoted` then logs `Denying message 3 from connection <LegacyConnection
- * identifier: dev.yoda.harmon>` and shows nothing. Measured on macOS 26 by sending three times
- * each way: without the spin all three were denied, with it all three were accepted and
- * delivered. 0.2 s already sufficed; the value carries headroom over that.
- */
+/** Keeps short-lived CLI processes alive long enough for the queued Notification Center request. */
 private const val DELIVERY_FLUSH_SECONDS = 0.5
 
-/**
- * Whether the macOS Notification Center channel is best-effort. It is: `deliverNotification`
- * queues a notification and never reports back whether it was shown, so the channel cannot decide
- * that a sample was delivered. Named rather than inlined because `SystemNotificationChannel`
- * cannot be constructed outside a running app.
- */
+/** Notification Center confirms enqueueing, not presentation. */
 const val SYSTEM_CHANNEL_BEST_EFFORT = true
 
 fun NotificationDispatcher.Companion.from(config: NotificationConfig): NotificationDispatcher {

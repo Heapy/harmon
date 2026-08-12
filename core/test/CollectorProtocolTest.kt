@@ -78,11 +78,6 @@ class CollectorProtocolTest {
         assertContains(assertNotNull(failure.message), "invalid JSON")
     }
 
-    /**
-     * A peer that dropped or renamed the field speaks a protocol Harmon cannot read, which is a
-     * version problem and has to be reported as one — calling it malformed JSON sends the reader
-     * looking for a syntax error that is not there.
-     */
     @Test
     fun reportsAMissingProtocolVersionAsAProtocolProblem() {
         val payload = encodedSnapshot().replaceFirst("$CURRENT_VERSION_FIELD,", "")
@@ -94,11 +89,6 @@ class CollectorProtocolTest {
         assertContains(assertNotNull(failure.message), "did not report a protocol version")
     }
 
-    /**
-     * The version pre-read deliberately ignores anything that is not a bare integer and lets the
-     * strict decoder judge it: a quoted number is still the number it spells, and a fractional
-     * one is malformed rather than a version to truncate towards.
-     */
     @Test
     fun leavesAVersionThatIsNotABareIntegerToTheStrictDecoder() {
         val quoted = assertFailsWith<CollectorProtocolException> {

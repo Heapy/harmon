@@ -170,24 +170,10 @@ object InstantAsStringSerializer : KSerializer<Instant> {
         Instant.parse(decoder.decodeString())
 }
 
-/**
- * launchd, the parent every process whose own parent died is handed to on Darwin.
- *
- * Named once and shared rather than repeated, because it is a fact about the platform and not a
- * policy either consumer of [ReparentedFrom] gets to hold an opinion about. What each of them
- * still decides for itself is whether to act on a transition to it at all.
- */
+/** launchd, which adopts Darwin processes whose parent exits. */
 const val INIT_PID = 1
 
-/**
- * The parent a process had before it changed, together with that parent's name when it is
- * known.
- *
- * The name is resolved from the previous snapshot rather than the current one: by the time
- * the change is visible the old parent is usually gone, so the current snapshot can no
- * longer name it. A parent missing from the previous snapshot too leaves [name] null while
- * [pid] stays populated.
- */
+/** The previous parent; its name must come from the previous snapshot because it may now be gone. */
 data class ReparentedFrom(
     val pid: Int,
     val name: String?,
@@ -225,15 +211,8 @@ data class ProcessUsage(
     val billedEnergyPerSecond: Double,
     val batteryImpactScore: Double,
     /**
-     * Who the parent was in the previous sample when it differs from [parentPid] in this
-     * one; null when the parent did not change, or when the process was not in the previous
-     * sample at all.
-     *
-     * The field states "changed its parent", not "was orphaned": whether the new parent
-     * being pid 1 makes this an orphan is a question for the consumer, which is why the
-     * `parentPid == 1` check lives there and not here. From a single snapshot an orphan is
-     * indistinguishable from a process that daemonised on purpose; only the transition
-     * between two snapshots tells them apart.
+     * Previous parent when it changed between snapshots. Consumers decide whether a transition to
+     * pid 1 is orphaning; a process first seen under pid 1 has no transition.
      */
     val reparentedFrom: ReparentedFrom? = null,
 )
@@ -333,16 +312,8 @@ data class SystemUsage(
     val processIssues: List<ProcessCollectionIssue>,
 ) {
     /**
-     * Whether the kernel's own energy counter produced numbers in this sample, inferred from the
-     * values because nothing reports it.
-     *
-     * The bridge zero-initializes `struct rusage_info_v6` and falls back to `RUSAGE_INFO_V4` when
-     * `RUSAGE_INFO_V6` is refused with `EINVAL`, which leaves `ri_energy_nj` at zero on a kernel
-     * too old to carry it. A dead counter is therefore indistinguishable from a sample whose
-     * processes every one slept or first appeared this interval — `UsageCalculator` reports zero
-     * for a process the previous snapshot did not carry — and the reading is one way round only:
-     * a sample with any process drawing power is a sample the counter is alive in, while a sample
-     * without one is only probably a sample it is dead in.
+     * True when any process produced kernel energy data. An all-zero sample is ambiguous because
+     * the V4 fallback and an idle/new process both report zero.
      */
     val energyAccounted: Boolean
         get() = processes.any { it.energyWatts > 0.0 }
@@ -361,12 +332,7 @@ data class Alert(
     val message: String,
 )
 
-/**
- * [alerts] is capped at `maxAlertsPerCategory` per rule so a report stays readable, and
- * [suppressedAlertKeys] names every key its rule matched but that did not fit — over its threshold
- * for the rules that have one, orphaned for the one that has none. A dropped alert that was
- * already firing is never pushed again, so this is the only place a consumer sees it at all.
- */
+/** [suppressedAlertKeys] preserves capped matches that would otherwise look cleared to consumers. */
 data class MonitoringReport(
     val usage: SystemUsage,
     val alerts: List<Alert>,

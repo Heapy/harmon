@@ -1,15 +1,4 @@
--- The application lookup, keyed by ApplicationUsage.id — a hash of the bundle path that
--- ApplicationGrouper keeps stable for as long as the bundle stays where it is. Without it the name
--- and the path repeat 288 times a day per application.
---
--- bundle_path is NOT NULL because a group without one is never written. ApplicationGrouper gives
--- every process outside an .app bundle its own singleton group; such a group duplicates one
--- process_sample row one for one, carries no information that row does not, and would grow this
--- lookup at the speed of process churn.
---
--- As in `process`, the insert is ON CONFLICT DO NOTHING and the columns freeze at first sighting.
--- Here that costs nothing: the key is derived from the bundle path, so an application that moves
--- gets a new key rather than a stale row.
+-- Only bundled groups are stored; the stable key derives from bundle path.
 CREATE TABLE application (
   id          INTEGER PRIMARY KEY AUTOINCREMENT,
   key         TEXT NOT NULL UNIQUE,
@@ -17,16 +6,7 @@ CREATE TABLE application (
   bundle_path TEXT NOT NULL
 );
 
--- One row per bundled application per sample, ~23 000 a day — the aggregate over the process_sample
--- rows that share its application_id, not a second copy of them.
---
--- process_count is stored even though it could be counted from those rows: it is what the agent saw,
--- and a top-N over a week should not have to touch 1.5 million rows to learn how many helpers an
--- application had.
---
--- compressed_or_paged_out_bytes is NOT NULL here while its process_sample counterpart is nullable:
--- ApplicationGrouper sums a refused reading as 0 and records how many members it could attribute in
--- compressed_attribution_process_count, so the uncertainty is already expressed as a count.
+-- Attribution uncertainty is represented by the measured-process count, so the aggregate is non-null.
 CREATE TABLE application_sample (
   sample_id                             INTEGER NOT NULL REFERENCES sample(id) ON DELETE CASCADE,
   application_id                        INTEGER NOT NULL REFERENCES application(id),
@@ -62,9 +42,7 @@ CREATE TABLE application_sample (
   battery_impact_score                  REAL NOT NULL
 );
 
--- Same two readers as process_sample_sample_id: the slice at one moment, and the cascade behind
--- `DELETE FROM sample`, which fires one child lookup per removed sample and without an index scans
--- the whole retention window each time.
+-- Supports sample reads and the sample-retention cascade.
 CREATE INDEX application_sample_sample_id ON application_sample(sample_id);
 
 insertApplication:
@@ -72,8 +50,7 @@ INSERT INTO application(key, name, bundle_path)
 VALUES (?, ?, ?)
 ON CONFLICT DO NOTHING;
 
--- Read back rather than taken from last_insert_rowid(), for the reason spelled out in full at
--- selectProcessId in Processes.sq.
+-- The preceding upsert may write nothing, so resolve the id by key.
 selectApplicationId:
 SELECT id
 FROM application
@@ -120,13 +97,7 @@ FROM application_sample
 WHERE sample_id = ?
 ORDER BY application_id;
 
--- The counterpart of deleteOrphanProcesses, with the same NOT IN for the same reason.
---
--- application_sample alone decides what is still in use, even though process_sample.application_id
--- holds ids from this table too: the writer resolves a lookup id and an application_sample row
--- together, so a surviving process_sample can only name an application its own sample aggregated.
--- Reading that column instead would be actively wrong — it is nullable, and a single NULL inside a
--- NOT IN subquery makes the predicate unknown for every row, quietly deleting nothing at all.
+-- Use application_sample, not nullable process_sample.application_id: NULL would poison NOT IN.
 deleteOrphanApplications:
 DELETE FROM application
 WHERE id NOT IN (SELECT application_id FROM application_sample);

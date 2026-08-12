@@ -1,9 +1,7 @@
-# Registers the codegen task and declares its output as generated Kotlin sources, so the
-# toolchain compiles them into the module that enables this plugin.
+# Registers code generation and contributes its output to the enabling module.
 tasks:
   generate:
     action: !dev.yoda.harmon.sqldelight.generateDatabase
-      # Conventional location of the .sq files in the module the plugin is enabled in.
       sqDir: ${module.rootDir}/sqldelight
       generatedSourceDir: ${taskOutputDir}
 

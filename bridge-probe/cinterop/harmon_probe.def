@@ -40,22 +40,11 @@ extern "C" {
 #define HM_ATTRIBUTION_MIN_REGION_SHARE 64
 #define HM_ATTRIBUTION_TAIL_REGION_SHARE 128
 #define HM_ATTRIBUTION_TAIL_BUDGET_DIVISOR 4
-/*
- * Sizing of the intermediate PID list in hm_list_processes, applied by hm_process_list_capacity.
- * The list is sized from the larger of a fresh PID count and the capacity of the arrays it feeds,
- * so it is never the narrower of the two whatever the caller reserved — nothing here mirrors the
- * Kotlin constants. HM_MAX_PROCESS_LIST is an absolute guard against a byte size that would
- * overflow the int proc_listallpids takes.
- */
+/* PID staging is never narrower than caller output; the hard cap keeps proc_listallpids' int size safe. */
 #define HM_PROCESS_LIST_HEADROOM 256
 #define HM_MIN_PROCESS_LIST 512
 #define HM_MAX_PROCESS_LIST (1 << 20)
-/*
- * The largest saved argument region hm_read_exec_path_from_args will allocate for. It bounds one
- * transient allocation on a path that only runs when proc_pidpath already failed; kern.argmax caps
- * the region itself at 1 MiB on macOS 15, and the headroom above that is for a kernel that raises
- * it rather than for any region seen here.
- */
+/* Bounds the saved-argument fallback allocation if a future kernel raises kern.argmax. */
 #define HM_MAX_PROCESS_ARGS (4U * 1024U * 1024U)
 
 typedef struct {
@@ -104,15 +93,7 @@ typedef struct {
     char executable_path[HM_PROCESS_PATH_SIZE];
 } HMProcessIssue;
 
-/*
- * The size of the two structs that cross into Kotlin, as the C compiler lays them out.
- *
- * cinterop builds its own model of these structs by parsing this header, so a Kotlin-side
- * `sizeOf` compared against a literal proves only that the literal was typed correctly, and
- * compared against nothing at all proves less. Reading the size through a call takes the other
- * path — the stub is compiled by the C compiler against this header — so `selftest` can compare
- * two independently produced numbers and notice a layout that drifted apart.
- */
+/* Let selftest compare cinterop's struct model with independent C-compiled sizes. */
 static inline size_t hm_process_sample_size(void) {
     return sizeof(HMProcessSample);
 }
@@ -209,11 +190,7 @@ static inline uint64_t hm_saturating_multiply_u64(uint64_t left, uint64_t right)
     return UINT64_MAX / left < right ? UINT64_MAX : left * right;
 }
 
-/*
- * The CPU counters of `proc_pid_rusage` are mach absolute time, not nanoseconds.
- * The two units coincide on Intel, but an Apple Silicon tick is 125/3 ns, so
- * reading them raw reports a process pinning one core as using 2.4% of it.
- */
+/* proc_pid_rusage CPU counters are Mach ticks; treating them as ns is wrong on Apple Silicon. */
 static inline uint64_t hm_mach_time_to_ns(uint64_t ticks) {
     static mach_timebase_info_data_t timebase = {0, 0};
     if (timebase.denom == 0) {
@@ -229,35 +206,14 @@ static inline uint64_t hm_mach_time_to_ns(uint64_t ticks) {
         (uint64_t)timebase.denom;
 }
 
-/**
- * Number of PIDs the kernel is currently willing to report, or a negative value when the
- * count is unavailable. Callers size their sample arrays from it instead of reserving a
- * worst-case block on every collection.
- */
 static inline int hm_count_processes(void) {
     return proc_listallpids(NULL, 0);
 }
 
-/**
- * Sums the compressed or paged-out pages of `pid` by walking its VM regions.
- *
- * `region_limit` caps how many regions the walk may read. `consumed_regions`
- * receives the number of proc_pidinfo calls actually made so the caller can
- * charge them against a sample-wide budget.
- *
- * Returns 0 when the walk reached the end of the address space and the sum is
- * complete, 1 when it stopped early and the sum is therefore an undercount, and
- * -1 when the process could not be read at all. Only a 0 result may be reported
- * as a measured value.
- *
- * A short proc_pidinfo result ends the walk cleanly only when errno is EINVAL,
- * which is how libproc reports that no region exists at or above `address`:
- * PROC_PIDREGIONINFO fails with EINVAL once fill_procregioninfo finds
- * nothing to describe. ESRCH means the opposite — proc_find could not
- * resolve the pid, so the process exited mid-walk — and every other errno
- * is a genuine mid-walk failure. All of them keep the undercount result: an
- * undercount, and the partial sum of a process that vanished, must never
- * look measured.
+/*
+ * Returns 0 only for a complete region walk, 1 for a truncated undercount, and -1 when unreadable.
+ * EINVAL after at least one region means end-of-space; ESRCH and every other error stay incomplete.
+ * consumed_regions lets the caller enforce a sample-wide syscall budget.
  */
 static inline int hm_read_compressed_or_paged_out(
     pid_t pid,
@@ -344,12 +300,6 @@ static inline int hm_compare_process_candidates(const void *left, const void *ri
     return left_candidate->index - right_candidate->index;
 }
 
-/**
- * Marks `sample` as attempted, walks up to `region_limit` of its VM regions,
- * and returns how many proc_pidinfo calls the walk cost so the caller can
- * charge them against its budget. Only a walk that reached the end of the
- * address space sets `compressed_attribution_available`.
- */
 static inline int hm_attribute_candidate(
     HMProcessSample *sample,
     int region_limit
@@ -370,30 +320,9 @@ static inline int hm_attribute_candidate(
 }
 
 /*
- * The absolute path a process was exec'd with, taken from the argument region the kernel saved at
- * exec time. Writes nothing and returns 0 unless it has a whole absolute path to write.
- *
- * This exists because proc_pidpath resolves the vnode of the running image back to a name, so it
- * fails with ENOENT the moment that file is unlinked — which is what an in-place upgrade does to
- * every process still running out of the prefix it replaced. Measured here: four codex sessions
- * out of an nvm prefix a later install overwrote, reported with no path at all while `ps` still
- * showed one, which put 77 % of this machine's second largest writer in a bucket that groups by
- * nothing. The saved region answers from a copy made at exec time, so replacing or deleting the
- * file changes nothing about it.
- *
- * Two properties of KERN_PROCARGS2 shape the function, and both cost a day each to find:
- *
- *   - a buffer narrower than the region is not a short read of its head. The kernel copies out the
- *     *tail* and still returns 0, so a fixed-size buffer yields a slice of the environment
- *     beginning wherever it landed — an empty string here, plausible garbage on the next machine.
- *     The size has to be asked for first and the whole region taken, which is why this allocates.
- *   - the string is the path handed to execve verbatim, so it is relative exactly when the caller's
- *     was: a binary started as `./server` reports `./server`. That is worse than nothing for
- *     anything that groups by path — every `./server` on the machine would fold into one — so only
- *     an absolute path is accepted, and a truncated one is refused rather than shortened.
- *
- * The region belongs to the process's own user, and to root; for anyone else the sysctl fails with
- * EINVAL, which is the population proc_pidpath has already refused by the time this is reached.
+ * Recovers paths after proc_pidpath loses an unlinked executable. KERN_PROCARGS2 must be read in
+ * full because a short buffer returns its tail, and only absolute, untruncated paths are accepted
+ * so unrelated relative executable names cannot collapse into one group.
  */
 static inline int hm_read_exec_path_from_args(pid_t pid, char *out, uint32_t out_size) {
     int name[3] = {CTL_KERN, KERN_PROCARGS2, (int)pid};
@@ -486,16 +415,7 @@ static inline void hm_read_process_metadata(
     }
 }
 
-/**
- * Slots to allocate for the intermediate PID list, from a fresh `counted` and the
- * `output_capacity` the caller already reserved.
- *
- * Taking the larger of the two makes the invariant "the PID list is never narrower than the
- * caller's arrays" structural instead of a convention two files have to keep in step: whatever
- * headroom the caller applied is already contained in `output_capacity`. A count that failed
- * (`counted` negative or zero) simply loses the comparison, so no separate error branch is
- * needed — `output_capacity` is validated positive before this is reached.
- */
+/* Takes the larger fresh count and caller capacity so the staging list cannot silently drop entries. */
 static inline int hm_process_list_capacity(int counted, int output_capacity) {
     int capacity = counted > output_capacity ? counted : output_capacity;
     capacity = capacity > HM_MAX_PROCESS_LIST - HM_PROCESS_LIST_HEADROOM
@@ -525,13 +445,7 @@ static inline int hm_list_processes(
         return -1;
     }
 
-    /*
-     * The count is taken here, immediately before the buffer is filled, so the race window it
-     * has to cover is as narrow as the kernel allows. proc_listallpids reports only what it
-     * copied once the buffer is full, so a list narrower than the caller's arrays would drop the
-     * processes started in that window silently — out of the sample and out of `total_processes`
-     * alike — instead of reporting them as the capacity limit the caller can see.
-     */
+    /* Count immediately before listing to minimize the process-start race. */
     int capacity = hm_process_list_capacity(proc_listallpids(NULL, 0), output_capacity);
 
     pid_t *pids = (pid_t *)calloc((size_t)capacity, sizeof(pid_t));
@@ -699,37 +613,14 @@ static inline int hm_list_processes(
                 hm_compare_process_candidates
             );
 
+            /*
+             * Spend most budget on largest-footprint candidates, but reserve a bounded tail share
+             * so small processes are still measured. Charge actual regions and skip shares too
+             * small to finish a useful walk rather than recording partial sums as measurements.
+             */
             int attempts = attribution_process_limit < written
                 ? attribution_process_limit
                 : written;
-            /*
-             * The budget is split between a head pass and a tail pass instead
-             * of being handed out first-come or in equal shares. Neither pure
-             * policy works: first-come lets a handful of browsers consume
-             * everything and skips the rest of the list, while an equal split
-             * gives every candidate the same small share, which is below what
-             * any large process needs — so the very processes the descending
-             * footprint order exists to measure are the only ones that never
-             * complete, and their partial sums are discarded.
-             *
-             * The head pass walks candidates in descending footprint order with
-             * the full per-process limit, spending everything except a tail
-             * reserve. The tail pass then splits what is left equally over the
-             * candidates the head never reached, so the small processes at the
-             * end of the list still get measured. The reserve is
-             * HM_ATTRIBUTION_TAIL_REGION_SHARE per candidate, never more than
-             * 1/HM_ATTRIBUTION_TAIL_BUDGET_DIVISOR of the budget, because the
-             * head is what the compressed-memory ranking is made of and must
-             * not be squeezed to fund coverage of the tail.
-             *
-             * Both passes charge only what a walk actually consumed, so an
-             * unspent share stays available. A share below
-             * HM_ATTRIBUTION_MIN_REGION_SHARE buys nothing but a truncated
-             * walk, so it is raised to that minimum while the budget still
-             * affords one and the pass stops once it does not. A skipped
-             * candidate is left unattempted rather than marked attempted and
-             * counted as a failure: an unreachable process stays uncounted.
-             */
             int tail_reserve =
                 attribution_region_budget / HM_ATTRIBUTION_TAIL_BUDGET_DIVISOR;
             if (attempts < tail_reserve / HM_ATTRIBUTION_TAIL_REGION_SHARE) {

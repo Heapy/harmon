@@ -6,12 +6,8 @@ const val MIN_PROCESS_CAPACITY = 512
 const val PROCESS_CAPACITY_HEADROOM = 256
 
 /**
- * Number of slots to reserve for [count] processes, never more than [capacity].
- *
- * [PROCESS_CAPACITY_HEADROOM] covers processes that start between the kernel's PID count and the
- * listing call, and [MIN_PROCESS_CAPACITY] prevents an ordinary burst from exhausting a tightly
- * sized array. A non-positive count means the kernel refused to answer, so the full capacity is
- * reserved.
+ * Reserves headroom for processes started between the count and listing calls. A failed count uses
+ * the full caller capacity rather than guessing low.
  */
 fun processCapacityFor(count: Int, capacity: Int): Int {
     if (count <= 0) {

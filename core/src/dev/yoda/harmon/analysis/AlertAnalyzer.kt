@@ -10,14 +10,8 @@ import dev.yoda.harmon.model.SystemUsage
 import dev.yoda.harmon.util.Format
 
 /**
- * What one sample's rules produced: the capped [alerts] a report carries, every other key its rule
- * matched in [suppressedKeys] — over its threshold where the rule has one, orphaned where it has
- * none — and the [firingKeys] the alert state has to remember.
- *
- * [firingKeys] is the reported keys plus the already-active ones among the suppressed. Dropping an
- * active key because a report had no room for it would look like the alert clearing; admitting a
- * key that first crossed below the cut would grade it against the lowered clear threshold from the
- * next sample on, so an application hovering just under its threshold would stay alerting forever.
+ * [firingKeys] retains capped-out active alerts but excludes newly suppressed alerts. This
+ * preserves hysteresis without admitting an alert that was never reported.
  */
 data class AlertOutcome(
     val alerts: List<Alert>,
@@ -25,14 +19,7 @@ data class AlertOutcome(
     val suppressedKeys: Set<String>,
 )
 
-/**
- * Turns a usage sample into alerts.
- *
- * A key that was already firing is compared against a threshold lowered by [CLEAR_RATIO], so a
- * value hovering around the threshold does not flip the alert on and off; severity is still graded
- * against the original threshold. Low battery is excluded: it is the only rule comparing with
- * "less than or equal", where a lower threshold would drop the alert while its condition holds.
- */
+/** Applies clear-threshold hysteresis to active rules; low battery is excluded because lower is worse. */
 class AlertAnalyzer {
     fun analyze(
         usage: SystemUsage,
@@ -203,10 +190,7 @@ class AlertAnalyzer {
             }
         }
 
-        // The battery guard is read before either threshold, so each regime reads only its own:
-        // where the kernel's energy counter is live the watt rule applies and the heuristic score
-        // is not consulted at all, and a threshold configured to zero silences that regime instead
-        // of falling back to the other one.
+        // A threshold disables only its own counter-availability regime; the two never fall back.
         if (usage.power.onBattery) {
             if (usage.energyAccounted) {
                 thresholds.applicationPowerWatts?.let { threshold ->
@@ -304,26 +288,8 @@ class AlertAnalyzer {
     }
 
     /**
-     * One alert per process whose parent changed to [INIT_PID] since the previous sample.
-     *
-     * The rule reads a transition, not a state. [ProcessUsage.reparentedFrom] only says the parent
-     * changed, so the `parentPid == INIT_PID` half of the condition belongs here, in the consumer.
-     * A process first seen with pid 1 as its parent has no transition to report, which is what
-     * keeps an ordinary double-forking daemon out of this list without any heuristic.
-     *
-     * Severity is always [Severity.WARNING]. Every other rule reads `CRITICAL` off a value at twice
-     * its threshold; an event has no magnitude, so there is no reading of it that would be worse
-     * than another.
-     *
-     * The cap is applied here instead of through [selectAlerting]: that helper is typed for
-     * `ApplicationUsage` and ranks by a numeric metric, and orphanhood has none. Sorting by pid is
-     * what makes the choice deterministic rather than dependent on sample order. Everything past
-     * [maxPerCategory] goes to [suppressed], and there it is lost for good rather than deferred:
-     * [analyze] keeps a suppressed key firing only when it was already active, a brand-new orphan
-     * never was, so it never enters the alert state and its edge does not occur a second time.
-     *
-     * The key says `orphan` while the history column recording the same fact is `reparented_at`;
-     * `Processes.sq` carries why the two vocabularies differ.
+     * Reports only transitions to launchd, so first-seen daemons stay quiet. PID ordering makes
+     * capped selection deterministic; suppressed one-shot events are intentionally not deferred.
      */
     private fun orphanAlertsFor(
         processes: List<ProcessUsage>,
@@ -355,16 +321,7 @@ class AlertAnalyzer {
     private fun ProcessUsage.orphanKey(): String =
         "orphan:process:${identity.pid}:${identity.startedAt}"
 
-    /**
-     * The [maxPerCategory] applications above the threshold with the highest [value], each paired
-     * with its alert key, so a rule spells that key out once for both the selection and the [Alert]
-     * built from it.
-     *
-     * A key that did not survive the cut goes to [suppressed] instead: an uncapped tail would make
-     * a category configured for three alerts carry dozens on a busy machine, but the key is still
-     * over its threshold and the report has to name it. Which of them the alert state keeps is
-     * decided in [analyze].
-     */
+    /** Returns the highest matching values and records capped-out keys for report/state reconciliation. */
     private fun <R : Comparable<R>> List<ApplicationUsage>.selectAlerting(
         maxPerCategory: Int,
         activeKeys: Set<String>,
@@ -391,18 +348,10 @@ class AlertAnalyzer {
     private fun Double.cleared(): Double =
         this * CLEAR_NUMERATOR.toDouble() / CLEAR_DENOMINATOR.toDouble()
 
-    /** Dividing first keeps the product from overflowing. */
+    /** Dividing first prevents the hysteresis product from overflowing. */
     private fun ULong.cleared(): ULong = this / CLEAR_DENOMINATOR * CLEAR_NUMERATOR
 
-    /**
-     * MiB to bytes, saturating at [ULong.MAX_VALUE]. Wrapping would turn a huge threshold into a
-     * small one — at 2^44 MiB it wraps to zero and every application alerts as critical.
-     * `ConfigLoader` keeps configured values far below that; this covers thresholds built in code.
-     *
-     * A non-positive threshold means every application is over it. It is folded to zero rather
-     * than reinterpreted as unsigned, where -1 MiB would saturate instead and silently switch the
-     * rule off — a nonsensical threshold has to be loud, not invisible.
-     */
+    /** Saturates instead of letting a huge threshold wrap into a small one; non-positive means zero. */
     private fun Long.mebibytesToBytes(): ULong {
         if (this <= 0L) {
             return 0uL
@@ -415,7 +364,7 @@ class AlertAnalyzer {
         }
     }
 
-    /** The critical bound, saturating so an unreachable threshold does not wrap into zero. */
+    /** Saturates the critical threshold instead of wrapping it to zero. */
     private fun ULong.doubled(): ULong =
         if (this > ULong.MAX_VALUE / 2u) ULong.MAX_VALUE else this * 2u
 
@@ -430,10 +379,7 @@ class AlertAnalyzer {
         const val BYTES_PER_MEBIBYTE: ULong = 1_048_576u
         const val BYTES_PER_MEBIBYTE_DOUBLE = 1_048_576.0
 
-        /**
-         * The hysteresis factor, as a fraction so the integer and the floating-point form cannot
-         * drift apart: an active alert only clears below nine tenths of its threshold.
-         */
+        /** Shared fraction keeps integer and floating-point hysteresis identical. */
         const val CLEAR_NUMERATOR: ULong = 9u
         const val CLEAR_DENOMINATOR: ULong = 10u
     }

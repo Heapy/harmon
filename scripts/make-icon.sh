@@ -2,13 +2,8 @@
 
 set -eu
 
-# Rebuilds launchd/Harmon.icns from logo.png. Run after replacing the logo;
-# install.sh copies the committed .icns into the bundle rather than generating
-# it, so the installer stays free of image tooling.
-#
-# logo.png must already carry its rounded corners in the alpha channel. macOS
-# draws an .icns as-is, so opaque corners reach Notification Center as visible
-# square edges around the artwork.
+# Regenerate the committed icon after replacing logo.png. The source must already carry rounded
+# corners in its alpha channel because macOS renders the .icns as-is.
 
 SCRIPT_DIR=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd -P)
 PROJECT_DIR=$(CDPATH= cd -- "$SCRIPT_DIR/.." && pwd -P)
@@ -29,7 +24,7 @@ trap cleanup EXIT INT TERM
 
 /bin/mkdir -p "$ICONSET/Harmon.iconset"
 
-# iconutil requires every size below; @2x names carry twice their nominal size.
+# iconutil requires every listed size; @2x files carry twice their nominal size.
 for entry in \
     16:icon_16x16 \
     32:icon_16x16@2x \

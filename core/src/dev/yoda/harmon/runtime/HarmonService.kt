@@ -30,31 +30,17 @@ private const val NANOS_PER_MILLISECOND = 1_000_000uL
 private const val MICROS_PER_MILLISECOND = 1_000uL
 private const val MILLIS_PER_SECOND = 1_000.0
 
-/** Longest single stretch the agent parks for before it re-checks its deadline. */
+/** Bounds how long Notification Center sources can go without a run-loop turn. */
 const val MAX_SLEEP_SLICE_MILLISECONDS = 30_000uL
 
-/**
- * Length of the next sleep slice, in milliseconds, for a sleep with [remainingNs] left to run.
- *
- * A slice never overshoots the deadline and never rounds a non-zero remainder down to a busy
- * zero-length wait.
- */
 fun sleepSliceMillis(remainingNs: ULong): ULong {
     val requested = maxOf(remainingNs / NANOS_PER_MILLISECOND, 1uL)
     return minOf(requested, MAX_SLEEP_SLICE_MILLISECONDS)
 }
 
 /**
- * Spends one sleep slice of [sliceMs] milliseconds.
- *
- * With [systemNotifications] on, the slice is spent inside the CoreFoundation run loop, which is
- * what makes "Open report" on a delivered notification work. The run loop is re-probed on every
- * slice rather than latched off after a probe that finds no sources: the dispatcher is built
- * lazily, so its sources only exist after the first delivery, and a latch would leave the
- * notification click dead for the rest of the process lifetime.
- *
- * Only a run that times out consumed the slice; every other return comes back immediately, so the
- * rest of it is spent parked instead of busy-polling the run loop.
+ * Services the CoreFoundation run loop when notifications are enabled. A non-timeout return did
+ * not consume the slice, so the remainder is parked rather than busy-polled.
  */
 @OptIn(ExperimentalForeignApi::class)
 fun spendSleepSlice(sliceMs: ULong, systemNotifications: Boolean) {
@@ -81,20 +67,9 @@ class HarmonService(
     private val logError: (String) -> Unit = ::printError,
     private val history: History? = null,
 ) {
-    /**
-     * Resumed from whatever the last run of the agent left in [history], so that a restart neither
-     * pushes an alert that never stopped firing a second time nor hands a channel that has been
-     * failing all night a fresh retry budget. Whether what is stored is still recent enough to
-     * resume is the store's judgement, since the interval it is judged in is already its own.
-     */
     private val alertState = AlertState(restored = restorableStateOrNull())
 
-    /**
-     * Whether the write of the previous sample failed, so that a database that keeps failing is
-     * reported once instead of once per sample. sqliter prints the whole stack trace before it
-     * throws, and a disk that filled up overnight would otherwise paint the launchd log red every
-     * interval until somebody noticed.
-     */
+    /** Coalesces a persistent database failure to one log entry until a write succeeds. */
     private var historyWriteFailing = false
 
     fun runForever(): Nothing {
@@ -107,14 +82,7 @@ class HarmonService(
         }
     }
 
-    /**
-     * One capture-and-handle cycle of the monitoring loop, without the sleep around it, returning
-     * the snapshot the next cycle has to diff against.
-     *
-     * A failed capture leaves [previous] in place so the next cycle still has a window to diff
-     * against; a successful one advances it before the sample is handled, so a pair that blows up
-     * is not replayed forever. Both failures are logged and swallowed: this is a daemon.
-     */
+    /** Capture failures keep the old baseline; handling failures advance it to avoid replay loops. */
     fun runCycle(previous: RawSystemSnapshot): RawSystemSnapshot {
         val current = try {
             collector.capture()
@@ -131,21 +99,8 @@ class HarmonService(
     }
 
     /**
-     * One iteration of the monitoring loop, without the sleeping and capturing around it.
-     *
-     * The commit sits in a `finally` because it has to happen for every report that could be
-     * built, deliveries and renders that throw included: a key that stopped firing has to leave
-     * the settled set, or its next appearance is mistaken for a repeat and never pushed.
-     *
-     * The history write joins it there, after the commit rather than before it, so that the state
-     * stored beside the sample is the one the sample after it starts from — a snapshot taken
-     * earlier would restore a restarted agent to the moment before its last sample.
-     *
-     * The deferral is logged as conditional on the alert still firing rather than as a promise to
-     * retry, because for one rule it is not one. An orphan alert reads a transition that exists in a
-     * single sample, so its key leaves the firing set on the next one and the deferral expires
-     * against nothing; the delivery is lost rather than postponed. `docs/collection.md` carries what
-     * survives that loss.
+     * Commits alert state in `finally` so render or delivery failures cannot strand cleared keys.
+     * History is written after that commit, making persisted state the next sample's starting state.
      */
     fun handleSample(previous: RawSystemSnapshot, current: RawSystemSnapshot) {
         val sampled = createSample(previous, current)
@@ -181,23 +136,11 @@ class HarmonService(
     fun testNotifications(): List<DeliveryResult> =
         notifications.value.deliver(ReportFormatter.testPayload()).results
 
-    /**
-     * Pushes [report] as a single one-off notification. [reportText] is accepted already rendered
-     * so a caller that also prints the report does not render it twice.
-     */
     fun deliver(report: MonitoringReport, reportText: String): List<DeliveryResult> =
         notifications.value.deliver(
             ReportFormatter.notification(report, reportText = reportText),
         ).results
 
-    /**
-     * The report to publish, paired with the keys the alert state has to remember.
-     *
-     * The two differ: an already-alerting key the per-category cap pushed out of the report is
-     * still firing and forgetting it would make its return look like a fresh alert, while a key
-     * that first crossed its threshold below the cut was never pushed and must not enter the
-     * state, where the lowered clear threshold would keep it alerting long after it settled back.
-     */
     private fun createSample(
         previous: RawSystemSnapshot,
         current: RawSystemSnapshot,
@@ -226,11 +169,6 @@ class HarmonService(
         }
     }
 
-    /**
-     * A delivery that throws — building the dispatcher boots AppKit, and that can fail — is
-     * reported and treated as delivering nothing. Letting it escape would skip the commit in
-     * [handleSample] and strand the alert state on the sample before it.
-     */
     private fun deliverSafely(report: MonitoringReport, reportText: String): DeliveryOutcome =
         try {
             deliverSample(report, reportText)
@@ -239,16 +177,7 @@ class HarmonService(
             DeliveryOutcome.NONE
         }
 
-    /**
-     * The state a previous run stored, or nothing at all if reading it throws.
-     *
-     * The one failure a history factory cannot stand in for. A file that opened cleanly can
-     * still refuse the first read — a page lost to the panic `synchronousFlag = NORMAL`
-     * deliberately accepts, a table an older build never created — and this read happens while the
-     * agent is being constructed. Unguarded that is not a run without history but a process that
-     * dies before its first sample, restarted by launchd into the same death: the machine goes
-     * unmonitored because the record of how it was monitored yesterday went bad.
-     */
+    /** A corrupt history read must not turn launchd restart into a monitoring boot loop. */
     private fun restorableStateOrNull(): AlertStateSnapshot? = try {
         history?.restorableAlertState()
     } catch (failure: Throwable) {
@@ -256,17 +185,7 @@ class HarmonService(
         null
     }
 
-    /**
-     * Files the sample away, and swallows whatever the write throws — this is a daemon, and a
-     * database on a full disk must not cost it the monitoring it exists for.
-     *
-     * No store at all is the ordinary case rather than an error: `once` and `diagnose` measure a
-     * two-second window against the agent's five minutes, and their numbers would distort a series
-     * built from it, so they are left on the null default.
-     *
-     * The snapshot is read here, which is to say after the commit in [handleSample]. A write that
-     * keeps failing is reported once; see [historyWriteFailing].
-     */
+    /** History failures, including a full disk, never stop monitoring. */
     private fun recordSafely(report: MonitoringReport, deliveries: List<DeliveryResult>) {
         val store = history ?: return
         try {
@@ -280,16 +199,9 @@ class HarmonService(
         }
     }
 
-    /**
-     * Pushes what [pushPlan] decided this sample is worth pushing and reports which keys were
-     * carried and whether the push was confirmed.
-     *
-     * The dispatcher is only touched once this sample is known to need a push. Reading it
-     * earlier — to check [NotificationDispatcher.isEmpty], say — would build the system channel
-     * and boot AppKit on every quiet sample, which is what the lazy holder exists to avoid.
-     */
     private fun deliverSample(report: MonitoringReport, reportText: String): DeliveryOutcome {
         val plan = pushPlan(report) ?: return DeliveryOutcome.NONE
+        // Touch the lazy dispatcher only after a push is planned; constructing it boots AppKit.
         val dispatcher = notifications.value
         if (dispatcher.isEmpty) {
             return DeliveryOutcome.NONE
@@ -315,19 +227,10 @@ class HarmonService(
             plan.recordsFailures -> DeliveryOutcome(delivered = emptySet(), failed = pushed)
             else -> DeliveryOutcome.NONE
         }
-        /* Every branch journals what each channel reported, the one that defers nothing too. */
         return outcome.copy(results = summary.results)
     }
 
-    /**
-     * What this sample should push, or null when it should push nothing.
-     *
-     * `notifyEverySample` widens what the push carries, not what counts as new. It pushes whether
-     * or not the backoff defers a key, so it reads the unsettled keys rather than the pushable
-     * ones: a deferred key rides in the payload, and leaving it out of the new set would hide it
-     * from the consumer for its whole firing episode. For the same reason it records no failures:
-     * nothing can be deferred in a mode that pushes regardless.
-     */
+    /** Every-sample mode carries unsettled keys but never creates retry backoff. */
     private fun pushPlan(report: MonitoringReport): PushPlan? {
         if (config.notifications.notifyEverySample) {
             return PushPlan(
@@ -352,11 +255,7 @@ class HarmonService(
         logError("${Clock.System.now()} $context: ${failureDescription(failure)}$suffix")
     }
 
-    /**
-     * Sleeps until [seconds] have passed on the monotonic clock, so a wall-clock adjustment cannot
-     * stretch or collapse the interval. The thread is parked for whole slices instead of polling
-     * the clock, which is what keeps an idle agent off the CPU.
-     */
+    /** Uses a monotonic deadline so wall-clock changes cannot stretch or collapse the interval. */
     private fun sleepSeconds(seconds: Long) {
         if (seconds <= 0L) {
             return
@@ -375,28 +274,17 @@ class HarmonService(
         }
     }
 
-    /** One sample's publishable report and the complete key set behind it. */
     private data class SampledAlerts(
         val report: MonitoringReport,
         val firingKeys: Set<String>,
     )
 
-    /** What one sample pushes: the alerts in front of the user, and which of them are new. */
     private data class PushPlan(
         val highlighted: List<Alert>,
         val newAlertKeys: List<String>,
-        /** Whether a failed push defers these keys; the every-sample mode never defers. */
         val recordsFailures: Boolean,
     )
 
-    /**
-     * What a single sample's push achieved: the keys it carried, whether they landed, and what
-     * every channel reported on the way.
-     *
-     * [results] is carried for the history alone. The alert state is only interested in the verdict
-     * the two key sets already hold, while the journal wants the account each channel gave of
-     * itself — a webhook answering 500 all night is visible in no other record of the sample.
-     */
     private data class DeliveryOutcome(
         val delivered: Set<String>,
         val failed: Set<String>,

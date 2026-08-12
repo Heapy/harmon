@@ -5,19 +5,15 @@ onceSampleSeconds=2
 topProcessCount=8
 maxAlertsPerCategory=3
 
-# Days of samples kept in ~/Library/Application Support/Harmon/history.db;
-# expect a couple of hundred megabytes at seven days, extrapolated from a
-# measured ~140 bytes per stored process per sample. A zero keeps no history and
-# creates no database. Accepted range: 0 to 3650.
+# Days kept in ~/Library/Application Support/Harmon/history.db. Zero disables history.
+# Accepted range: 0 to 3650.
 historyRetentionDays=7
 
 # Bundle names, without `.app`, whose descendants outside the bundle are not
 # charged to it. Replaces the built-in list; an empty value disables the rule.
 terminalApplications=terminal,iterm2,iterm,alacritty,wezterm,kitty,ghostty,warp,hyper,tabby,agterm
 
-# Alert when a live process loses its parent and is handed to launchd. The
-# event has no magnitude to threshold, so this rule is switched off with false
-# rather than with a zero.
+# Alert when a live process loses its parent and is handed to launchd.
 orphanAlerts=true
 
 # A zero disables the corresponding alert.
@@ -30,11 +26,8 @@ applicationBatteryImpactAlertScore=100
 applicationPowerAlertWatts=1.5
 batteryLowAlertPercent=20
 
-# `applicationBatteryImpactAlertScore` and `applicationPowerAlertWatts` are one
-# battery-drain rule with two thresholds, of which exactly one is read per
-# sample: the watts where the kernel's energy counter reported, the score where
-# it read zero. Neither falls back to the other, so a zero disables battery-drain
-# alerting in that regime rather than handing the rule over.
+# Battery drain uses watts when the kernel energy counter reports and the score otherwise.
+# The thresholds do not fall back to each other; zero disables only that regime.
 
 # Delivery
 systemNotifications=true

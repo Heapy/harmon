@@ -15,13 +15,7 @@ object ReportJson {
         explicitNulls = true
     }
 
-    /**
-     * [newAlertKeys] tells the consumer which of the reported alerts have not been delivered
-     * before; `alerts` carries the capped list and `suppressedAlertKeys` names every key its rule
-     * matched but that did not fit it — over its threshold for the rules that have one, orphaned
-     * for the one that has none — so a consumer diffing the list cannot mistake an alert the cap
-     * dropped for a cleared one.
-     */
+    /** Suppressed keys let consumers distinguish a capped alert from a cleared one. */
     fun encode(report: MonitoringReport, newAlertKeys: List<String>): String =
         json.encodeToString(report.toDto(newAlertKeys))
 
@@ -249,15 +243,7 @@ private data class ReportEventDto(
     val event: String = "harmon.sample",
     val capturedAt: String,
     val elapsedSeconds: Double,
-    /**
-     * Whether the kernel's own energy counter produced the watts in this sample, so a consumer can
-     * tell which regime it is reading. No ranking switches with it: unlike the text report, which
-     * has one column and has to choose, this payload carries `topBatteryImpact` sorted by the
-     * heuristic score and `topEnergy` sorted by watts side by side, always, whatever this reads.
-     * Re-sorting either list by the other metric would make its name a lie to every consumer that
-     * already reads it. The alerts in the same payload do switch, in key and in message, because
-     * there the regime decides which rule ran.
-     */
+    /** Both rankings keep their named metrics; this field only identifies the active alert regime. */
     val energyAccounted: Boolean,
     val power: PowerDto,
     val swap: SwapDto,

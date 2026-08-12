@@ -47,11 +47,6 @@ class ReportFormatterTest {
         assertContains(output, "/usr/libexec/protected")
     }
 
-    /**
-     * The fixture reads no energy on purpose: this is about the storage and compressed-memory
-     * signals, and a positive `energyWatts` would make the sample accounted and switch the
-     * battery-impact table to its other form. The two forms have their own tests below.
-     */
     @Test
     fun reportShowsSystemStorageAndCompressedMemorySignals() {
         val usage = systemUsage(
@@ -80,15 +75,6 @@ class ReportFormatterTest {
         assertContains(output, "writer")
     }
 
-    /**
-     * The heading and the list have to move together: an accounted heading over the score-ranked
-     * list is the failure this switch can introduce, and a row assertion alone would miss it. The
-     * whole table is compared rather than one line — `topEnergy` puts `charlie` where the score
-     * ranking has `bravo`, and orders what is left by watts, so membership, order and the row shape
-     * all fail separately here. What this fixture cannot separate is the `> 0` filter, because
-     * three of its five processes draw power and the table takes three;
-     * [theAccountedTableIsShorterThanTopProcessCountWhenOnlySomeApplicationsDraw] does that.
-     */
     @Test
     fun theBatteryImpactTableLeadsWithWattsWhenTheCounterIsAccounted() {
         val output = ReportFormatter.text(rankingReport())
@@ -104,11 +90,6 @@ class ReportFormatterTest {
         )
     }
 
-    /**
-     * The accounted list drops what draws nothing instead of printing zero rows, so it renders
-     * fewer rows than `topProcessCount` while applications with a score to show still exist —
-     * `bravo` carries a score of 4.0 and appears in every other table of the same report.
-     */
     @Test
     fun theAccountedTableIsShorterThanTopProcessCountWhenOnlySomeApplicationsDraw() {
         val output = ReportFormatter.text(rankingReport().copy(topProcessCount = 5))
@@ -127,11 +108,6 @@ class ReportFormatterTest {
         )
     }
 
-    /**
-     * A sample where every process reads zero is a sample the kernel counter is dead in, and the
-     * table is then exactly what it has always been: the heuristic score, ranked by score, with no
-     * watt figure anywhere in it.
-     */
     @Test
     fun theBatteryImpactTableKeepsTheHeuristicScoreWhenNothingIsAccounted() {
         val output = ReportFormatter.text(zeroEnergyReport())
@@ -247,12 +223,6 @@ class ReportFormatterTest {
         assertFalse("Harmon sample at" in payload.html)
     }
 
-    /**
-     * `alpha` and `bravo` tie on CPU in the fixture, so a selection that reorders equal metrics
-     * — anything but a stable sort — shows up here as a swapped pair. The expected order is
-     * written out rather than derived from the fixture: computing it with the expression the
-     * renderer uses would make the two fail only together.
-     */
     @Test
     fun ranksTiedApplicationsInTheOrderTheyWereSampled() {
         val output = ReportFormatter.text(rankingReport())
@@ -271,7 +241,6 @@ class ReportFormatterTest {
         )
     }
 
-    /** The quiet sample: no alert to name, so the push carries a state-of-the-machine line. */
     @Test
     fun aNotificationWithoutAlertsCarriesThePowerStateAndTheTopCpuApplication() {
         val payload = ReportFormatter.notification(rankingReport().copy(alerts = emptyList()))
@@ -294,10 +263,6 @@ class ReportFormatterTest {
         assertContains(payload.text, "top CPU n/a")
     }
 
-    /**
-     * `notifyEverySample` widens what the push shows, not what counts as new, so the caller has
-     * to be able to push every active alert while still naming only the fresh ones.
-     */
     @Test
     fun namesTheNewKeysIndependentlyOfTheAlertsThePushCarries() {
         val report = alertingReport()
@@ -316,11 +281,6 @@ class ReportFormatterTest {
         )
     }
 
-    /**
-     * The capped alert list is only honest if the keys it dropped are still named somewhere. A
-     * reader of the text report — and of the HTML built from it — has to see that the list is
-     * not everything that crossed a threshold.
-     */
     @Test
     fun namesTheOverThresholdKeysTheCappedAlertListLeftOut() {
         val report = alertingReport().copy(
@@ -335,11 +295,6 @@ class ReportFormatterTest {
         )
     }
 
-    /**
-     * The orphan rule carries no rendering of its own: its alert reaches the reader through the
-     * same `Alerts:` block every other rule uses, which is what this asserts end to end from the
-     * analyzer rather than from a hand-built alert.
-     */
     @Test
     fun rendersAnOrphanAlertThroughTheSharedAlertsBlock() {
         val usage = systemUsage(
@@ -369,7 +324,6 @@ class ReportFormatterTest {
         tableRows(output, heading)
             .map { it.substringAfter(". ").substringBefore(" (") }
 
-    /** The rendered rows of one table, heading included in the lookup so a missing one fails. */
     private fun tableRows(output: String, heading: String): List<String> {
         assertContains(output, "$heading:\n")
         return output

@@ -21,7 +21,7 @@ import platform.posix.errno
 import platform.posix.strerror
 import kotlin.time.Clock
 
-/** Pause after a failed `accept`, so a permanently broken listener cannot spin the CPU. */
+/** Prevents a permanently broken listener from spinning the CPU. */
 private const val ACCEPT_FAILURE_PAUSE_MILLISECONDS = 100uL
 
 class CollectorServer(
@@ -115,10 +115,7 @@ class CollectorServer(
     }
 }
 
-/**
- * One `hm_unix_accept` call. [resultOrDescriptor] is the client descriptor when non-negative and
- * an error code otherwise, so only [AcceptDecision.SERVE] may use it as a descriptor.
- */
+/** [resultOrDescriptor] is a descriptor only when AcceptDecision is SERVE. */
 private data class AcceptAttempt(
     val resultOrDescriptor: Int,
     val peerUserId: UInt,

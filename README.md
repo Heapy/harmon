@@ -180,7 +180,8 @@ scripts/test-native.sh socket.
 ```
 
 Neither harness is meant to run as root; two of the checks assume an ordinary
-user. `CLAUDE.md` describes both harnesses in full.
+user. [`docs/native-testing.md`](docs/native-testing.md) describes both
+harnesses in full.
 
 The release executables are written to:
 
@@ -440,11 +441,12 @@ queries worth starting from, is [the sample history](docs/history.md).
 
 ## Install with Homebrew
 
-The formula is maintained in a separate tap. Once the generated formula has
-been copied there, the normal installation and upgrade flow is:
+The formula is maintained in the
+[Heapy Homebrew tap](https://github.com/Heapy/homebrew-tap). The normal
+installation and upgrade flow is:
 
 ```shell
-brew install OWNER/TAP/harmon
+brew install Heapy/tap/harmon
 harmon setup
 harmon status
 ```

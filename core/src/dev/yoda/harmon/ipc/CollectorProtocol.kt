@@ -14,11 +14,7 @@ class CollectorProtocolException(message: String, cause: Throwable? = null) :
     IllegalStateException(message, cause)
 
 object CollectorProtocol {
-    /**
-     * 2 since the CPU counters of a raw process sample carry real nanoseconds instead of mach
-     * absolute time. The collector and the agent are a matched pair: a version bump is how a
-     * half-upgraded install fails loudly instead of reporting 41x-low CPU on Apple Silicon.
-     */
+    /** Version 2 changed process CPU counters from Mach ticks to nanoseconds. */
     const val VERSION = 2
 
     private val json = Json {
@@ -35,13 +31,7 @@ object CollectorProtocol {
             ),
         )
 
-    /**
-     * Decodes a frame in a single strict pass, and only re-reads it when that pass failed.
-     *
-     * The strict decoder names the offending field, which is misleading when the real cause is a
-     * peer speaking another version: a newer collector's extra field would be reported as invalid
-     * JSON. So a failure is re-read once, purely to see whether a version mismatch explains it.
-     */
+    /** Re-parses only after strict decoding fails so a newer envelope reports a version mismatch. */
     fun decode(payload: String): RawSystemSnapshot {
         val envelope = try {
             json.decodeFromString(CollectorEnvelope.serializer(), payload)
@@ -58,12 +48,6 @@ object CollectorProtocol {
         return envelope.snapshot
     }
 
-    /**
-     * Reads only the advertised protocol version for diagnostics.
-     *
-     * Status needs to report a newer peer's version even when the strict snapshot decoder cannot
-     * understand the rest of that peer's envelope.
-     */
     fun reportedVersion(payload: String): Int? {
         val element = try {
             json.parseToJsonElement(payload)
@@ -73,7 +57,6 @@ object CollectorProtocol {
         return protocolVersionOf(element)
     }
 
-    /** The protocol error a failed decode really stands for, or null when the version is fine. */
     private fun versionMismatch(payload: String): CollectorProtocolException? {
         val version = reportedVersion(payload) ?: return null
         return if (version == VERSION) {
@@ -90,8 +73,7 @@ object CollectorProtocol {
             "Unsupported collector protocol $version; expected $VERSION"
         }
 
-    // only a bare integer is read as a version here: a fractional one is not a version to truncate
-    // towards, and the strict decoder's own error describes it better than a version nobody sent
+    // A fractional JSON number is invalid, not a version to truncate.
     private fun protocolVersionOf(element: JsonElement): Int? {
         val field = (element as? JsonObject)?.get(PROTOCOL_VERSION_FIELD) as? JsonPrimitive
             ?: return null
@@ -101,11 +83,7 @@ object CollectorProtocol {
     private const val PROTOCOL_VERSION_FIELD = "protocolVersion"
 }
 
-/**
- * Stands in for a frame that carries no version field at all. A peer that dropped or renamed it is
- * a protocol mismatch, not malformed JSON, and has to be reported as one — which only works while
- * this is also what [CollectorEnvelope] defaults to.
- */
+/** Must match CollectorEnvelope's default so a missing field is diagnosed as a version mismatch. */
 private const val MISSING_PROTOCOL_VERSION = 0
 
 @Serializable

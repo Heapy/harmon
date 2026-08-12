@@ -18,18 +18,8 @@ import kotlin.test.fail
 
 private const val MISSING_HARNESS = "scripts/no-such-harness.sh"
 
-/**
- * Enough of a gap for two files created in a row to carry distinguishable timestamps.
- *
- * The guard compares sub-second times, so this is generous rather than necessary; it costs the
- * three guard tests a twentieth of a second between them and removes the question entirely.
- */
 private const val TIMESTAMP_GAP_MICROSECONDS = 20_000u
 
-/**
- * The C harness under a relative path that does not exist, which is what every test here wants: a
- * tool nothing has to build, whose resolved path and override key are the subject.
- */
 private fun missingHarness(override: String? = null): NativeTool = NativeTool(
     label = "a harness",
     environmentKey = "HARMON_NATIVE_TEST_SCRIPT",
@@ -56,13 +46,8 @@ private fun toolAt(path: String): NativeTool = NativeTool(
     override = null,
 )
 
-/**
- * A scratch directory under `/tmp` rather than `TMPDIR`, matching the C socket suite: the per-user
- * `TMPDIR` on macOS is long enough to matter and nothing here needs it.
- */
 @OptIn(ExperimentalForeignApi::class)
 private fun temporaryDirectory(): String = memScoped {
-    /* `cstr` allocates a writable copy in this scope, which is what mkdtemp edits in place. */
     mkdtemp("/tmp/harmon-guard-test.XXXXXX".cstr.getPointer(this))?.toKString()
         ?: fail("cannot create a temporary directory")
 }
@@ -74,7 +59,6 @@ private fun writeFile(path: String, content: String = "harmon\n") {
     fclose(file)
 }
 
-/** A harness of one `printf`: the only way to drive [runNativeHarness] over chosen output. */
 @OptIn(ExperimentalForeignApi::class)
 private fun scriptPrinting(root: String, body: String): NativeTool {
     val path = "$root/harness.sh"
@@ -98,7 +82,6 @@ private fun createDirectory(path: String) {
     )
 }
 
-/** Runs [body] against a scratch directory that is removed whatever the outcome. */
 @OptIn(ExperimentalForeignApi::class)
 private fun withTemporaryDirectory(body: (String) -> Unit) {
     val root = temporaryDirectory()
@@ -132,11 +115,6 @@ class NativeHarnessTest {
         )
     }
 
-    /**
-     * Only the first colon separates the name from the detail: a detail is free-form C `printf`
-     * output and carries colons of its own often enough that splitting on the last one, or on all
-     * of them, would truncate the very message that explains the failure.
-     */
     @Test
     fun keepsColonsInsideTheDetail() {
         assertEquals(
@@ -199,10 +177,6 @@ class NativeHarnessTest {
         )
     }
 
-    /**
-     * The assertion ends the test on the first failure, so the rest would go unmentioned unless
-     * they were named in its text — and "one of five checks failed" is a worse message than a list.
-     */
     @Test
     fun namesTheOtherFailingChecksAfterTheFirst() {
         val failure = assertFailsWith<AssertionError> {
@@ -234,10 +208,6 @@ class NativeHarnessTest {
         )
     }
 
-    /**
-     * A harness that dies halfway through prints nothing but `ok` lines, so the exit status is the
-     * only thing that separates a completed run from a truncated one.
-     */
     @Test
     fun refusesARunThatDidNotFinishNormally() {
         val killed = assertFailsWith<AssertionError> {
@@ -312,11 +282,6 @@ class NativeHarnessTest {
         )
     }
 
-    /**
-     * The test process runs with the module directory as its working directory, which is what makes
-     * a relative path resolve at all; that assumption breaks under `--build-dir`, so the resolved
-     * absolute path travels in every message and the environment key overrides it.
-     */
     @Test
     fun resolvesToolPathsAbsolutely() {
         val tool = missingHarness()
@@ -334,10 +299,6 @@ class NativeHarnessTest {
         )
     }
 
-    /**
-     * A missing binary fails the test rather than skipping it: `./kotlin test` does not build the
-     * external harnesses, so a silent skip is exactly how this coverage would rot away unnoticed.
-     */
     @Test
     fun failsWithTheAbsolutePathWhenTheToolIsMissing() {
         val tool = missingHarness()
@@ -354,10 +315,6 @@ class NativeHarnessTest {
         )
     }
 
-    /**
-     * `./kotlin test` does not link the selftest binary, so its absence means `./kotlin build` has
-     * not run — and that has to be a failure with instructions, never a skip.
-     */
     @Test
     fun failsWhenTheHarnessBinaryWasNeverBuilt() {
         val tool = toolAt("build/tasks/_selftest_linkMacosArm64Debug/no-such-selftest.kexe")
@@ -376,11 +333,6 @@ class NativeHarnessTest {
         )
     }
 
-    /**
-     * The binary is only as good as the sources it was linked from, and nothing in `./kotlin test`
-     * relinks it. An edit that was never built must fail rather than be measured by yesterday's
-     * binary.
-     */
     @Test
     fun failsWhenTheBinaryIsOlderThanItsSources() = withTemporaryDirectory { root ->
         val binary = "$root/selftest.kexe"
@@ -399,11 +351,6 @@ class NativeHarnessTest {
         )
     }
 
-    /**
-     * The tree is walked, not stat'ed at the top: a directory's own timestamp does not move when
-     * the contents of a file inside it change, so an edit nested one level down would otherwise
-     * pass unnoticed.
-     */
     @Test
     fun noticesAnEditNestedInTheSourceTree() = withTemporaryDirectory { root ->
         createDirectory("$root/src/binding")
@@ -423,11 +370,6 @@ class NativeHarnessTest {
         )
     }
 
-    /**
-     * A source list that resolves to nothing is how the guard stops guarding: a path renamed in the
-     * repository but not in [SELFTEST_SOURCES] leaves a list of files that do not exist, and a
-     * guard that took "no sources" for "nothing newer" would pass over any binary at all.
-     */
     @Test
     fun failsWhenNoSourceExists() = withTemporaryDirectory { root ->
         val binary = "$root/selftest.kexe"
@@ -443,11 +385,6 @@ class NativeHarnessTest {
         )
     }
 
-    /**
-     * `fgets` fills a fixed buffer, so a line longer than it arrives in pieces that have to be
-     * joined, and a last line without a newline has to be kept rather than dropped. Both are how a
-     * real check name reaches the parser when a C `printf` is interleaved with anything else.
-     */
     @Test
     fun assemblesLinesSplitAcrossReadsAndWithoutATrailingNewline() = withTemporaryDirectory { root ->
         val detail = "x".repeat(9000)

@@ -7,16 +7,12 @@ import dev.yoda.harmon.util.failureDescription
 interface NotificationChannel {
     val name: String
 
-    /**
-     * A channel that cannot confirm delivery synchronously. Its result never decides whether the
-     * sample was delivered, so a failure elsewhere is not masked by its optimistic success.
-     */
+    /** Optimistic success from an asynchronously confirmed channel cannot settle an alert. */
     val bestEffort: Boolean get() = false
 
     fun deliver(payload: NotificationPayload): DeliveryResult
 }
 
-/** What one dispatch achieved: what each channel reported, and whether the sample was delivered. */
 data class DeliverySummary(
     val results: List<DeliveryResult>,
     val decisiveSuccess: Boolean,
@@ -25,12 +21,7 @@ data class DeliverySummary(
 class NotificationDispatcher(
     private val channels: List<NotificationChannel>,
 ) {
-    /**
-     * Delivers [payload] through every channel, deciding whether the sample counts as delivered.
-     *
-     * Only the optimistic success of a best-effort channel is discounted. A reported failure is
-     * still decisive, and an empty dispatcher succeeds because nothing contradicts delivery.
-     */
+    /** Reported failures remain decisive; only optimistic best-effort successes are discounted. */
     fun deliver(payload: NotificationPayload): DeliverySummary {
         val delivered = channels.map { channel -> channel to channel.resultFor(payload) }
         val observed = delivered

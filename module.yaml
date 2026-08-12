@@ -13,7 +13,5 @@ dependencies:
 
 settings:
   kotlin:
-    # The bridge spike proved that linkerOpts declared by a .def cross module boundaries.
-    # This is different: freeCompilerArgs is a per-module compiler setting, so the copy in
-    # history-sqlite does not reach this final application link.
+    # freeCompilerArgs is module-local; history-sqlite's copy cannot reach this app link.
     freeCompilerArgs: [-linker-option, -lsqlite3]

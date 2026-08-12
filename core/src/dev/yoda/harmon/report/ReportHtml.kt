@@ -1,8 +1,6 @@
 package dev.yoda.harmon.report
 
-/**
- * Produces a self-contained local report without scripts or remote resources.
- */
+/** Produces a self-contained local report without scripts or remote resources. */
 object ReportHtml {
     fun document(
         title: String,

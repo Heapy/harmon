@@ -199,11 +199,6 @@ class AlertAnalyzerTest {
         }
     }
 
-    /**
-     * The two thresholds govern one regime each. Nesting the watt rule inside the score threshold's
-     * `?.let` would tie them together, because `optionalPositiveDouble` turns a configured `0` into
-     * a `null`.
-     */
     @Test
     fun doesNotFallBackToTheScoreWhenTheWattThresholdIsDisabled() {
         val usage = systemUsage(processes = listOf(processUsage(energyWatts = 3.0, impact = 260.0)))
@@ -239,7 +234,6 @@ class AlertAnalyzerTest {
         assertEquals("example (PID 42) draws 3.0 W", alert.message)
     }
 
-    /** The comparison is `>=`, so the configured watts are over the line rather than under it. */
     @Test
     fun alertsAtExactlyTheWattThreshold() {
         val usage = systemUsage(processes = listOf(processUsage(energyWatts = 1.5)))
@@ -250,12 +244,6 @@ class AlertAnalyzerTest {
         assertEquals(Severity.WARNING, alerts.single().severity)
     }
 
-    /**
-     * The watt rule clears at nine tenths of its threshold like every other application rule, so an
-     * application hovering between 1.35 W and 1.5 W holds one alert instead of pushing a fresh one
-     * on every sample it crosses back over. Only an already-active key is graded against the
-     * lowered bound.
-     */
     @Test
     fun holdsThePowerAlertBetweenItsClearRatioAndItsThresholdOnlyWhileActive() {
         val usage = systemUsage(processes = listOf(processUsage(energyWatts = 1.4)))
@@ -271,15 +259,6 @@ class AlertAnalyzerTest {
         )
     }
 
-    /**
-     * The regime belongs to the sample, so a counter falling silent between two samples clears one
-     * key and raises the other for the same application — and the only way to say that is to run
-     * the second sample with the first one's state.
-     *
-     * The `power:` key is handed back as `activeKeys` and must appear in neither the alerts nor the
-     * firing set: a rule evaluating both branches would report it beside the score key, and a state
-     * retaining a key no rule matched would leave it firing with nothing left to clear it.
-     */
     @Test
     fun clearsTheWattKeyWhenTheCounterFallsSilentBetweenSamples() {
         val analyzer = AlertAnalyzer()
@@ -301,7 +280,6 @@ class AlertAnalyzerTest {
         assertEquals(emptySet(), second.suppressedKeys)
     }
 
-    /** The two system-wide rules spell their hysteresis out by hand, one rule at a time. */
     @Test
     fun holdsTheSwapAlertBetweenItsClearRatioAndItsThresholdOnlyWhileActive() {
         val usage = systemUsage(
@@ -340,15 +318,6 @@ class AlertAnalyzerTest {
         )
     }
 
-    /**
-     * Every rule that has a magnitude, and both battery regimes, because the watt rule and the
-     * score rule are one rule with two thresholds and cannot both fire for one sample: the eighth
-     * key only appears in the pass whose counter is alive. That pass is also the only place the
-     * watt rule is seen beside the other rules rather than alone in the list.
-     *
-     * `orphan` is in neither pass. It reads an event, has no threshold to double, and is always a
-     * warning.
-     */
     @Test
     fun gradesEveryRuleAsCriticalAtTwiceItsThreshold() {
         listOf(0.0 to "battery-impact", 4.0 to "power").forEach { (energyWatts, batteryKey) ->
@@ -392,11 +361,6 @@ class AlertAnalyzerTest {
         }
     }
 
-    /**
-     * An active key pushed out of the top slice stays in the firing set even though no report
-     * carries it. Dropping it would leave the alert state, and its return to the slice would look
-     * like a fresh alert and push again.
-     */
     @Test
     fun keepsActiveKeyThatFellOutOfTheTopSliceFiringWithoutReportingIt() {
         val usage = systemUsage(
@@ -417,13 +381,6 @@ class AlertAnalyzerTest {
         assertEquals(setOf(demotedKey), outcome.suppressedKeys)
     }
 
-    /**
-     * The overflow a report admits to has to be the whole overflow, so a key crossing its
-     * threshold for the first time below the cut is suppressed, not dropped silently. It still
-     * stays out of the firing set: it was never pushed, and giving it the lowered clear threshold
-     * from the next sample on would keep an application hovering just under the threshold alerting
-     * indefinitely.
-     */
     @Test
     fun suppressesAKeyOverTheThresholdForTheFirstTimeWithoutMakingItFire() {
         val usage = systemUsage(
@@ -443,12 +400,6 @@ class AlertAnalyzerTest {
         assertTrue(rankedOutKey !in outcome.firingKeys, outcome.firingKeys.toString())
     }
 
-    /**
-     * The two sides of the split, on the case that motivates it: the firing set has no ceiling of
-     * its own, because dropping an active key from it causes a spurious repeat push, while the
-     * reported list stays at `maxAlertsPerCategory` — an uncapped report grows with every busy
-     * sample and never shrinks.
-     */
     @Test
     fun reportsAtMostTheCategoryCapWhileKeepingEveryActiveKeyFiring() {
         val alerting = (1..7).map { index ->
@@ -466,11 +417,6 @@ class AlertAnalyzerTest {
         assertEquals(demoted, outcome.suppressedKeys)
     }
 
-    /**
-     * `ConfigLoader` rejects a negative threshold from a file, but one built in code reaches this
-     * conversion directly. Reinterpreting it as unsigned would saturate and switch the rule off
-     * without a word; folding it to zero makes the mistake fire instead of vanish.
-     */
     @Test
     fun treatsANegativeMemoryThresholdAsZeroRatherThanAsUnreachable() {
         val usage = systemUsage(processes = listOf(processUsage()))
@@ -550,11 +496,6 @@ class AlertAnalyzerTest {
         assertEquals("node (pid 44559) lost its parent codex (pid 44268)", alert.message)
     }
 
-    /**
-     * `UsageCalculator` records every parent change, not only the one that ends at pid 1, so the
-     * gate that turns a change into orphanhood is this rule's own. On Darwin no other transition
-     * exists, but the rule states the condition rather than assuming it.
-     */
     @Test
     fun raisesNoAlertWhenTheNewParentIsNotPidOne() {
         val usage = systemUsage(processes = listOf(orphan(parentPid = 300)))
@@ -565,7 +506,6 @@ class AlertAnalyzerTest {
         assertEquals(emptySet(), outcome.suppressedKeys)
     }
 
-    /** The parent was already gone in the previous sample too, so only its pid can be named. */
     @Test
     fun namesTheParentByPidAloneWhenThePreviousSampleDidNotHoldItsName() {
         val usage = systemUsage(processes = listOf(orphan(parentName = null)))
@@ -575,15 +515,6 @@ class AlertAnalyzerTest {
         assertEquals("node (pid 44559) lost its parent (pid 44268)", alerts.single().message)
     }
 
-    /**
-     * The pid order is what makes the cut deterministic: orphanhood has no metric to rank by, so
-     * without it the two processes that lose their notification would depend on sample order.
-     *
-     * Every second process in the list is an ordinary one, and it is there so that the cap is seen
-     * to count orphans rather than processes: a rule that ranked or took over `usage.processes`
-     * would keep the wrong three, and one that paired a process with someone else's
-     * `reparentedFrom` would name the wrong pid.
-     */
     @Test
     fun capsOrphanAlertsByPidAndSuppressesTheRest() {
         val usage = systemUsage(
@@ -608,16 +539,6 @@ class AlertAnalyzerTest {
         )
     }
 
-    /**
-     * A suppressed orphan never joins the firing set, so its edge is gone for good — and the only
-     * way to say that is to run the sample after it.
-     *
-     * The second sample carries the same five processes, still under launchd, with no transition:
-     * that is what the next sample of a real supervisor collapse looks like. The suppressed keys
-     * are handed in as `activeKeys` anyway, to state that even a caller who kept them would get no
-     * alert back — `analyze` re-admits a suppressed key only when the rule suppressed it again,
-     * and there is nothing left for the rule to suppress.
-     */
     @Test
     fun doesNotKeepASuppressedOrphanFiringForALaterSample() {
         val analyzer = AlertAnalyzer()
@@ -658,10 +579,6 @@ class AlertAnalyzerTest {
         assertEquals(emptySet(), outcome.suppressedKeys)
     }
 
-    /**
-     * The rule has no threshold to set to zero, so `orphanAlerts=false` is the only way a user
-     * can silence it. Off means nothing at all, not even a suppressed key in the report.
-     */
     @Test
     fun raisesNoAlertForAnOrphanWhenTheRuleIsSwitchedOff() {
         val usage = systemUsage(
@@ -695,7 +612,6 @@ class AlertAnalyzerTest {
             reparentedFrom = ReparentedFrom(pid = 44268, name = parentName),
         )
 
-        /** 2^44 MiB: the byte value wraps to zero without a saturating conversion. */
         const val OVERFLOWING_MIB = 1L shl 44
 
         fun onlyMemoryThreshold(mib: Long): HarmonConfig =
@@ -703,7 +619,6 @@ class AlertAnalyzerTest {
 
         fun onlySwapThreshold(mib: Long): HarmonConfig = singleThreshold(swapUsedMiB = mib)
 
-        /** Every rule but the ones named disabled, so a test observes exactly what it enables. */
         fun singleThreshold(
             applicationMemoryMiB: Long? = null,
             swapUsedMiB: Long? = null,
@@ -722,11 +637,6 @@ class AlertAnalyzerTest {
             ),
         )
 
-        /**
-         * Only the two battery-drain thresholds, at their shipped defaults unless a test disables
-         * one, so the cross product of the two keys is observed without another rule's alert in
-         * the list. A `null` is what `optionalPositiveDouble` makes of a configured `0`.
-         */
         fun batteryRegimeThresholds(
             watts: Double? = 1.5,
             score: Double? = 100.0,

@@ -3,34 +3,7 @@
 #include "anchors.h"
 #include "harness.h"
 
-/*
- * Snapshots of machine state. Nothing here can assert an exact value — the
- * numbers belong to whatever the machine is doing at the moment — so the checks
- * come in two kinds. One asserts the invariants the callers depend on: a status
- * of 0, counters that only move forward, outputs consistent with each other. The
- * other reads the same kernel source a second time and compares the sample to it
- * field by field, because every invariant of the first kind survives a mapping
- * that puts the right numbers in the wrong fields.
- */
 
-/*
- * The two readers with nothing but a plausibility bound on them, against the
- * sources they read.
- *
- * `hm_read_physical_memory` is a single sysctl and the number is constant, so the
- * anchor is an equality: a wrong sysctl name — `hw.pagesize` reads 16384, and
- * `hw.memsize_usable` a few hundred megabytes less — is otherwise caught only
- * incidentally, by `selftest`'s footprint bound.
- *
- * The three load averages are bracketed by two `getloadavg` calls around the
- * bridge's rather than compared with a tolerance. The kernel refreshes them every
- * five seconds and a refresh may land between the reads, so a fixed allowance
- * would have to be wide enough to cover a burst of processes starting — and a
- * transposed one-minute and fifteen-minute pair sits well inside such an
- * allowance on a machine under a build. Bracketing costs nothing and needs no
- * number: on an idle machine where all three averages are the same value, no
- * check can separate them at all.
- */
 static int hm_within_load_range(double reported, double first, double second) {
     const double low = first < second ? first : second;
     const double high = first > second ? first : second;
@@ -116,20 +89,6 @@ static void hm_check_memory_and_load(void) {
     );
 }
 
-/*
- * The collector turns these counters into deltas between samples, so a counter
- * that went backwards would produce a negative busy time or a nonsensical
- * utilisation. Two reads moments apart cannot straddle the 32-bit wrap the
- * kernel counters are subject to, so monotonicity here is unconditional — and
- * that, plus a non-zero aggregate, is exactly what the name promises.
- *
- * Growth is not asserted, and the check is not named as if it were:
- * host_statistics serves HOST_CPU_LOAD_INFO from a cache the kernel refreshes
- * once a second, measured on this machine at 1.000 s between changes. An earlier
- * revision burned 100 ms of CPU between the two reads to force an advance; over
- * that window the aggregate still came back byte-identical in 5 of 12 probe
- * runs, so the burn bought nothing the assertion uses and was removed.
- */
 static void hm_check_processor_counters(void) {
     HMProcessorSample before;
     HMProcessorSample after;
@@ -166,24 +125,6 @@ static void hm_check_processor_counters(void) {
     );
 }
 
-/*
- * Which kernel counter ends up in which field. The check above holds whatever
- * that mapping is — transposed user and system ticks are both monotonic, and so
- * is an idle field filled from the user counter — so the four fields are compared
- * against a second `host_statistics` call.
- *
- * The tolerance is for the refresh, not for the reads: measured here, 2000
- * back-to-back pairs never differed by a tick, because the kernel serves this
- * from a cache it refreshes once a second. One refresh is worth a second of
- * ticks, which across the 14 cores of this machine is under 1400 in any one
- * field, while the fields the comparison separates are millions apart (375M
- * user, 222M system, 2036M idle).
- *
- * `nice_ticks` is the exception, and the reason it is only half covered: it reads
- * 0 on this machine and a 300 ms burn at nice 19 does not move it, so a bridge
- * that hard-coded it to zero would agree with the anchor. CLAUDE.md lists that
- * among the accepted gaps.
- */
 #define HM_TICK_DRIFT 4096ULL
 
 static void hm_check_processor_fields(void) {
@@ -227,31 +168,6 @@ static void hm_check_processor_fields(void) {
     );
 }
 
-/*
- * How far a byte figure of the swap or virtual memory sample may sit from a read
- * of the same source moments later. One constant for both, because the rule that
- * fixes it is the same: a tolerance wider than the value it is applied to checks
- * nothing, so it is chosen against the smallest field it has to keep separated
- * from zero.
- *
- * It was 64 MiB and is 8 MiB, from measurement rather than caution. 3000
- * back-to-back pairs of `host_statistics64` never differed by a page in any of
- * the eight page counts, and 2000 pairs spread over ten seconds under four
- * processes churning 64 MiB blocks moved at most 130 pages — 2.03 MB of free
- * memory — with only five pairs in the whole run differing at all. The allowance
- * is four times that worst case. `vm.swapusage` is quieter still: zero drift over
- * 2000 back-to-back pairs.
- *
- * What the old figure cost is why it moved: at 64 MiB a bridge reporting a hard
- * zero was inside the allowance for 56 MB of purgeable memory here, for
- * `compressed_bytes` on a runner with no memory pressure — the headline number of
- * this monitor — and for `xsu_used` and `xsu_avail` on any machine holding less
- * than 64 MiB of swap, which a CI runner that has never paged is. The fields it
- * separates on this machine are 9.3 GB of used swap against 928 MB available.
- *
- * The event counters carry their own allowance, which is not in the same trouble:
- * they are 394M pageins against 11M pageouts, 63M swapins against 70M swapouts.
- */
 #define HM_MEMORY_DRIFT_BYTES (8ULL * 1024ULL * 1024ULL)
 #define HM_MEMORY_DRIFT_EVENTS 1000000ULL
 
@@ -269,26 +185,6 @@ static void hm_check_swap_and_virtual_memory(void) {
     memset(&memory, 0, sizeof(memory));
     const int memory_status = hm_read_virtual_memory(&memory);
 
-    /*
-     * Every byte figure of the virtual memory sample is a page count multiplied
-     * by the page size, so a page size of zero — or one that is not a power of
-     * two — would silently zero or skew the whole sample.
-     *
-     * The swap figures are asserted against a second, independent read of the
-     * same sysctl, field by field. `used + available == total` is worth nothing
-     * on its own: it survives a transposed `xsu_used`/`xsu_avail` pair intact,
-     * because `available <= total` keeps `total >= used` true as well, and all
-     * three figures would keep adding up while `used` reported free space. The
-     * anchor is the only thing that says which field went where. Swap may
-     * legitimately be empty, and on a machine with no swap file at all the three
-     * figures are zero and a transposition is invisible to any check.
-     *
-     * `encrypted` is compared too, normalised on both sides the way the bridge
-     * normalises it, because the report prints "(encrypted)" from it and the JSON
-     * carries it: inverting the flag is otherwise invisible. A machine whose swap
-     * is not encrypted has both sides at zero and cannot separate an inversion
-     * either.
-     */
     const HMAnchoredField swap_fields[] = {
         {"total_bytes", swap.total_bytes, anchor.xsu_total, HM_MEMORY_DRIFT_BYTES},
         {"used_bytes", swap.used_bytes, anchor.xsu_used, HM_MEMORY_DRIFT_BYTES},
@@ -337,20 +233,6 @@ static void hm_check_swap_and_virtual_memory(void) {
     );
 }
 
-/*
- * The other half of the virtual memory sample: which statistic lands in which
- * field. The check above asserts only the page size and a non-zero sum of the
- * four residency figures, which a sample with `compressed_bytes` zeroed or
- * `pageins` and `pageouts` transposed satisfies exactly as well — and
- * `compressed_bytes` is the headline number of this whole monitor.
- *
- * Every page count is multiplied here as it is there, so the multiplication is
- * mirrored rather than checked; the swap check covers a page size that is zero or
- * not a power of two, which is the failure that arithmetic has.
- *
- * The two tolerances are the ones the swap check above declares, with the
- * measurements that fixed them.
- */
 static void hm_check_virtual_memory_fields(void) {
     HMVirtualMemorySample sample;
     memset(&sample, 0, sizeof(sample));
@@ -424,18 +306,6 @@ static void hm_check_virtual_memory_fields(void) {
     );
 }
 
-/*
- * Storage is asserted against the machine, not against the implementation line
- * that sets `available`: a Mac running this harness has an internal block
- * storage driver, and that driver has read bytes since boot, at least one per
- * read operation. Those are the figures the collector reports; a run on a
- * machine with no internal device fails here with the device count in the
- * detail rather than passing vacuously.
- *
- * The battery is the opposite case — a Mac without one is a normal machine — so
- * everything about it is conditional on the availability flag. When there is a
- * battery, the percentage is a percentage.
- */
 static void hm_check_storage_and_battery(void) {
     HMStorageSample storage;
     memset(&storage, 0, sizeof(storage));
@@ -475,34 +345,6 @@ static void hm_check_storage_and_battery(void) {
     );
 }
 
-/*
- * Which IOKit key ends up in which storage field, and which `statfs` member ends
- * up in which filesystem figure. The check above asserts one relation between two
- * of the seven numbers; the rest — the written bytes, the write operations, both
- * service times — are unconstrained by it, and a read time filled from the write
- * time is exactly the kind of transposition it cannot see.
- *
- * The anchor walks the registry a second time, decides for itself which drivers
- * count and reads the keys out explicitly. It used to ask the bridge —
- * `hm_storage_driver_is_internal` — which moved the anchor with any mutation of
- * the filter: a bridge accepting every driver was green, while on a machine with
- * an external or a removable disk it folds that disk's I/O into the figures the
- * collector reports for the internal one. This machine carries five
- * `IOBlockStorageDriver` instances of which one is internal, so the two walks
- * disagree on the device count the moment the predicate moves; a machine with a
- * single driver cannot tell the filter from "accept everything", and CLAUDE.md
- * records that.
- *
- * The tolerances are for a machine that is doing I/O while the check runs, which
- * it is: measured over 50 back-to-back pairs, at most 61 KiB read, 16 KiB
- * written, 3 operations and 220 us of service time apart. The fields they
- * separate are 4 TB and 48 hours apart.
- *
- * `root_filesystem_available_bytes` is compared against `f_bavail`, which is what
- * the bridge multiplies. On the APFS root of this machine `f_bfree` and `f_bavail`
- * are equal, so reading the wrong one of the two is invisible here; CLAUDE.md
- * records that.
- */
 #define HM_STORAGE_DRIFT_BYTES (256ULL * 1024ULL * 1024ULL)
 #define HM_STORAGE_DRIFT_OPERATIONS 1000000ULL
 #define HM_STORAGE_DRIFT_NANOSECONDS 1000000000ULL
@@ -524,7 +366,6 @@ static uint64_t hm_storage_statistic(CFDictionaryRef statistics, CFStringRef key
     return value;
 }
 
-/* A boolean property, with the answer to give when the registry has none. */
 static int hm_registry_flag(io_registry_entry_t entry, CFStringRef key, int fallback) {
     CFTypeRef value = IORegistryEntryCreateCFProperty(entry, key, kCFAllocatorDefault, 0);
     int flag = fallback;
@@ -537,11 +378,6 @@ static int hm_registry_flag(io_registry_entry_t entry, CFStringRef key, int fall
     return flag;
 }
 
-/*
- * The whole media of a fixed disk: not a partition, not removable, not ejectable.
- * A property the registry does not carry counts against the media, which is the
- * conservative direction — an unnamed disk is not assumed to be built in.
- */
 static int hm_media_is_internal(io_registry_entry_t media) {
     return hm_registry_flag(media, CFSTR(kIOMediaWholeKey), 0) &&
         !hm_registry_flag(media, CFSTR(kIOMediaRemovableKey), 1) &&
@@ -696,25 +532,6 @@ static void hm_check_storage_fields(void) {
     );
 }
 
-/*
- * The battery fields against a second reading of the same power source. The check
- * above asserts a percentage inside 0..100, which `(current * 10) / maximum`
- * satisfies just as well as `(current * 100) / maximum`, and says nothing at all
- * about the charging flag, the power source or the estimate.
- *
- * What the anchor can prove depends on where the machine is plugged in, and the
- * detail says which case it took. Measured here, unplugged: 56 %, not charging,
- * on battery, 293 minutes — all four asserted. On mains power
- * `IOPSGetTimeRemainingEstimate` answers "unlimited" rather than a duration, the
- * bridge leaves `minutes_remaining` at -1, and the anchor agrees with it without
- * either of them having computed anything. CLAUDE.md records that half.
- *
- * The five fields are `int32_t` and every one of them carries -1 or 0 as a
- * sentinel, so they reach the table widened through `int64_t`: the conversion is
- * modular and agreeing sides stay equal, while a sentinel reported against a real
- * value comes out the whole width of the type apart, which is a mismatch, which
- * is right.
- */
 #define HM_BATTERY_DRIFT_MINUTES 2
 
 static uint64_t hm_battery_field(int32_t value) {

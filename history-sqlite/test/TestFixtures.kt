@@ -284,11 +284,6 @@ fun systemUsage(
     processIssues = emptyList(),
 )
 
-/**
- * A report whose applications tie on several ranked metrics and whose top-N slice is narrower
- * than the application list, so any change in how the slices are built shows up as a changed
- * order or a changed membership.
- */
 fun rankingReport(): MonitoringReport = MonitoringReport(
     usage = systemUsage(
         processes = listOf(
@@ -351,38 +346,20 @@ fun alert(
     message = message,
 )
 
-/** The process that loses its parent in [orphanReport], and the parent it loses. */
 const val ORPHANED_PID = 11
 
 const val LOST_PARENT_PID = 4_241
 
-/** The parent the calculator reports as lost, named the way it was named while it was alive. */
 val LOST_PARENT: ReparentedFrom = ReparentedFrom(pid = LOST_PARENT_PID, name = "supervisor")
 
-/** The moment [orphanReport] samples at by default, and the string `captured_at` stores it as. */
 val FIRST_SAMPLE: Instant = Instant.fromEpochSeconds(100)
 
 const val FIRST_SAMPLE_AT = "1970-01-01T00:01:40Z"
 
-/**
- * Five minutes later, for the tests that take a second sample: an unguarded second write of the
- * same moment would land the same string and prove nothing.
- */
 val SECOND_SAMPLE: Instant = Instant.fromEpochSeconds(400)
 
 const val SECOND_SAMPLE_AT = "1970-01-01T00:06:40Z"
 
-/**
- * One sample of a single process, sampled at [capturedAt] with [parentPid] as its parent and
- * [lostParent] as the change the calculator saw — null for a process whose parent did not change.
- *
- * One process rather than a realistic set, because every test that reaches for this reads
- * `selectProcesses` as a single row: what they ask is which of the two conditions a stamp needs, or
- * what becomes of the one lookup row that two samples both name, and a second process would only be
- * something to filter back out of the answer. That the stamp reaches the row it is about rather
- * than every row is the separate question `sampleAroundOneOrphan` in `HistoryProcessRowTest` exists
- * for, and that is why the wider shape stays local to it.
- */
 fun orphanReport(
     capturedAt: Instant = FIRST_SAMPLE,
     parentPid: Int = INIT_PID,
@@ -402,26 +379,15 @@ fun orphanReport(
     topProcessCount = 1,
 )
 
-/** The database file `HistoryStore.openOrNull` opens under a home directory. */
 const val HISTORY_DATABASE_NAME = "history.db"
 
-/** The directory that store keeps it in, named once for every test that has to reach the file. */
 fun historyDirectory(home: String): String = "$home/Library/Application Support/Harmon"
 
 fun historyDatabasePath(home: String): String = "${historyDirectory(home)}/$HISTORY_DATABASE_NAME"
 
-/**
- * Runs [body] against a home directory created for this test alone and removed afterwards.
- *
- * `mkdtemp` rather than a name built from the pid: whether the database is fresh decides things
- * that can never be decided again — the `auto_vacuum` header, the rows a lookup table already
- * holds — so a leftover file from an earlier run would answer a test with a value this code never
- * chose.
- */
 @OptIn(ExperimentalForeignApi::class)
 fun withScratchHome(body: (String) -> Unit) {
     val home = memScoped {
-        /* `cstr` allocates a writable copy in this scope, which is what mkdtemp edits in place. */
         mkdtemp("/tmp/harmon-history-test.XXXXXX".cstr.getPointer(this))?.toKString()
     } ?: fail("cannot create a temporary directory")
 
@@ -432,21 +398,6 @@ fun withScratchHome(body: (String) -> Unit) {
     }
 }
 
-/**
- * Runs [body] against a store opened under [home] the way the agent opens it.
- *
- * Through [HistoryStore.openOrNull] rather than over `inMemoryDriver`, and that is the whole point of
- * the scratch home: an in-memory driver leaves foreign keys off and holds a single connection, so
- * neither a cascade nor a `last_insert_rowid()` read from the wrong pool would fail on it.
- *
- * [retentionDays] and [intervalSeconds] default to the shipped configuration, which schedules the
- * retention pass on every twelfth sample — far enough apart that a test writing a handful of
- * samples only meets the pass if it asks for it.
- *
- * [logError] is where the store reports the failures that are its own rather than the caller's — a
- * retention pass that threw — and defaults to the production sink so that a test not looking for
- * one still shows it.
- */
 fun withHistoryStore(
     home: String,
     retentionDays: Long = 7,
@@ -467,16 +418,6 @@ fun withHistoryStore(
     }
 }
 
-/**
- * Runs [body] against an in-memory driver of its own, closed afterwards.
- *
- * Closing matters more here than it looks: an in-memory database lives inside its connection, so a
- * driver left open is a whole database resident for the rest of the test binary's run.
- *
- * What it is not is a substitute for [withHistoryStore]. This driver holds one connection and leaves
- * foreign keys off, so a cascade or a `last_insert_rowid()` read from the wrong pool passes on it
- * unnoticed; it is for the round-trip tests, which ask what a column holds and nothing else.
- */
 fun <T> withInMemoryDriver(body: (SqlDriver) -> T): T {
     val driver = inMemoryDriver(HarmonDatabase.Schema)
     return try {
@@ -486,39 +427,22 @@ fun <T> withInMemoryDriver(body: (SqlDriver) -> T): T {
     }
 }
 
-/** [withInMemoryDriver] for the tests that want the generated queries rather than the driver. */
 fun <T> withInMemoryDatabase(body: (HarmonDatabase) -> T): T =
     withInMemoryDriver { driver -> body(HarmonDatabase(driver)) }
 
-/**
- * A sample row for the child rows of another table to hang off, and its id.
- *
- * Nothing about it is asserted anywhere — `sample_id` just needs a parent that exists — which is
- * exactly why the round-trip tests for `process`, `application` and `alert` can all share one.
- */
 fun HarmonDatabase.insertParentSample(): Long {
     samplesQueries.insertSample(systemUsage(emptyList()))
     return samplesQueries.lastInsertedId().executeAsOne()
 }
 
-/** Every sample in the database, in the order the retention window reads them. */
 fun HistoryStore.samples() = database.samplesQueries
     .selectBetween("0000-01-01T00:00:00Z", "9999-12-31T23:59:59Z")
     .executeAsList()
 
-/** A cutoff every stored sample falls before, so a retention pass over it takes the lot. */
 const val AFTER_EVERY_SAMPLE = "9999-12-31T23:59:59Z"
 
-/** A cutoff every stored sample falls after, so a retention pass over it may take nothing. */
 const val BEFORE_EVERY_SAMPLE = "1970-01-01T00:00:00Z"
 
-/**
- * The single value [sql] answers with, read through [read].
- *
- * Counts and pragmas both come back this way, and a pragma is the reason it is a query at all:
- * sqliter's `execute()` throws on the first row a statement returns, so anything that answers has
- * to go through `executeQuery` even when it takes no parameters and reads one column.
- */
 fun <T : Any> SqlDriver.scalar(sql: String, read: (SqlCursor) -> T?): T? = executeQuery(
     identifier = null,
     sql = sql,
@@ -529,32 +453,16 @@ fun <T : Any> SqlDriver.scalar(sql: String, read: (SqlCursor) -> T?): T? = execu
     parameters = 0,
 ).value
 
-/**
- * The row count of [table], asked of the database rather than of a generated query.
- *
- * A generated query would not do: one test drops a table to force a rollback, and after that half
- * of them no longer compile against the file — and a table cleared by a cascade has no query of its
- * own to count through anyway.
- */
 fun SqlDriver.countRows(table: String): Long =
     scalar("SELECT count(*) FROM $table") { it.getLong(0) }
         ?: fail("counting $table returned no row")
 
-/** `PRAGMA page_count` — the size of the file in pages, which is what a vacuum changes. */
 fun SqlDriver.pageCount(): Long =
     scalar("PRAGMA page_count") { it.getLong(0) } ?: fail("PRAGMA page_count returned no row")
 
-/** The value of `PRAGMA [name]`, read through [read]. */
 fun <T : Any> SqlDriver.pragma(name: String, read: (SqlCursor) -> T?): T? =
     scalar("PRAGMA $name", read)
 
-/**
- * A notification channel that keeps everything it was handed.
- *
- * [successful] is asked once per delivery, with the number of that delivery starting at one, so a
- * channel that is down until its third push is a lambda rather than another stub. A [failure]
- * throws instead of answering at all, the way a channel that dies inside `deliver` does.
- */
 class RecordingChannel(
     override val name: String = "recording",
     override val bestEffort: Boolean = false,

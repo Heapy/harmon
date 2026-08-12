@@ -4,11 +4,7 @@ on:
   push:
     tags: ['v*']
 
-# On a v* tag, build and publish one paired macosArm64 archive. Keeping the
-# agent and collector in one asset makes a mixed source pair impossible.
-#
-# The image is pinned to macos-26 for its SDK: cinterop reads
-# `vm_statistics64.swapped_count`, which the macOS 14 SDK does not declare.
+# Keep the version-matched agent and collector in one archive.
 permissions:
   contents: write
   id-token: write
@@ -23,8 +19,6 @@ jobs:
       - name: Cache the Kotlin toolchain
         uses: actions/cache@v6
         with:
-          # The wrapper puts the CLI distribution under Library/Caches on macOS,
-          # and the Kotlin/Native compiler pulls its own prebuilt into ~/.konan.
           path: |
             ~/Library/Caches/JetBrains/Kotlin/cli
             ~/.konan
