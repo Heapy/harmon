@@ -4,6 +4,13 @@ Versioned, evidence-based notes about resource use observed with Harmon on this
 machine. Keep one tool per kebab-case file and one explicit verdict per measured
 axis.
 
+## Isolation from product work
+
+This directory is a standalone blog, not product documentation or implementation
+context. Sessions changing Harmon code must not read files under `discovered/`
+unless the task explicitly concerns this blog. Nothing here defines product
+behavior, architecture, requirements, or coding conventions.
+
 ## Required structure
 
 ```markdown
