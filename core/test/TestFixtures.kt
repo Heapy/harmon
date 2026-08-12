@@ -337,15 +337,17 @@ fun rankingReport(): MonitoringReport = MonitoringReport(
 
 /**
  * [rankingReport] with the kernel counter dead: every process reads zero watts, which is the only
- * way a sample says the counter never answered.
+ * way a sample says the counter never answered. The processes go back through [systemUsage] rather
+ * than being copied into the existing one, because the application records are grouped from them.
  */
-fun zeroEnergyReport(): MonitoringReport = MonitoringReport(
-    usage = systemUsage(
-        processes = rankingReport().usage.processes.map { it.copy(energyWatts = 0.0) },
-    ),
-    alerts = emptyList(),
-    topProcessCount = 3,
-)
+fun zeroEnergyReport(): MonitoringReport {
+    val accounted = rankingReport()
+    return accounted.copy(
+        usage = systemUsage(
+            processes = accounted.usage.processes.map { it.copy(energyWatts = 0.0) },
+        ),
+    )
+}
 
 fun alert(
     key: String,

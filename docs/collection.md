@@ -456,39 +456,37 @@ The score does not directly include GPU engines, network radio activity,
 display brightness, thermal state, or external peripherals.
 
 The wakeup weight of 0.25 and the I/O weight of 2 are why the score never
-matched Activity Monitor. Apple has
-never published the Energy Impact formula — the current guide describes it only
-as a relative measure of energy use — but it has been reconstructed twice. On
-OS X 10.9 Mavericks the `POWER` column of `top` matched Activity Monitor's
-Energy Impact, and its formula was
-`100 × (CPU_time_us + idle_wakeups × 500us) / elapsed_time_us`, which reduces to
-about `CPU% + 0.05 × wakeups/s`. Later Intel releases moved the coefficients
-into per-model files at `/usr/share/pmenergy/<board-id>.plist`, normalised so
-that one unit of Energy Impact is 10 ms of CPU-equivalent time; a wakeup was
-worth 0.0002 s of that, about `0.02 × wakeups/s`. Apple lowered the wakeup
-penalty over time, and Harmon's 0.25 is 5× the Mavericks figure and 12.5× the
-later one. Those plists carry disk and network coefficients too, but their units
-are unclear enough that Chromium's reimplementation deliberately does not apply
-them, so Harmon's 2 per MiB/s of physical I/O has no Apple analogue at all. On
-Apple silicon the comparison stops being possible at all: the kernel accounts
-energy directly in nanojoules — `ri_energy_nj`, what `energyWatts` is derived
-from — and no public formula maps that onto the number the UI shows.
+matched Activity Monitor. Apple has never published the Energy Impact formula;
+the current guide describes that column only as a relative measure of an
+application's energy consumption. Third-party reconstructions have been
+published — one reading the `POWER` column of `top` on OS X 10.9 as the same
+number, a later one reading per-model coefficient files under
+`/usr/share/pmenergy` on Intel — and they put the wakeup term somewhere
+between 0.02 and 0.05 per wakeup per second, which would make Harmon's 0.25
+between 5 and 12.5 times heavier. Those figures are second-hand and nothing in
+Harmon depends on them; they are quoted to place the score, not to calibrate
+it. The same reconstructions describe disk and network coefficients in units
+nobody has pinned down, so Harmon's 2 per MiB/s of physical I/O has no
+established Apple analogue at all. On Apple silicon the comparison stops being
+possible: the kernel accounts energy directly in nanojoules — `ri_energy_nj`,
+what `energyWatts` is derived from — and no public formula maps that onto the
+number the UI shows.
 
 Which of the two metrics a report leads with is decided once per sample rather
-than per application. `SystemUsage.energyAccounted` is true when any process in
-the sample reads above zero watts; a process at zero on such a machine has
+than per application. `SystemUsage.energyAccounted` is true when any process
+in the sample reads above zero watts; a process at zero on such a machine has
 genuinely slept, or first appeared this interval — a process the previous
 snapshot did not carry has no delta and reads zero — rather than gone
 unmeasured, so mixing watts into some rows and the score into others would
-produce a column that is not comparable with itself.
-The text report therefore switches whole, heading and list together: either
-`Likely application battery impact (accounted power)` over the applications
-ranked by `energyWatts`, or `(heuristic score)` over the applications ranked by
-`batteryImpactScore`. The accounted list drops applications drawing nothing
-instead of printing zero rows, so it can be shorter than `topProcessCount`. The
-JSON payload does not switch — it has carried both rankings all along and keeps
-both sorts — and exposes `energyAccounted` so a consumer can tell which regime
-produced what it is reading.
+produce a column that is not comparable with itself. The text report therefore
+switches whole, heading and list together: either `Likely application battery
+impact (accounted power)` over the applications ranked by `energyWatts`, or
+`(heuristic score)` over the applications ranked by `batteryImpactScore`. The
+accounted list drops applications drawing nothing instead of printing zero
+rows, so it can be shorter than `topProcessCount`. The JSON payload does not
+switch — it has carried both rankings all along and keeps both sorts — and
+exposes `energyAccounted` so a consumer can tell which regime produced what it
+is reading.
 
 ## Alerts
 
@@ -736,7 +734,7 @@ deliberately excluded.
 
 - Apple XNU
   [`resource.h`](https://github.com/apple-oss-distributions/xnu/blob/main/bsd/sys/resource.h)
-  defines `RUSAGE_INFO_V6`.
+  defines `RUSAGE_INFO_V6` and its `ri_energy_nj` field.
 - Apple XNU
   [`proc_info.h`](https://github.com/apple-oss-distributions/xnu/blob/main/bsd/sys/proc_info.h)
   defines task and VM-region records.
@@ -759,3 +757,7 @@ deliberately excluded.
   [`IOBlockStorageDriver` statistics keys](https://developer.apple.com/documentation/iokit/ioblockstoragedriver_h_user-space/defines)
   and the cumulative
   [bytes-written counter](https://developer.apple.com/documentation/iokit/kioblockstoragedriverstatisticsbyteswrittenkey).
+- Apple's Activity Monitor guide describes
+  [Energy Impact](https://support.apple.com/guide/activity-monitor/view-energy-consumption-actmntr43697/mac)
+  as a relative measure of an application's energy consumption, and publishes no
+  formula for it.

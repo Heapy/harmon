@@ -26,15 +26,15 @@ applicationMemoryAlertMiB=2048
 applicationDiskWriteAlertMiBPerSecond=50
 swapAlertMiB=1024
 swapOutAlertMiBPerSecond=25
-
-# One battery-drain rule with two thresholds, of which exactly one is read per
-# sample: the watts where the kernel's energy counter reported, the score where
-# it read zero. Neither falls back to the other, so a zero here disables
-# battery-drain alerting in that regime rather than handing the rule over.
 applicationBatteryImpactAlertScore=100
 applicationPowerAlertWatts=1.5
-
 batteryLowAlertPercent=20
+
+# `applicationBatteryImpactAlertScore` and `applicationPowerAlertWatts` are one
+# battery-drain rule with two thresholds, of which exactly one is read per
+# sample: the watts where the kernel's energy counter reported, the score where
+# it read zero. Neither falls back to the other, so a zero disables battery-drain
+# alerting in that regime rather than handing the rule over.
 
 # Delivery
 systemNotifications=true

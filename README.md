@@ -115,11 +115,12 @@ payload keeps both rankings with their own sorts. Which of the two leads is
 decided once per sample rather than per application: any process reading above
 zero watts makes the whole sample accounted. The battery-impact table names the
 regime in its heading — `(accounted power)` or `(heuristic score)` — and the
-JSON payload carries `energyAccounted` for the same reason. The score is still calculated for
-every sample, carried in the JSON payload and stored in `history.db` either way;
-on a machine whose counter reads zero it remains the only battery signal there
-is. Its wakeup weight is 5 to 12.5 times heavier than in the reconstructions of
-Apple's own formula, and its I/O term has no Apple analogue at all; see
+JSON payload carries `energyAccounted` for the same reason. The score is still
+calculated for every sample, carried in the JSON payload and stored in
+`history.db` either way; on a machine whose counter reads zero it remains the
+only battery signal there is. Its wakeup weight is 5 to 12.5 times heavier than
+the published reconstructions of Apple's own formula, and its I/O term has no
+established Apple analogue at all; see
 [the collection model](docs/collection.md) for that comparison.
 
 ## Upgrading from an earlier build

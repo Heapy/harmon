@@ -153,7 +153,7 @@ class AlertAnalyzerTest {
         val alerts = AlertAnalyzer().analyze(usage, HarmonConfig(), activeKeys = emptySet()).alerts
         val alert = alerts.single()
 
-        assertEquals("power:process:42:42", alert.key)
+        assertEquals(POWER_KEY, alert.key)
         assertEquals(Severity.WARNING, alert.severity)
         assertEquals("Likely battery drain", alert.title)
         assertEquals("example (PID 42) draws 2.0 W", alert.message)
@@ -175,7 +175,7 @@ class AlertAnalyzerTest {
         val alerts = AlertAnalyzer().analyze(usage, HarmonConfig(), activeKeys = emptySet()).alerts
         val alert = alerts.single()
 
-        assertEquals("battery-impact:process:42:42", alert.key)
+        assertEquals(BATTERY_IMPACT_KEY, alert.key)
         assertEquals("Likely battery drain", alert.title)
         assertEquals("example (PID 42) has impact score 130.0", alert.message)
     }
@@ -223,7 +223,7 @@ class AlertAnalyzerTest {
             .analyze(usage, batteryRegimeThresholds(score = null), activeKeys = emptySet())
             .alerts
 
-        assertEquals(listOf("power:process:42:42"), alerts.map { it.key })
+        assertEquals(listOf(POWER_KEY), alerts.map { it.key })
     }
 
     @Test
@@ -246,7 +246,7 @@ class AlertAnalyzerTest {
 
         val alerts = AlertAnalyzer().analyze(usage, HarmonConfig(), activeKeys = emptySet()).alerts
 
-        assertEquals(listOf("power:process:42:42"), alerts.map { it.key })
+        assertEquals(listOf(POWER_KEY), alerts.map { it.key })
         assertEquals(Severity.WARNING, alerts.single().severity)
     }
 
