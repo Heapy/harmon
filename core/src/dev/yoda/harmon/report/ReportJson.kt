@@ -251,11 +251,12 @@ private data class ReportEventDto(
     val elapsedSeconds: Double,
     /**
      * Whether the kernel's own energy counter produced the watts in this sample, so a consumer can
-     * tell which regime it is reading. The flag is the only thing that switches: unlike the text
-     * report, which has one column and has to choose, this payload carries `topBatteryImpact`
-     * sorted by the heuristic score and `topEnergy` sorted by watts side by side, always, whatever
-     * this reads. Re-sorting either list by the other metric would make its name a lie to every
-     * consumer that already reads it.
+     * tell which regime it is reading. No ranking switches with it: unlike the text report, which
+     * has one column and has to choose, this payload carries `topBatteryImpact` sorted by the
+     * heuristic score and `topEnergy` sorted by watts side by side, always, whatever this reads.
+     * Re-sorting either list by the other metric would make its name a lie to every consumer that
+     * already reads it. The alerts in the same payload do switch, in key and in message, because
+     * there the regime decides which rule ran.
      */
     val energyAccounted: Boolean,
     val power: PowerDto,

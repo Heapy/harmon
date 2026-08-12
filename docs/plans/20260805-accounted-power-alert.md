@@ -103,10 +103,11 @@ Dependencies: none added.
 ## Solution Overview
 
 One decision drives everything: **which metric leads is decided per sample, not
-per row.** A process reading zero watts on a machine whose counter works is a
-process that genuinely slept, not a measurement failure. Mixing watts for some
-rows and score for others inside one table would produce a column that is not
-comparable with itself.
+per row.** A process reading zero watts on a machine whose counter works has
+genuinely slept, or first appeared this interval — `UsageCalculator` reports
+zero for a process the previous snapshot did not carry — rather than gone
+unmeasured. Mixing watts for some rows and score for others inside one table
+would produce a column that is not comparable with itself.
 
 A consequence worth stating: the accounted-power table renders
 `rankings.topEnergy`, which filters `energyWatts > 0`

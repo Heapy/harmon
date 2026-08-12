@@ -199,7 +199,11 @@ All three surrogate keys — `sample.id`, `process.id`, `application.id` — are
 
 ### sample
 
-One row per sample, holding the whole of `SystemUsage` except its three lists.
+One row per sample, holding the whole of `SystemUsage` except its three lists
+and its one computed property. `energyAccounted` has no column: it is derived
+from `processes`, so a reader reconstructs it as `MAX(energy_watts) > 0` over
+the sample's `process_sample` rows. Storing it would duplicate what those rows
+already answer.
 
 ```sql
 CREATE TABLE sample (
