@@ -14,6 +14,7 @@ import dev.yoda.harmon.util.printError
 import dev.yoda.harmon.web.LiveUiEndpointStore
 import dev.yoda.harmon.web.LiveUiLauncher
 import dev.yoda.harmon.web.LiveUiRuntime
+import dev.yoda.harmon.web.generateLiveUiToken
 import kotlin.time.Clock
 
 fun main(arguments: Array<String>) {
@@ -32,12 +33,15 @@ fun main(arguments: Array<String>) {
         arguments = arguments,
         serviceFactory = serviceFactory,
         runService = { config, history ->
+            val liveUiEndpointStore = LiveUiEndpointStore()
             val liveUi = if (config.webUiEnabled) {
                 try {
                     LiveUiRuntime.production(
                         collector = CollectorClient(config.collectorSocket),
                         terminalApplications = config.terminalApplications,
                         sampleSeconds = config.webSampleSeconds,
+                        endpointStore = liveUiEndpointStore,
+                        token = generateLiveUiToken(),
                         logError = ::printError,
                     ).also { runtime ->
                         val endpoint = runtime.start()
@@ -54,7 +58,7 @@ fun main(arguments: Array<String>) {
                 }
             } else {
                 try {
-                    LiveUiEndpointStore().remove()
+                    liveUiEndpointStore.remove()
                 } catch (failure: Throwable) {
                     printError(
                         "${Clock.System.now()} stale live UI endpoint cleanup failed: " +
