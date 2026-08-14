@@ -93,7 +93,11 @@ class WebUiPayloadTest {
         assertEquals("1970-01-01T00:01:35Z", payload.attributionCapturedAt)
         assertEquals(10.0, payload.attributionAgeSeconds)
         assertEquals("previous FULL failed", payload.attributionWarning)
-        assertContains(payload.reportText, "captured 1970-01-01T00:01:35Z; age 10 seconds")
+        assertContains(
+            payload.reportText,
+            "Last FULL attribution captured at 1970-01-01T00:01:35Z; age 10 seconds",
+        )
+        assertContains(payload.reportText, "Last FULL attribution: 1 measured, 0 attempts failed")
         assertContains(payload.reportText, "Attribution warning: previous FULL failed")
         assertContains(payload.reportText, "Top application storage writes")
         assertContains(payload.reportText, "Likely application battery impact")

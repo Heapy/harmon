@@ -76,6 +76,39 @@ class ReportFormatterTest {
     }
 
     @Test
+    fun attributionLabelsSeparateLastFullCoverageFromCurrentApplicationMembers() {
+        val usage = systemUsage(
+            processes = listOf(
+                processUsage(
+                    pid = 100,
+                    executablePath = "/Applications/Firefox.app/Contents/MacOS/firefox",
+                    compressedOrPagedOutBytes = 1_024u,
+                ),
+                processUsage(
+                    pid = 101,
+                    parentPid = 100,
+                    executablePath = "/Applications/Firefox.app/Contents/MacOS/helper",
+                    compressedOrPagedOutBytes = null,
+                ),
+            ),
+        ).copy(
+            compressedAttributionProcessCount = 8,
+            compressedAttributionFailureCount = 3,
+        )
+
+        val output = ReportFormatter.text(
+            MonitoringReport(
+                usage = usage,
+                alerts = emptyList(),
+                topProcessCount = 5,
+            ),
+        )
+
+        assertContains(output, "Last FULL attribution: 8 measured, 3 attempts failed")
+        assertContains(output, "1/2 current members with cached values")
+    }
+
+    @Test
     fun theBatteryImpactTableLeadsWithWattsWhenTheCounterIsAccounted() {
         val output = ReportFormatter.text(rankingReport())
 

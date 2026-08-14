@@ -89,6 +89,7 @@ class ApplicationGrouper(
             compressedOrPagedOutBytes = members.saturatingSumOf {
                 it.compressedOrPagedOutBytes ?: 0u
             },
+            // This is current group membership, independent of the last FULL global counters.
             compressedAttributionProcessCount = members.count {
                 it.compressedOrPagedOutBytes != null
             },

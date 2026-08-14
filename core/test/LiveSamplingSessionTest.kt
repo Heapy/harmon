@@ -2,6 +2,7 @@ import dev.yoda.harmon.model.RawSystemSnapshot
 import dev.yoda.harmon.monitor.CollectionProfile
 import dev.yoda.harmon.monitor.SystemCollector
 import dev.yoda.harmon.monitor.UsageCalculator
+import dev.yoda.harmon.report.WebUiPayload
 import dev.yoda.harmon.report.WebUiStatus
 import dev.yoda.harmon.runtime.LiveSamplingSession
 import kotlin.test.Test
@@ -21,10 +22,10 @@ class LiveSamplingSessionTest {
             listOf(rawProcess(compressedOrPagedOut = 32u)),
         )
         val current = rawSnapshot(2_000_000_000u, listOf(rawProcess(userTimeNs = 10u)))
-        val collector = ScriptedCollector(
+        val collector = AttributionScriptedCollector(
             listOf(IllegalStateException("baseline unavailable"), baseline, current),
         )
-        val session = session(
+        val session = attributionSession(
             collector,
             monotonicTimes = listOf(0uL, 1_000_000_000uL, 2_000_000_000uL),
         )
@@ -80,8 +81,11 @@ class LiveSamplingSessionTest {
                 ),
             ),
         )
-        val collector = ScriptedCollector(listOf(first, second))
-        val session = session(collector, monotonicTimes = listOf(0uL, 1_000_000_000uL))
+        val collector = AttributionScriptedCollector(listOf(first, second))
+        val session = attributionSession(
+            collector,
+            monotonicTimes = listOf(0uL, 1_000_000_000uL),
+        )
 
         val warming = session.capture()
         val ready = session.capture()
@@ -100,14 +104,17 @@ class LiveSamplingSessionTest {
             firefox.metrics.compressedOrPagedOutBytes.total,
         )
         assertFalse(firefox.metrics.compressedOrPagedOutBytes.totalPartial)
-        assertContains(ready.reportText, "Compressed/paged-out attribution: captured")
+        assertContains(ready.reportText, "Last FULL attribution captured at")
     }
 
     @Test
-    fun newProcessesWithoutCachedAttributionMakeOnlyThoseTotalsPartial() {
+    fun fastKeepsTheLastFullGlobalPairWhileNewProcessesMakeCurrentTotalsPartial() {
         val first = rawSnapshot(
             1_000_000_000u,
             listOf(rawProcess(pid = 100, compressedOrPagedOut = 10u)),
+        ).copy(
+            compressedAttributionProcessCount = 8,
+            compressedAttributionFailureCount = 3,
         )
         val second = rawSnapshot(
             2_000_000_000u,
@@ -116,8 +123,8 @@ class LiveSamplingSessionTest {
                 rawProcess(pid = 101, parentPid = 100, startedAt = 200u),
             ),
         )
-        val session = session(
-            ScriptedCollector(listOf(first, second)),
+        val session = attributionSession(
+            AttributionScriptedCollector(listOf(first, second)),
             monotonicTimes = listOf(0uL, 1_000_000_000uL),
         )
 
@@ -130,6 +137,9 @@ class LiveSamplingSessionTest {
         assertEquals("10", root.metrics.compressedOrPagedOutBytes.total)
         assertFalse(root.children.single().metrics.compressedOrPagedOutBytes.selfAvailable)
         assertFalse(root.metrics.physicalFootprintBytes.totalPartial)
+        assertEquals(8, ready.system?.processes?.compressedAttributionAvailable)
+        assertEquals(3, ready.system?.processes?.compressedAttributionFailures)
+        assertEquals("1970-01-01T00:00:01Z", ready.attributionCapturedAt)
     }
 
     @Test
@@ -142,8 +152,8 @@ class LiveSamplingSessionTest {
             2_000_000_000u,
             listOf(rawProcess(pid = 100, startedAt = 200u, compressedOrPagedOut = null)),
         )
-        val session = session(
-            ScriptedCollector(listOf(first, reused)),
+        val session = attributionSession(
+            AttributionScriptedCollector(listOf(first, reused)),
             monotonicTimes = listOf(0uL, 1_000_000_000uL),
         )
 
@@ -165,8 +175,8 @@ class LiveSamplingSessionTest {
             rawSnapshot(3_000_000_000u, listOf(rawProcess(compressedOrPagedOut = 3u))),
             rawSnapshot(4_000_000_000u, listOf(rawProcess())),
         )
-        val collector = ScriptedCollector(snapshots)
-        val session = session(
+        val collector = AttributionScriptedCollector(snapshots)
+        val session = attributionSession(
             collector,
             monotonicTimes = listOf(
                 0uL,
@@ -191,7 +201,7 @@ class LiveSamplingSessionTest {
 
     @Test
     fun aLateFullMovesTheNextDeadlineSoFullStartsStayThirtySecondsApart() {
-        val collector = ScriptedCollector(
+        val collector = AttributionScriptedCollector(
             listOf(
                 rawSnapshot(1_000_000_000u, listOf(rawProcess(compressedOrPagedOut = 1u))),
                 rawSnapshot(2_000_000_000u, listOf(rawProcess(compressedOrPagedOut = 2u))),
@@ -199,7 +209,7 @@ class LiveSamplingSessionTest {
                 rawSnapshot(4_000_000_000u, listOf(rawProcess(compressedOrPagedOut = 4u))),
             ),
         )
-        val session = session(
+        val session = attributionSession(
             collector,
             monotonicTimes = listOf(
                 0uL,
@@ -227,12 +237,15 @@ class LiveSamplingSessionTest {
         val first = rawSnapshot(
             1_000_000_000u,
             listOf(rawProcess(compressedOrPagedOut = 64u)),
+        ).copy(
+            compressedAttributionProcessCount = 8,
+            compressedAttributionFailureCount = 3,
         )
         val second = rawSnapshot(2_000_000_000u, listOf(rawProcess(userTimeNs = 10u)))
-        val collector = ScriptedCollector(
+        val collector = AttributionScriptedCollector(
             listOf(first, IllegalStateException("regions failed"), second),
         )
-        val session = session(
+        val session = attributionSession(
             collector,
             monotonicTimes = listOf(0uL, 30_000_000_000uL),
         )
@@ -252,6 +265,9 @@ class LiveSamplingSessionTest {
         assertContains(ready.attributionWarning.orEmpty(), "regions failed")
         assertContains(ready.reportText, "Attribution warning")
         assertEquals("64", ready.processTree?.roots?.single()?.metrics?.compressedOrPagedOutBytes?.self)
+        assertEquals(8, ready.system?.processes?.compressedAttributionAvailable)
+        assertEquals(3, ready.system?.processes?.compressedAttributionFailures)
+        assertEquals("1970-01-01T00:00:01Z", ready.attributionCapturedAt)
     }
 
     @Test
@@ -259,16 +275,22 @@ class LiveSamplingSessionTest {
         val first = rawSnapshot(
             1_000_000_000u,
             listOf(rawProcess(compressedOrPagedOut = 64u)),
+        ).copy(
+            compressedAttributionProcessCount = 8,
+            compressedAttributionFailureCount = 3,
         )
         val fast = rawSnapshot(2_000_000_000u, listOf(rawProcess(userTimeNs = 10u)))
         val recoveredFull = rawSnapshot(
             3_000_000_000u,
             listOf(rawProcess(userTimeNs = 20u, compressedOrPagedOut = 128u)),
+        ).copy(
+            compressedAttributionProcessCount = 4,
+            compressedAttributionFailureCount = 1,
         )
-        val collector = ScriptedCollector(
+        val collector = AttributionScriptedCollector(
             listOf(first, IllegalStateException("regions failed"), fast, recoveredFull),
         )
-        val session = session(
+        val session = attributionSession(
             collector,
             monotonicTimes = listOf(0uL, 30_000_000_000uL, 60_000_000_000uL),
         )
@@ -278,9 +300,14 @@ class LiveSamplingSessionTest {
         val recovered = session.capture()
 
         assertContains(warned.attributionWarning.orEmpty(), "regions failed")
+        assertEquals(8, warned.system?.processes?.compressedAttributionAvailable)
+        assertEquals(3, warned.system?.processes?.compressedAttributionFailures)
+        assertEquals("1970-01-01T00:00:01Z", warned.attributionCapturedAt)
         assertNull(recovered.attributionWarning)
         assertEquals(CollectionProfile.FULL, recovered.appliedProfile)
         assertEquals("1970-01-01T00:00:03Z", recovered.attributionCapturedAt)
+        assertEquals(4, recovered.system?.processes?.compressedAttributionAvailable)
+        assertEquals(1, recovered.system?.processes?.compressedAttributionFailures)
         assertEquals(
             "128",
             recovered.processTree?.roots?.single()?.metrics?.compressedOrPagedOutBytes?.self,
@@ -292,7 +319,7 @@ class LiveSamplingSessionTest {
         val first = rawSnapshot(1_000_000_000u, listOf(rawProcess(userTimeNs = 0u)))
         val second = rawSnapshot(2_000_000_000u, listOf(rawProcess(userTimeNs = 100_000_000u)))
         val third = rawSnapshot(4_000_000_000u, listOf(rawProcess(userTimeNs = 300_000_000u)))
-        val collector = ScriptedCollector(
+        val collector = AttributionScriptedCollector(
             listOf(first, second, IllegalStateException("collector\nfailed"), third),
         )
         val times = ArrayDeque(
@@ -303,7 +330,7 @@ class LiveSamplingSessionTest {
                 Instant.parse("2026-08-12T10:00:03Z"),
             ),
         )
-        val session = session(
+        val session = attributionSession(
             collector = collector,
             now = { times.removeFirst() },
             monotonicTimes = listOf(0uL, 1_000_000_000uL, 2_000_000_000uL, 3_000_000_000uL),
@@ -325,10 +352,52 @@ class LiveSamplingSessionTest {
         assertNull(recovered.staleSince)
     }
 
-    private fun session(
+    @Test
+    fun aNewSessionStartsWithFullEvenWhenThePreviousSessionsFullIsRecent() {
+        val previousCollector = AttributionScriptedCollector(
+            listOf(
+                rawSnapshot(1_000_000_000u, listOf(rawProcess(compressedOrPagedOut = 10u))),
+                rawSnapshot(2_000_000_000u, listOf(rawProcess())),
+            ),
+        )
+        val previousSession = attributionSession(
+            previousCollector,
+            monotonicTimes = listOf(0uL, 1_000_000_000uL),
+        )
+        previousSession.capture()
+        val previousPayload = previousSession.capture()
+        val nextCollector = AttributionScriptedCollector(
+            listOf(
+                rawSnapshot(3_000_000_000u, listOf(rawProcess(compressedOrPagedOut = 20u))),
+                rawSnapshot(4_000_000_000u, listOf(rawProcess())),
+            ),
+        )
+        val nextSession = attributionSession(
+            collector = nextCollector,
+            monotonicTimes = listOf(2_000_000_000uL, 3_000_000_000uL),
+            previousPayload = previousPayload,
+        )
+
+        val warming = nextSession.capture()
+        val ready = nextSession.capture()
+
+        assertEquals(
+            listOf(CollectionProfile.FULL, CollectionProfile.LIVE_FAST),
+            nextCollector.profiles,
+        )
+        assertEquals(WebUiStatus.WARMING, warming.status)
+        assertEquals(previousPayload.processTree, warming.processTree)
+        assertEquals(
+            "20",
+            ready.processTree?.roots?.single()?.metrics?.compressedOrPagedOutBytes?.self,
+        )
+    }
+
+    private fun attributionSession(
         collector: SystemCollector,
         monotonicTimes: List<ULong>,
         now: () -> Instant = { Instant.parse("2026-08-12T10:00:00Z") },
+        previousPayload: WebUiPayload? = null,
     ): LiveSamplingSession {
         val times = ArrayDeque(monotonicTimes)
         return LiveSamplingSession(
@@ -337,10 +406,11 @@ class LiveSamplingSessionTest {
             sampleSeconds = 1,
             now = now,
             monotonicNowNanoseconds = { times.removeFirst() },
+            previousPayload = previousPayload,
         )
     }
 
-    private class ScriptedCollector(values: List<Any>) : SystemCollector {
+    private class AttributionScriptedCollector(values: List<Any>) : SystemCollector {
         private val remaining = ArrayDeque(values)
         val profiles = mutableListOf<CollectionProfile>()
 

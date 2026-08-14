@@ -409,11 +409,11 @@ private fun attributionReport(
     warning: String?,
 ): String = buildString {
     if (capturedAt == null) {
-        appendLine("Compressed/paged-out attribution: unavailable.")
+        appendLine("Last FULL attribution: unavailable.")
     } else {
         val age = (generatedAt - capturedAt).nonNegativeSeconds()
         appendLine(
-            "Compressed/paged-out attribution: captured $capturedAt; " +
+            "Last FULL attribution captured at $capturedAt; " +
                 "age ${formatAge(age)} seconds.",
         )
     }

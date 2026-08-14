@@ -27,9 +27,7 @@ class LiveSamplingSession(
     )
     private var staleSince: Instant? = null
     private var nextFullDeadlineNanoseconds: ULong? = null
-    private var attributionByIdentity = emptyMap<ProcessIdentity, Attribution>()
-    private var attributionCapturedAt: Instant? = null
-    private var attributionFailureCount = 0
+    private var attributionState: AttributionState? = null
     private var attributionWarning: String? = null
 
     init {
@@ -106,7 +104,7 @@ class LiveSamplingSession(
             WebUiPayloadFactory.live(
                 usage = usage,
                 sequence = sequence,
-                attributionCapturedAt = attributionCapturedAt,
+                attributionCapturedAt = attributionState?.capturedAt,
                 attributionWarning = attributionWarning,
                 appliedProfile = appliedProfile,
                 sampleIntervalSeconds = sampleSeconds.toDouble(),
@@ -147,18 +145,23 @@ class LiveSamplingSession(
     }
 
     private fun cacheAttribution(snapshot: RawSystemSnapshot) {
-        attributionByIdentity = snapshot.processes.mapNotNull { process ->
+        val attributionByIdentity = snapshot.processes.mapNotNull { process ->
             val compressed = process.compressedOrPagedOutBytes ?: return@mapNotNull null
             val regions = process.virtualMemoryRegionCount ?: return@mapNotNull null
             process.identity to Attribution(compressed, regions)
         }.toMap()
-        attributionCapturedAt = snapshot.capturedAt
-        attributionFailureCount = snapshot.compressedAttributionFailureCount
+        attributionState = AttributionState(
+            byIdentity = attributionByIdentity,
+            compressedAttributionProcessCount = snapshot.compressedAttributionProcessCount,
+            compressedAttributionFailureCount = snapshot.compressedAttributionFailureCount,
+            capturedAt = snapshot.capturedAt,
+        )
     }
 
     private fun RawSystemSnapshot.withCachedAttribution(): RawSystemSnapshot {
+        val cached = attributionState ?: return this
         val attributedProcesses = processes.map { process ->
-            val attribution = attributionByIdentity[process.identity]
+            val attribution = cached.byIdentity[process.identity]
             process.copy(
                 compressedOrPagedOutBytes = attribution?.compressedOrPagedOutBytes,
                 virtualMemoryRegionCount = attribution?.virtualMemoryRegionCount,
@@ -166,12 +169,17 @@ class LiveSamplingSession(
         }
         return copy(
             processes = attributedProcesses,
-            compressedAttributionProcessCount = attributedProcesses.count {
-                it.compressedOrPagedOutBytes != null
-            },
-            compressedAttributionFailureCount = attributionFailureCount,
+            compressedAttributionProcessCount = cached.compressedAttributionProcessCount,
+            compressedAttributionFailureCount = cached.compressedAttributionFailureCount,
         )
     }
+
+    private data class AttributionState(
+        val byIdentity: Map<ProcessIdentity, Attribution>,
+        val compressedAttributionProcessCount: Int,
+        val compressedAttributionFailureCount: Int,
+        val capturedAt: Instant,
+    )
 
     private data class Attribution(
         val compressedOrPagedOutBytes: ULong,

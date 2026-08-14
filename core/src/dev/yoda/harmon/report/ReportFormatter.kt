@@ -48,9 +48,8 @@ object ReportFormatter {
                 "${usage.processes.size} readable processes",
         )
         appendLine(
-            "Compressed/paged-out attribution: " +
-                "${usage.compressedAttributionProcessCount} processes measured, " +
-                "${usage.compressedAttributionFailureCount} failed",
+            "Last FULL attribution: ${usage.compressedAttributionProcessCount} measured, " +
+                "${usage.compressedAttributionFailureCount} attempts failed",
         )
 
         appendApplicationTable(
@@ -104,7 +103,7 @@ object ReportFormatter {
             metric = { application ->
                 "${Format.bytes(application.compressedOrPagedOutBytes)} proxy " +
                     "(${application.compressedAttributionProcessCount}/" +
-                    "${application.processCount} processes measured)"
+                    "${application.processCount} current members with cached values)"
             },
         )
 
@@ -176,11 +175,14 @@ object ReportFormatter {
         }
 
         appendLine()
-        appendLine("Compressed/paged-out attribution details:")
+        appendLine("Last FULL attribution details:")
         appendLine(
-            "- measured ${report.usage.compressedAttributionProcessCount} of " +
-                "${report.usage.processes.size} readable processes; " +
+            "- ${report.usage.compressedAttributionProcessCount} measured; " +
                 "${report.usage.compressedAttributionFailureCount} attempts failed",
+        )
+        appendLine(
+            "- application coverage counts current members with cached values and need not " +
+                "sum to the Last FULL total",
         )
         appendLine(
             "- this is compressor-pager ownership, not exact per-process disk swap; " +

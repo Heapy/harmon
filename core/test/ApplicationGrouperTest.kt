@@ -55,6 +55,28 @@ class ApplicationGrouperTest {
     }
 
     @Test
+    fun compressedAttributionCountIncludesOnlyCurrentMembersWithCachedValues() {
+        val application = ApplicationGrouper().group(
+            listOf(
+                processUsage(
+                    pid = 110,
+                    executablePath = "/Applications/Firefox.app/Contents/MacOS/firefox",
+                    compressedOrPagedOutBytes = 512u,
+                ),
+                processUsage(
+                    pid = 111,
+                    parentPid = 110,
+                    executablePath = "/Applications/Firefox.app/Contents/MacOS/helper",
+                    compressedOrPagedOutBytes = null,
+                ),
+            ),
+        ).single()
+
+        assertEquals(2, application.processCount)
+        assertEquals(1, application.compressedAttributionProcessCount)
+    }
+
+    @Test
     fun doesNotMergeUnbundledProcessesOnlyBecauseTheirNamesMatch() {
         val applications = ApplicationGrouper().group(
             listOf(
