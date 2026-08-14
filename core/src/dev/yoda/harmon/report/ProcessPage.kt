@@ -309,7 +309,12 @@ object ProcessPage {
             unit += 1;
           }
           if (unit === 0) return bytes.toString() + " B";
-          const tenths = (bytes * 10n + divisor / 2n) / divisor;
+          let tenths = (bytes * 10n + divisor / 2n) / divisor;
+          while (unit < units.length - 1 && tenths >= 10240n) {
+            divisor *= 1024n;
+            unit += 1;
+            tenths = (bytes * 10n + divisor / 2n) / divisor;
+          }
           return (tenths / 10n).toString() + "." + (tenths % 10n).toString() + " " + units[unit];
         }
 
@@ -526,12 +531,27 @@ object ProcessPage {
           return null;
         }
 
-        function attributionText(payload) {
-          if (!payload || !payload.attributionCapturedAt) return "attribution unavailable";
-          const captured = new Date(payload.attributionCapturedAt).getTime();
-          const dynamicAge = Number.isFinite(captured) ? Math.max(0, (Date.now() - captured) / 1000) : 0;
-          const age = Math.max(asNumber(payload.attributionAgeSeconds), dynamicAge);
-          return "attribution " + Math.floor(age) + "s old";
+        function attributionSummary(payload) {
+          const unavailable = {
+            captured: "—",
+            detail: "unavailable",
+            text: "Last FULL attribution: unavailable"
+          };
+          if (!payload || !payload.system || !payload.attributionCapturedAt) return unavailable;
+          const capturedDate = new Date(payload.attributionCapturedAt);
+          const capturedMillis = capturedDate.getTime();
+          if (!Number.isFinite(capturedMillis)) return unavailable;
+          const processes = payload.system.processes;
+          const measured = Math.floor(asNumber(processes.compressedAttributionAvailable));
+          const failed = Math.floor(asNumber(processes.compressedAttributionFailures));
+          const dynamicAge = Math.max(0, (Date.now() - capturedMillis) / 1000);
+          const age = Math.floor(Math.max(asNumber(payload.attributionAgeSeconds), dynamicAge));
+          return {
+            captured: capturedDate.toLocaleTimeString(),
+            detail: measured + " measured · " + failed + " attempts failed · " + age + "s old",
+            text: "Last FULL attribution: " + measured + " measured, " + failed +
+              " attempts failed · captured " + payload.attributionCapturedAt + " · " + age + "s old"
+          };
         }
 
         function detailRow(label, value) {
@@ -542,7 +562,7 @@ object ProcessPage {
           return e("section", { class: "details-group" }, e("h3", null, title), ...rows);
         }
 
-        function SystemDetails({ system }) {
+        function SystemDetails({ system, attribution }) {
           if (!system) return null;
           const vm = system.virtualMemory;
           const storage = system.storage;
@@ -582,7 +602,7 @@ object ProcessPage {
                 detailRow("Battery", power.batteryAvailable ? String(power.percentage ?? "—") + "%" : "n/a"),
                 detailRow("Time remaining", power.minutesRemaining == null ? "—" : power.minutesRemaining + " min"),
                 detailRow("Processes", system.processes.total + " total · " + system.processes.inaccessible + " inaccessible"),
-                detailRow("Attribution", system.processes.compressedAttributionAvailable + " available · " + system.processes.compressedAttributionFailures + " failed"),
+                detailRow("Attribution", attribution.text),
                 detailRow("Energy counter", system.energyAccounted ? "accounted" : "fallback score")
               ])
             )
@@ -591,7 +611,7 @@ object ProcessPage {
 
         function setPreset(name) {
           state.selectedColumns = new Set(presets[name]);
-          if (!state.selectedColumns.has(state.sort.column)) {
+          if (state.sort.scope !== "identity" && !state.selectedColumns.has(state.sort.column)) {
             const first = presets[name][0];
             state.sort = { column: first, scope: columnById[first].selfOnly ? "self" : "total" };
             state.sortDirection = "desc";
@@ -607,7 +627,7 @@ object ProcessPage {
         function toggleColumn(id, checked) {
           if (checked) state.selectedColumns.add(id); else state.selectedColumns.delete(id);
           if (!state.selectedColumns.size) state.selectedColumns.add("cpu");
-          if (!state.selectedColumns.has(state.sort.column)) {
+          if (state.sort.scope !== "identity" && !state.selectedColumns.has(state.sort.column)) {
             const first = [...state.selectedColumns][0];
             state.sort = { column: first, scope: columnById[first].selfOnly ? "self" : "total" };
             state.sortDirection = "desc";
@@ -628,6 +648,7 @@ object ProcessPage {
           const unavailable = tree ? Math.max(tree.inaccessibleProcessCount, total - tree.measuredProcessCount) : 0;
           const isLive = pageMode === "live" && !state.frozen && document.visibilityState === "visible";
           const metricColumns = selectedMetricColumns();
+          const attribution = attributionSummary(payload);
 
           return e("div", { class: "shell" },
             e("header", { class: "topbar" },
@@ -650,7 +671,7 @@ object ProcessPage {
               summaryCard("Battery", system && system.power.batteryAvailable ? String(system.power.percentage ?? "—") + "%" : "n/a",
                 system ? (system.power.charging ? "charging" : system.power.onBattery ? "on battery" : "AC power") : ""),
               summaryCard("Captured", captured, payload ? "sample " + payload.sequence : ""),
-              summaryCard("Attribution", payload && payload.attributionCapturedAt ? new Date(payload.attributionCapturedAt).toLocaleTimeString() : "—", attributionText(payload))
+              summaryCard("Last FULL attribution", attribution.captured, attribution.detail)
             ),
             status ? e("p", {
               class: "notice" + (payload && payload.status === "STALE" ? " error" : ""),
@@ -704,7 +725,7 @@ object ProcessPage {
                 )
               )
             ),
-            e(SystemDetails, { system }),
+            e(SystemDetails, { system, attribution }),
             payload && payload.reportText ? e("details", { class: "report-details" },
               e("summary", null, "Full text report"), e("pre", null, payload.reportText)
             ) : null

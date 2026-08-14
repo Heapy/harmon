@@ -47,6 +47,29 @@ class ProcessPageTest {
     }
 
     @Test
+    fun keepsIdentitySortAcrossMetricChangesAndPromotesRoundedByteUnits() {
+        val html = ProcessPage.document(payloadJson = "null", mode = "snapshot")
+
+        assertContains(
+            html,
+            "state.sort.scope !== \"identity\" && !state.selectedColumns.has(state.sort.column)",
+        )
+        assertContains(html, "while (unit < units.length - 1 && tenths >= 10240n)")
+    }
+
+    @Test
+    fun labelsGlobalAttributionAsTheDatedLastFullCoverage() {
+        val html = ProcessPage.document(
+            payloadJson = """{"reportText":"1/2 current members with cached values"}""",
+            mode = "snapshot",
+        )
+
+        assertContains(html, "Last FULL attribution:")
+        assertContains(html, "attempts failed · captured")
+        assertContains(html, "1/2 current members with cached values")
+    }
+
+    @Test
     fun escapesBootstrapJsonAndTheNoScriptFallbackInTheirOwnContexts() {
         val hostile = "</script><script id=attack>&\u2028"
 
