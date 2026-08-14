@@ -376,6 +376,7 @@ static void hm_check_process_listing(void) {
         CHECK("processes.listing-is-consistent", 0, "out of memory");
         CHECK("processes.total-matches-a-fresh-count", 0, "out of memory");
         CHECK("processes.samples-are-well-formed", 0, "out of memory");
+        CHECK("processes.zero-budget-skips-region-attribution", 0, "out of memory");
         CHECK("processes.issues-are-well-formed", 0, "out of memory");
         CHECK("processes.issue-metadata-matches-a-fresh-read", 0, "out of memory");
         return;

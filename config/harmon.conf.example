@@ -5,7 +5,8 @@ onceSampleSeconds=2
 topProcessCount=8
 maxAlertsPerCategory=3
 
-# The loopback-only process tree is sampled independently every second.
+# The loopback-only process tree is sampled on demand while a Live tab is visible.
+# webSampleSeconds sets that visible-tab sampling period.
 webUiEnabled=true
 webSampleSeconds=1
 
