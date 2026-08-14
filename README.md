@@ -32,6 +32,66 @@ See [the product intent](docs/INTENT.md) for the principles behind those choices
 boundary, and [the sample history](docs/history.md) for the schema the stored
 samples are queried through.
 
+## Quick start
+
+Harmon needs an Apple Silicon Mac running macOS 12 Monterey or newer.
+
+### Install
+
+```shell
+brew install Heapy/tap/harmon
+harmon setup
+harmon status
+```
+
+Homebrew installs the CLI and the paired collector binary. `setup` deploys them
+to the launchd locations Homebrew cannot write to and registers both services;
+`status` verifies them and needs no sudo. Run `harmon setup` again after every
+`brew upgrade harmon` — Homebrew replaces its own copies but cannot use sudo
+to update the root helper or the user app bundle, and `status` exits 1 while
+those are stale. The [Homebrew section](#install-with-homebrew) covers the
+details; a [source build](#install-a-source-build-with-launchd) is the
+alternative to the tap.
+
+### Uninstall
+
+The order matters:
+
+```shell
+harmon uninstall
+brew uninstall harmon
+```
+
+`harmon uninstall` stops both services and removes the LaunchAgent, the app
+bundle, the LaunchDaemon, the root helper, and the socket; it runs as the login
+user and requests sudo once. `brew uninstall` then removes the Cellar copy.
+
+A Homebrew formula has no uninstall hook, so `brew uninstall harmon` on its own
+deletes nothing outside the Cellar: both launchd services keep running from
+their deployed copies, including the root collector, with no `harmon` left on
+`PATH`. Recover by running the deployed agent binary directly:
+
+```shell
+"$HOME/Library/Application Support/Harmon/Harmon.app/Contents/MacOS/harmon" \
+  uninstall
+```
+
+Configuration, logs, generated reports, and the sample history are preserved. To
+leave nothing behind instead, add `--purge`:
+
+```shell
+harmon uninstall --purge
+brew uninstall harmon
+```
+
+`--purge` additionally removes `~/.config/harmon`, `~/Library/Logs/Harmon`,
+`/Library/Logs/Harmon`, and the whole `~/Library/Application Support/Harmon`
+tree — the history database with its WAL and SHM sidecars, the generated
+reports, and the app bundle. It prints every path before removing any of it and
+never prompts, so it stays usable in scripts. Nothing is deleted until the sudo
+phase succeeds: a declined password leaves all data intact. It is idempotent, so
+it also works after a plain `harmon uninstall`.
+
 ## What Harmon monitors
 
 - per-process and per-application CPU over the real sampling window;
@@ -243,6 +303,8 @@ harmon setup
 harmon setup --system --uid UID --gid GID
 harmon status
 harmon ui
+harmon uninstall [--purge]
+harmon uninstall --system --uid UID [--purge]
 harmon --help
 harmon --version
 ```
@@ -616,11 +678,29 @@ and socket. A Homebrew install itself remains in the Cellar; run
 `brew uninstall harmon` afterwards if the CLI should be removed too.
 `scripts/uninstall.sh` is retained only as a source-checkout compatibility
 shortcut: like `scripts/install.sh`, it builds the release binary and delegates
-all behavior to the typed CLI command.
+all behavior to the typed CLI command. It passes no flags, so `--purge` is
+available through the CLI rather than the script.
 
-The history database is the largest of those and is left behind deliberately —
-it is the record the agent was collecting, and up to a few hundred megabytes of
-it. Reclaim the space when you no longer want it:
+The history database is the largest of the preserved files — it is the record
+the agent was collecting, and up to a few hundred megabytes of it. Remove it,
+and everything else Harmon wrote, with:
+
+```shell
+harmon uninstall --purge
+```
+
+It removes `~/.config/harmon`, `~/Library/Logs/Harmon`, `/Library/Logs/Harmon`,
+and the whole `~/Library/Application Support/Harmon` tree. The tree is removed
+whole rather than file by file because the WAL and SHM sidecars of `history.db`
+and the report temporaries are named nowhere in the code, so no explicit list
+could be complete. Every path is printed before anything is deleted, and nothing
+is deleted until the privileged phase returns, so a declined sudo password
+leaves the data intact. The `--system` form purges only the root-owned log
+directory. Purging is idempotent and can be run after a plain
+`harmon uninstall`.
+
+If both `harmon uninstall` and `brew uninstall harmon` already ran, there is no
+CLI left to purge with; reclaim the database directly:
 
 ```shell
 rm -f ~/Library/Application\ Support/Harmon/history.db*

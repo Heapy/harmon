@@ -12,6 +12,7 @@ import dev.yoda.harmon.setup.SystemSetup
 import dev.yoda.harmon.setup.SystemSetupPaths
 import dev.yoda.harmon.setup.SystemStop
 import dev.yoda.harmon.setup.SystemUninstall
+import dev.yoda.harmon.setup.UninstallPurge
 import dev.yoda.harmon.setup.UserSetup
 import dev.yoda.harmon.setup.UserSetupPaths
 import dev.yoda.harmon.setup.UserStop
@@ -254,6 +255,7 @@ class SetupWorkflowTest {
             executablePath = paths.installedAgent,
             userId = 501u,
             home = TEST_HOME,
+            purge = false,
             fileSystem = fileSystem,
             commandRunner = runner,
         ).run()
@@ -309,6 +311,7 @@ class SetupWorkflowTest {
             executablePath = TEST_AGENT_SOURCE,
             userId = 501u,
             home = TEST_HOME,
+            purge = false,
             fileSystem = fileSystem,
             commandRunner = WorkflowCommandRunner(),
         ).run()
@@ -327,6 +330,7 @@ class SetupWorkflowTest {
         fileSystem.files["${SystemSetupPaths.logDirectory}/collector.log"] = "log"
         val uninstall = SystemUninstall(
             targetUserId = 501u,
+            purge = false,
             fileSystem = fileSystem,
             commandRunner = runner,
         )
@@ -362,6 +366,110 @@ class SetupWorkflowTest {
                 )
             },
         )
+    }
+
+    @Test
+    fun userUninstallPurgeRemovesEveryUserTreeOnlyAfterTheSudoReExec() {
+        val fileSystem = workflowFileSystem()
+        val runner = WorkflowCommandRunner(fileSystem)
+        val paths = UserSetupPaths.forHome(TEST_HOME)
+        fileSystem.files[paths.agentPlist] = "agent plist"
+        fileSystem.files[paths.config] = "custom=true"
+        fileSystem.files["${paths.supportDirectory}/history.db"] = "history"
+        fileSystem.files["${paths.supportDirectory}/history.db-wal"] = "wal"
+        fileSystem.files["${paths.supportDirectory}/history.db-shm"] = "shm"
+        fileSystem.files["${paths.supportDirectory}/Reports/latest.html"] = "report"
+        fileSystem.files["${paths.supportDirectory}/Reports/latest.html.4321.tmp"] = "partial"
+        fileSystem.files["${paths.logDirectory}/agent.log"] = "log"
+        fileSystem.directories += paths.appBundle
+        fileSystem.files[paths.installedAgent] = "installed agent"
+
+        UserUninstall(
+            executablePath = paths.installedAgent,
+            userId = 501u,
+            home = TEST_HOME,
+            purge = true,
+            fileSystem = fileSystem,
+            commandRunner = runner,
+        ).run()
+
+        assertTrue(
+            fileSystem.files.keys.none { it.startsWith(TEST_HOME) },
+            "purge left ${fileSystem.files.keys.filter { it.startsWith(TEST_HOME) }}",
+        )
+        assertFalse(paths.appBundle in fileSystem.directories)
+
+        assertEquals(
+            listOf(
+                "/usr/bin/sudo",
+                paths.installedAgent,
+                "uninstall",
+                "--system",
+                "--uid",
+                "501",
+                "--purge",
+            ),
+            runner.invocations.single { it.arguments.first() == "/usr/bin/sudo" }.arguments,
+        )
+
+        val presentAtSudo = runner.pathsPresentWhenInvoked
+            .single { it.first == "/usr/bin/sudo" }
+            .second
+        assertTrue(
+            paths.installedAgent in presentAtSudo,
+            "the app-hosted executable was deleted before sudo re-exec",
+        )
+        assertTrue(
+            paths.config in presentAtSudo &&
+                "${paths.supportDirectory}/history.db" in presentAtSudo,
+            "user data was destroyed before the privileged phase could fail",
+        )
+    }
+
+    @Test
+    fun systemUninstallPurgeRemovesRootLogsIdempotently() {
+        val fileSystem = workflowFileSystem()
+        val runner = WorkflowCommandRunner()
+        fileSystem.files[SystemSetupPaths.collectorPlist] = "daemon"
+        fileSystem.files["${SystemSetupPaths.logDirectory}/collector.log"] = "log"
+        fileSystem.files["${SystemSetupPaths.logDirectory}/collector.error.log"] = "errors"
+        val uninstall = SystemUninstall(
+            targetUserId = 501u,
+            purge = true,
+            fileSystem = fileSystem,
+            commandRunner = runner,
+        )
+
+        uninstall.run()
+        uninstall.run()
+
+        assertFalse(SystemSetupPaths.collectorPlist in fileSystem.files)
+        assertTrue(
+            fileSystem.files.keys.none { it.startsWith(SystemSetupPaths.logDirectory) },
+        )
+        assertEquals(
+            2,
+            runner.invocations.count {
+                it.arguments == listOf(
+                    "/bin/launchctl",
+                    "bootout",
+                    "system/dev.yoda.harmon.collector",
+                )
+            },
+        )
+    }
+
+    @Test
+    fun uninstallPurgeListsUserTreesWithTheSupportTreeLast() {
+        assertEquals(
+            listOf(
+                "$TEST_HOME/.config/harmon",
+                "$TEST_HOME/Library/Logs/Harmon",
+                "$TEST_HOME/Library/Application Support/Harmon",
+            ),
+            UninstallPurge.userTrees(UserSetupPaths.forHome(TEST_HOME)),
+        )
+        assertEquals(listOf("/Library/Logs/Harmon"), UninstallPurge.systemTrees)
     }
 
     @Test

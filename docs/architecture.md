@@ -95,15 +95,29 @@ from `packaging/homebrew/Formula/harmon.rb.in` after the paired archive SHA-256
 is known, then transferred to the separate tap repository. See
 [`docs/releasing.md`](releasing.md).
 
-`harmon uninstall` mirrors the privilege boundary without deleting user data.
-The login-user process unloads both current and legacy LaunchAgents, removes
-their plists and the managed legacy `~/.local/bin/harmon` symlink, then makes
-one sudo re-exec for the system LaunchDaemon, current and legacy helpers, and
-socket. It keeps `Harmon.app` until that re-exec returns because the command can
-itself be running from the old bundle; only then is the app removed. Config,
+`harmon uninstall` mirrors the privilege boundary and by default deletes no user
+data. The login-user process unloads both current and legacy LaunchAgents,
+removes their plists and the managed legacy `~/.local/bin/harmon` symlink, then
+makes one sudo re-exec for the system LaunchDaemon, current and legacy helpers,
+and socket. It keeps `Harmon.app` until that re-exec returns because the command
+can itself be running from the old bundle; only then is the app removed. Config,
 logs, reports, and `history.db` are preserved. The old install and uninstall
 scripts are thin source-build compatibility entry points and contain no
 installation or removal policy.
+
+`--purge` keeps that same boundary and adds the user data. The login-user phase
+prints every path it is about to remove, including the root-owned one, before
+sudo can prompt; the root phase repeats its own path and removes
+`/Library/Logs/Harmon`. The user phase then removes `~/.config/harmon`,
+`~/Library/Logs/Harmon`, and the whole `~/Library/Application Support/Harmon`
+tree — but only after the re-exec returns. Everything removed before that
+point is recoverable with `harmon setup`; a purge is not, so a declined sudo
+password must leave the data intact. Within the purge the support tree goes
+last, because it is the one that can contain the running executable. It is
+removed as a whole tree rather than as named files: `SetupFileSystem` cannot
+enumerate a directory, and the WAL and SHM sidecars of `history.db` and the
+report temporaries are named nowhere in the code, so any explicit list would be
+incomplete by construction. Both phases are idempotent.
 
 The icon shown next to a notification is the bundle's own icon: `Info.plist`
 names `Harmon.icns` through `CFBundleIconFile`, and the installer copies that

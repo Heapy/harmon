@@ -8,7 +8,24 @@ import platform.posix.getenv
 data class UninstallRequest(
     val system: Boolean,
     val userId: UInt? = null,
+    val purge: Boolean = false,
 )
+
+/**
+ * The trees a purge removes. Whole trees rather than named files: the WAL and SHM sidecars of
+ * history.db and the report temporaries are named nowhere in the code, and SetupFileSystem cannot
+ * enumerate a directory, so any explicit file list would be incomplete by construction.
+ */
+object UninstallPurge {
+    /** The support tree hosts the running executable, so it is removed last. */
+    fun userTrees(paths: UserSetupPaths): List<String> = listOf(
+        paths.configDirectory,
+        paths.logDirectory,
+        paths.supportDirectory,
+    )
+
+    val systemTrees: List<String> = listOf(SystemSetupPaths.logDirectory)
+}
 
 object UninstallValidation {
     fun validateUserPhase(effectiveUserId: UInt, requestedUserId: UInt?) {
@@ -56,15 +73,31 @@ class HarmonUninstall(
     private fun runUser(request: UninstallRequest) {
         val userId = effectiveUserId()
         UninstallValidation.validateUserPhase(userId, request.userId)
+        val home = homeDirectory()
+        if (request.purge) {
+            // The full blast radius, root paths included, before sudo can prompt for a password.
+            println("Removing all Harmon data:")
+            UninstallPurge.userTrees(UserSetupPaths.forHome(home)).forEach { println("  $it") }
+            UninstallPurge.systemTrees.forEach {
+                println("  $it (root-owned, removed via sudo)")
+            }
+        }
         UserUninstall(
             executablePath = executablePath(),
             userId = userId,
-            home = homeDirectory(),
+            home = home,
+            purge = request.purge,
             fileSystem = fileSystem,
             commandRunner = commandRunner,
         ).run()
         println("Harmon services and deployed binaries were removed.")
-        println("Configuration, logs, reports, and sample history were preserved.")
+        println(
+            if (request.purge) {
+                "Configuration, logs, reports, and sample history were removed."
+            } else {
+                "Configuration, logs, reports, and sample history were preserved."
+            },
+        )
     }
 
     private fun runSystem(request: UninstallRequest) {
@@ -72,8 +105,14 @@ class HarmonUninstall(
             effectiveUserId = effectiveUserId(),
             requestedUserId = request.userId,
         )
+        if (request.purge) {
+            // The public --system form must not delete a root directory silently.
+            println("Removing root-owned Harmon data:")
+            UninstallPurge.systemTrees.forEach { println("  $it") }
+        }
         SystemUninstall(
             targetUserId = targetUserId,
+            purge = request.purge,
             fileSystem = fileSystem,
             commandRunner = commandRunner,
         ).run()
@@ -84,6 +123,7 @@ class UserUninstall(
     private val executablePath: String,
     private val userId: UInt,
     private val home: String,
+    private val purge: Boolean,
     private val fileSystem: SetupFileSystem,
     private val commandRunner: CommandRunner,
 ) {
@@ -98,17 +138,25 @@ class UserUninstall(
 
         // Legacy installs may be executing this command from inside Harmon.app.
         commandRunner.requireSuccess(
-            arguments = listOf(
-                "/usr/bin/sudo",
-                executablePath,
-                "uninstall",
-                "--system",
-                "--uid",
-                userId.toString(),
-            ),
+            arguments = buildList {
+                add("/usr/bin/sudo")
+                add(executablePath)
+                add("uninstall")
+                add("--system")
+                add("--uid")
+                add(userId.toString())
+                if (purge) add("--purge")
+            },
             captureOutput = false,
         )
-        fileSystem.removeTreeIfExists(paths.appBundle)
+
+        // Everything above is recoverable with 'harmon setup'; a purge is not. Deleting only after
+        // the privileged phase returns means a declined password leaves user data intact.
+        if (purge) {
+            UninstallPurge.userTrees(paths).forEach(fileSystem::removeTreeIfExists)
+        } else {
+            fileSystem.removeTreeIfExists(paths.appBundle)
+        }
     }
 
     private fun removeLegacyCommandLink(paths: UserSetupPaths) {
@@ -133,6 +181,7 @@ class UserUninstall(
 
 class SystemUninstall(
     private val targetUserId: UInt,
+    private val purge: Boolean,
     private val fileSystem: SetupFileSystem,
     private val commandRunner: CommandRunner,
 ) {
@@ -144,6 +193,9 @@ class SystemUninstall(
         fileSystem.removeFileIfExists(SystemSetupPaths.collectorBinary)
         fileSystem.removeFileIfExists(SystemSetupPaths.legacyCollectorBinary)
         fileSystem.removeFileIfExists(SystemSetupPaths.socket)
+        if (purge) {
+            UninstallPurge.systemTrees.forEach(fileSystem::removeTreeIfExists)
+        }
     }
 
     private fun bootoutIfLoaded(service: String) {

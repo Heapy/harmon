@@ -128,6 +128,7 @@ object HarmonApplication {
                         UninstallRequest(
                             system = command.system,
                             userId = command.userId,
+                            purge = command.purge,
                         ),
                     )
                 } catch (failure: Throwable) {
@@ -212,6 +213,7 @@ sealed interface Command {
     data class Uninstall(
         val system: Boolean,
         val userId: UInt?,
+        val purge: Boolean,
     ) : Command
 }
 
@@ -321,8 +323,8 @@ object CliParser {
           harmon stop
           harmon stop --system --uid UID
           harmon ui
-          harmon uninstall
-          harmon uninstall --system --uid UID
+          harmon uninstall [--purge]
+          harmon uninstall --system --uid UID [--purge]
           harmon --help
           harmon --version
 
@@ -352,6 +354,11 @@ object CliParser {
         uninstall removes both services and deployed binaries while preserving
         configuration, logs, reports, and sample history. Its --system form is
         public for automation.
+
+        uninstall --purge additionally removes the configuration, logs, reports,
+        and history database, printing every path first. It never prompts, so it
+        stays usable in scripts, and it leaves nothing outside the Homebrew
+        Cellar. The --system form purges the root-owned log directory.
     """.trimIndent()
 
     private fun parseSetup(arguments: List<String>): Command.Setup {
@@ -397,6 +404,7 @@ object CliParser {
     private fun parseUninstall(arguments: List<String>): Command.Uninstall {
         var system = false
         var userId: UInt? = null
+        var purge = false
         var index = 0
         while (index < arguments.size) {
             when (val option = arguments[index]) {
@@ -414,6 +422,13 @@ object CliParser {
                     userId = arguments.unsignedValueAfter(index, option)
                     index += 2
                 }
+                "--purge" -> {
+                    if (purge) {
+                        throw CliException("--purge may be specified only once")
+                    }
+                    purge = true
+                    index += 1
+                }
                 else -> throw CliException("unknown uninstall option '$option'")
             }
         }
@@ -423,7 +438,7 @@ object CliParser {
         if (system && userId == null) {
             throw CliException("--system requires --uid")
         }
-        return Command.Uninstall(system, userId)
+        return Command.Uninstall(system, userId, purge)
     }
 
     private fun parseStop(arguments: List<String>): Command.Stop {

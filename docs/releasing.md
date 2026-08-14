@@ -217,6 +217,25 @@ test -f "$HARMON_ACCEPTANCE_CONFIG"
 test -d "$HOME/Library/Logs/Harmon"
 ```
 
+Then verify the purging form. It needs an installation to remove, so set up
+again first:
+
+```shell
+"$HARMON_ACCEPTANCE_CLI" setup
+"$HARMON_ACCEPTANCE_CLI" uninstall --purge
+
+test ! -e "$HOME/Library/Application Support/Harmon"
+test ! -e "$HOME/.config/harmon"
+test ! -e "$HOME/Library/Logs/Harmon"
+sudo test ! -e /Library/Logs/Harmon
+sudo test ! -e /Library/LaunchDaemons/dev.yoda.harmon.collector.plist
+sudo test ! -e /Library/PrivilegedHelperTools/harmon-collector
+```
+
+The command prints every path before removing any of it and never prompts, so
+the block stays non-interactive apart from sudo's own password prompt. This is
+the last step that needs `$HARMON_ACCEPTANCE_CONFIG`.
+
 The Homebrew Cellar copy remains until `brew uninstall harmon`. Legacy-path
 cleanup is transitional compatibility behavior; remove it only after the
 supported migration window from the source installer has closed.

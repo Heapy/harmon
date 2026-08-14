@@ -149,11 +149,11 @@ class CliParserTest {
     @Test
     fun parsesUserAndPublicSystemUninstallForms() {
         assertEquals(
-            Command.Uninstall(system = false, userId = null),
+            Command.Uninstall(system = false, userId = null, purge = false),
             CliParser.parse(arrayOf("uninstall")),
         )
         assertEquals(
-            Command.Uninstall(system = true, userId = 501u),
+            Command.Uninstall(system = true, userId = 501u, purge = false),
             CliParser.parse(arrayOf("uninstall", "--system", "--uid", "501")),
         )
 
@@ -165,6 +165,26 @@ class CliParserTest {
         }
         assertFailsWith<CliException> {
             CliParser.parse(arrayOf("uninstall", "--system", "--gid", "20"))
+        }
+    }
+
+    @Test
+    fun parsesPurgingUninstallFormsInAnyFlagOrder() {
+        assertEquals(
+            Command.Uninstall(system = false, userId = null, purge = true),
+            CliParser.parse(arrayOf("uninstall", "--purge")),
+        )
+        assertEquals(
+            Command.Uninstall(system = true, userId = 501u, purge = true),
+            CliParser.parse(arrayOf("uninstall", "--system", "--uid", "501", "--purge")),
+        )
+        assertEquals(
+            Command.Uninstall(system = true, userId = 501u, purge = true),
+            CliParser.parse(arrayOf("uninstall", "--purge", "--system", "--uid", "501")),
+        )
+
+        assertFailsWith<CliException> {
+            CliParser.parse(arrayOf("uninstall", "--purge", "--purge"))
         }
     }
 }
