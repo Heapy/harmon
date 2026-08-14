@@ -33,9 +33,9 @@ fun main(arguments: Array<String>) {
         arguments = arguments,
         serviceFactory = serviceFactory,
         runService = { config, history ->
-            val liveUiEndpointStore = LiveUiEndpointStore()
             val liveUi = if (config.webUiEnabled) {
                 try {
+                    val liveUiEndpointStore = LiveUiEndpointStore()
                     LiveUiRuntime.production(
                         collector = CollectorClient(config.collectorSocket),
                         terminalApplications = config.terminalApplications,
@@ -58,7 +58,7 @@ fun main(arguments: Array<String>) {
                 }
             } else {
                 try {
-                    liveUiEndpointStore.remove()
+                    LiveUiEndpointStore().remove()
                 } catch (failure: Throwable) {
                     printError(
                         "${Clock.System.now()} stale live UI endpoint cleanup failed: " +

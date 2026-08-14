@@ -529,6 +529,9 @@ static void hm_check_remove_bad_input(void) {
 #define HM_COLLECTOR_IPC_RESPONSE_TIMEOUT_MILLISECONDS 10000ULL
 #define HM_COLLECTOR_IPC_MINIMUM_STALL_NANOSECONDS 2000000000ULL
 #define HM_COLLECTOR_IPC_MAXIMUM_STALL_NANOSECONDS 10000000000ULL
+#define HM_COLLECTOR_IPC_TEST_TIMEOUT_SECONDS \
+    ((HM_COLLECTOR_IPC_REPETITIONS * HM_COLLECTOR_IPC_MAXIMUM_STALL_NANOSECONDS \
+        / 1000000000ULL) + 50ULL)
 #define HM_COLLECTOR_IPC_DETAIL_BYTES 512
 
 typedef struct {
@@ -908,7 +911,7 @@ static void hm_collector_ipc_stop(HMCollectorIpcIntegration *state) {
     state->process_id = -1;
 }
 static void hm_check_collector_transport_stays_bounded(void) {
-    alarm(75);
+    alarm(HM_COLLECTOR_IPC_TEST_TIMEOUT_SECONDS);
     HMCollectorIpcIntegration state;
     memset(&state, 0, sizeof(state));
     state.process_id = -1;

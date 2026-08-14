@@ -476,7 +476,10 @@ class LiveUiServer(
             if (received < 0 && errno == EINTR) continue
             if (received <= 0) return@memScoped null
             for (byte in buffer.readBytes(received)) bytes.add(byte)
-            if (bytes.hasHeaderBoundary()) return@memScoped parseHttpRequest(bytes.toByteArray())
+            val headerEnd = bytes.headerBoundaryEndIndex()
+            if (headerEnd != null) {
+                return@memScoped parseHttpRequest(ByteArray(headerEnd) { bytes[it] })
+            }
         }
         null
     }
@@ -856,8 +859,8 @@ private fun configurePipeEnd(descriptor: Int): String? {
     return null
 }
 
-private fun ArrayList<Byte>.hasHeaderBoundary(): Boolean {
-    if (size < 4) return false
+private fun ArrayList<Byte>.headerBoundaryEndIndex(): Int? {
+    if (size < 4) return null
     for (index in 3 until size) {
         if (
             this[index - 3] == '\r'.code.toByte() &&
@@ -865,10 +868,10 @@ private fun ArrayList<Byte>.hasHeaderBoundary(): Boolean {
             this[index - 1] == '\r'.code.toByte() &&
             this[index] == '\n'.code.toByte()
         ) {
-            return true
+            return index + 1
         }
     }
-    return false
+    return null
 }
 
 private fun Short.hasAny(vararg events: Int): Boolean =

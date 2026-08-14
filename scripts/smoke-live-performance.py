@@ -85,6 +85,7 @@ class ProcessCpuClock:
             RUSAGE_UUID_BYTES,
         )
         self._sources[process_id] = "proc_pid_rusage-v4"
+        # ri_user_time and ri_system_time use Mach absolute-time ticks.
         return (user_ticks + system_ticks) * self._nanoseconds_per_tick / 1_000_000_000
 
     def source(self, process_id: int) -> str:

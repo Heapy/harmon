@@ -130,8 +130,7 @@ fun main(args: Array<String>) {
                         println("PORT=$port")
                         fflush(stdout)
                     }
-                    command.isNotEmpty() -> exitProcess(3)
-                    else -> Unit
+                    else -> exitProcess(3)
                 }
             }
             if (command.isNotEmpty()) {

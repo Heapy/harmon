@@ -123,6 +123,25 @@ class LiveUiServerTest {
     }
 
     @Test
+    fun bytesAfterACompleteHeaderDoNotCorruptRequestParsing() {
+        Harness().use { harness ->
+            val invalidBody = byteArrayOf(0xff.toByte())
+            val get = (
+                "GET / HTTP/1.1\r\n" +
+                    "Host: 127.0.0.1:${harness.port}\r\n\r\n"
+            ).toByteArray(StandardCharsets.US_ASCII) + invalidBody
+            assertEquals(200, liveHttpRawRequest(harness, get).statusCode)
+
+            val post = (
+                "POST /api/live HTTP/1.1\r\n" +
+                    "Host: 127.0.0.1:${harness.port}\r\n" +
+                    "Content-Length: ${invalidBody.size}\r\n\r\n"
+            ).toByteArray(StandardCharsets.US_ASCII) + invalidBody
+            assertEquals(405, liveHttpRawRequest(harness, post).statusCode)
+        }
+    }
+
+    @Test
     fun stalledHeaderDoesNotDelayAHealthyConcurrentWorker() {
         Harness().use { harness ->
             liveHttpPartialClient(harness).use { slowClient ->
@@ -315,10 +334,14 @@ private fun liveHttpRequest(
 }
 
 private fun liveHttpRawRequest(harness: Harness, request: String): LiveHttpTestResponse {
+    return liveHttpRawRequest(harness, request.toByteArray(StandardCharsets.US_ASCII))
+}
+
+private fun liveHttpRawRequest(harness: Harness, request: ByteArray): LiveHttpTestResponse {
     val raw = try {
         liveHttpPartialClient(harness).use { socket ->
             socket.getOutputStream().apply {
-                write(request.toByteArray(StandardCharsets.US_ASCII))
+                write(request)
                 flush()
             }
             socket.getInputStream().readBytes().toString(StandardCharsets.ISO_8859_1)

@@ -67,6 +67,7 @@ class LiveUiSampler(
     private val wallClock: () -> Instant = Clock.System::now,
     private val encoder: (WebUiPayload) -> String = WebUiPayloadJson::encode,
     private val diagnostics: (LiveUiSamplerDiagnostic) -> Unit = {},
+    private val sessionFactory: ((WebUiPayload) -> LiveSamplingSession)? = null,
 ) {
     private val lifecycleLock = LiveUiSamplerCondition()
     private val queue = dispatch_queue_create("dev.yoda.harmon.web.sample", null)
@@ -159,7 +160,11 @@ class LiveUiSampler(
             val generation = lease.renew(now)
             lifecycleLock.broadcast()
 
-            if (previousGeneration == null) {
+            val needsActivation = activeGeneration != generation || activeSession == null
+            if (
+                previousGeneration == null ||
+                (needsActivation && activationPendingGeneration == null)
+            ) {
                 activationPendingGeneration = generation
                 activationTimeoutLoggedGeneration = null
                 reservation = ActivationReservation(generation, lastPublished)
@@ -210,15 +215,18 @@ class LiveUiSampler(
         try {
             if (activationPendingGeneration != reservation.generation) return
             try {
-                if (acceptsLocked(reservation.generation) && session != null) {
-                    activeGeneration = reservation.generation
-                    activeSession = session
-                    if (warming != null && encoded != null) {
-                        state.update(encoded)
-                        lastPublished = PublishedPayload(warming, encoded)
-                        warmingPublishedGeneration = reservation.generation
-                        encodeFailureLoggedGeneration = null
-                    } else if (failure != null) {
+                if (acceptsLocked(reservation.generation)) {
+                    if (session != null) {
+                        activeGeneration = reservation.generation
+                        activeSession = session
+                        if (warming != null && encoded != null) {
+                            state.update(encoded)
+                            lastPublished = PublishedPayload(warming, encoded)
+                            warmingPublishedGeneration = reservation.generation
+                            encodeFailureLoggedGeneration = null
+                        }
+                    }
+                    if ((session == null || warming == null || encoded == null) && failure != null) {
                         logFailure = markEncodeFailureLocked(reservation.generation)
                     }
                 }
@@ -235,7 +243,7 @@ class LiveUiSampler(
     }
 
     private fun newSession(previousPayload: WebUiPayload): LiveSamplingSession =
-        LiveSamplingSession(
+        sessionFactory?.invoke(previousPayload) ?: LiveSamplingSession(
             collector = diagnosticCollector,
             calculator = calculator,
             sampleSeconds = sampleSeconds,

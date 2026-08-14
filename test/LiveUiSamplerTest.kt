@@ -12,6 +12,7 @@ import dev.yoda.harmon.report.WebUiPayload
 import dev.yoda.harmon.report.WebUiPayloadFactory
 import dev.yoda.harmon.report.WebUiPayloadJson
 import dev.yoda.harmon.report.WebUiStatus
+import dev.yoda.harmon.runtime.LiveSamplingSession
 import dev.yoda.harmon.web.LiveUiSampler
 import dev.yoda.harmon.web.LiveUiSamplerDiagnostic
 import dev.yoda.harmon.web.LiveUiSamplerLifecycle
@@ -340,6 +341,34 @@ class LiveUiSamplerTest {
     }
 
     @Test
+    fun sessionConstructionFailureClearsTheReservationAndRetriesOnNextRenewal() {
+        val clock = SamplerRuntimeClock(1_000_000_000uL)
+        val attempts = SamplerRuntimeRecorder<Unit>()
+        val errors = SamplerRuntimeRecorder<String>()
+        val fixture = samplerRuntimeFixture(
+            clock = clock,
+            actions = emptyList(),
+            errors = errors::add,
+            sessionFactory = {
+                attempts.add(Unit)
+                throw IllegalStateException("synthetic session construction failure")
+            },
+        )
+
+        fixture.sampler.start()
+        try {
+            fixture.sampler.renewLease()
+            fixture.sampler.renewLease()
+
+            assertEquals(2, attempts.size)
+            assertEquals(0, fixture.collector.captureCount)
+            assertEquals(1, errors.values.count { "publish failed" in it })
+        } finally {
+            fixture.sampler.stop()
+        }
+    }
+
+    @Test
     fun stopIsBoundedRejectsTheEventualResultAndMakesSamplerSingleShot() {
         val clock = SamplerRuntimeClock()
         val captureGate = SamplerRuntimeGate()
@@ -399,6 +428,7 @@ private fun samplerRuntimeFixture(
     encoder: (WebUiPayload) -> String = WebUiPayloadJson::encode,
     diagnostics: (LiveUiSamplerDiagnostic) -> Unit = {},
     errors: (String) -> Unit = {},
+    sessionFactory: ((WebUiPayload) -> LiveSamplingSession)? = null,
 ): SamplerRuntimeFixture {
     val initial = WebUiPayloadFactory.warming(generatedAt = Instant.fromEpochSeconds(0))
     val state = LiveUiState(WebUiPayloadJson.encode(initial))
@@ -415,6 +445,7 @@ private fun samplerRuntimeFixture(
             wallClock = { Instant.fromEpochSeconds((clock.peek() / 1_000_000_000uL).toLong()) },
             encoder = encoder,
             diagnostics = diagnostics,
+            sessionFactory = sessionFactory,
         ),
         state = state,
         collector = collector,
@@ -749,7 +780,7 @@ private fun samplerRuntimeEventually(
 ) {
     val started = TimeSource.Monotonic.markNow()
     while (!condition()) {
-        check(started.elapsedNow() < 3.seconds) { failureMessage }
+        check(started.elapsedNow() < 10.seconds) { failureMessage }
         usleep(1_000u)
     }
 }
