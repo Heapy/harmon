@@ -1,4 +1,3 @@
-# Registers code generation and contributes its output to the enabling module.
 tasks:
   generate:
     action: !dev.yoda.harmon.sqldelight.generateDatabase

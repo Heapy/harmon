@@ -15,28 +15,13 @@
  */
 package app.cash.sqldelight.core
 
-// ---------------------------------------------------------------------------------------------
-// VENDORED (Apache-2.0) from SQLDelight 2.3.2:
+// Vendored under Apache-2.0 from SQLDelight 2.3.2:
 //   sqldelight-gradle-plugin/src/main/kotlin/app/cash/sqldelight/core/SqlDelightEnvironment.kt
-// SQLDelight ships this class only inside its GRADLE plugin (which drags in kotlin-gradle-plugin),
-// but the class itself is Gradle-free: it mocks a headless IntelliJ environment to parse `.sq`
-// PSI and drives SqlDelightCompiler. We vendor it so our jvm/amper-plugin can invoke SQLDelight's
-// code generation without Gradle. Only change vs upstream: the optimistic-lock annotator (which
-// lives in the gradle-plugin artifact, not `core`) is dropped -> annotate(emptyList()).
-//
-// Kept byte-for-byte otherwise, deliberately, so that re-syncing against a newer SQLDelight is a
-// diff rather than a merge. Two consequences that look like defects and are not:
-//
-//   * the package is upstream's `app.cash.sqldelight.core`, which this module also depends on
-//     through $libs.sqldelight.core. Today that artifact does not contain this class -- SQLDelight
-//     ships it only in the Gradle plugin -- so there is no collision. Should a future release move
-//     it into `core`, this file has to be deleted rather than renamed: the duplicate would
-//     otherwise be resolved arbitrarily on the build classpath. Check on every version bump.
-//   * `forMigrationFiles` has no caller and the migration branches below are unreachable, because
-//     Generate.kt hard-wires deriveSchemaFromMigrations = false and verifyMigrations = false. They
-//     stay because trimming them is what turns the next re-sync into a merge. `.sqm` files
-//     therefore do nothing in this repository; see docs/history.md.
-// ---------------------------------------------------------------------------------------------
+// The optimistic-lock annotator is the only upstream code omitted because its type is unavailable
+// from `core`; keep the rest aligned so upgrades remain a diff. Retain the upstream package, but
+// delete this file if `core` begins shipping the class to avoid a duplicate on the build classpath.
+// Retain unreachable migration branches for clean upstream diffs; Generate.kt disables `.sqm`
+// migrations. See docs/history.md.
 
 import app.cash.sqldelight.core.compiler.SqlDelightCompiler
 import app.cash.sqldelight.core.lang.DatabaseFileType

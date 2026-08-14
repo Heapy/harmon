@@ -1,5 +1,3 @@
-# Build-time JVM plugin driving SQLDelight without Gradle. SqlDelightEnvironment is vendored from
-# Square under Apache-2.0; see its source header.
 product: jvm/amper-plugin
 
 apply: [../../harmon.module-template.yaml]

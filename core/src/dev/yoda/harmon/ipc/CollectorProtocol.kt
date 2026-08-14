@@ -27,7 +27,6 @@ data class CollectorSnapshot(
 )
 
 object CollectorProtocol {
-    /** Version 3 adds a strict handshake, capture profiles, and a capture-free probe. */
     const val VERSION = 3
 
     private val json = Json {
