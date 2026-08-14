@@ -129,7 +129,7 @@ sequenceDiagram
     A->>A: Calculate rates and application totals
     A->>D: Push only the alerts that just started firing
     par Demand-driven live sampler
-        U->>A: Authenticated GET /api/live?watch=1
+        U->>A: Bearer-authenticated GET /api/live?watch=1
         A->>C: FULL baseline, then LIVE_FAST cadence
         C-->>A: Profile-labelled snapshots
         A-->>U: Schema-v2 tree and full report
@@ -195,9 +195,14 @@ Every protocol message is framed as:
 1. a four-byte unsigned payload length in network byte order;
 2. one UTF-8 JSON document of exactly that length.
 
-The frame limit is 32 MiB. Socket send and receive operations have 30-second
-timeouts. JSON is generated and parsed with `kotlinx.serialization`, with
-unknown fields rejected in both directions. A version-3 connection is exactly:
+The frame limit is 32 MiB. Socket send and receive options remain 30 seconds,
+and the IPC bridge additionally applies one absolute monotonic deadline to the
+whole frame, including both its length and body. Progress therefore cannot
+restart the clock. Collector request frames have the tighter 4 KiB limit, and
+the server shares one five-second deadline across its `HELLO` send and the
+complete request receive. Snapshot responses retain the 32 MiB/30-second bound.
+JSON is generated and parsed with `kotlinx.serialization`, with unknown fields
+rejected in both directions. A version-3 connection is exactly:
 
 1. collector sends `HELLO`;
 2. agent sends either `PROBE` or `CAPTURE(profile)`;
@@ -208,6 +213,11 @@ unknown fields rejected in both directions. A version-3 connection is exactly:
 and the client rejects a snapshot whose `appliedProfile` differs from its
 request. Unknown request kinds, profiles, and fields fail rather than falling
 back to a more expensive or semantically different capture.
+
+The collector serves one accepted connection to completion before accepting
+the next, so captures never overlap. A silent or drip-fed client consumes at
+most the shared five-second handshake/request window; malformed, oversized,
+unknown, and truncated requests are closed without preventing the next probe.
 
 The current version is 3. Version 2 introduced true nanosecond CPU counters;
 version 3 adds the handshake, capture-free probe, and explicit collection
@@ -334,7 +344,7 @@ the IPC bridge; Darwin probes enter only through `bridge-probe`.
 ## Local process UI
 
 `harmon run` owns a second `CollectorClient` and `UsageCalculator` for the web
-view. It stays idle until an authenticated `/api/live?...&watch=1` request
+view. It stays idle until a header-authenticated `/api/live?watch=1` request
 renews a monotonic lease. Only a visible browser in Live mode sends that
 request; hidden, closed, and Snapshot tabs stop renewing it. The shared lease
 lasts `max(5 seconds, 3 × webSampleSeconds)`, so any one of several visible tabs
@@ -345,7 +355,9 @@ Each lease generation owns a new rate baseline, so CPU and other deltas never
 span an idle period. The previous tree remains visible as `WARMING` until that
 baseline advances. Captures run serially on one GCD queue with no pending work:
 the first is `FULL`, cadence captures are `LIVE_FAST`, and a monotonic deadline
-at least 30 seconds after the previous `FULL` start selects the next one.
+at least 30 seconds after the previous `FULL` start selects the next one. After
+either success or failure, an overrun selects the first future cadence tick;
+missed slots are counted for diagnostics but never queued or replayed.
 `LIVE_FAST` retains all task,
 storage, VM, disk, wakeup, fault, syscall, thread, compute, and energy metrics;
 it skips only the VM-region attribution walk. A failed fast capture marks the
@@ -354,20 +366,44 @@ capture and keeps the previous attribution with an explicit warning and
 increasing age.
 
 This sampler is independent of the main monitoring loop, so the UI cannot move
-the baseline used for alerts and history. Sampling and the HTTP accept loop run
-on separate serial GCD queues.
+the baseline used for alerts and history. Sampling, the HTTP accept loop, and
+the bounded HTTP worker queue are separate.
 
-The server binds `127.0.0.1` on a random free port. Every HTML/API request must
-carry a new 256-bit per-run token. The port and token are atomically published
-in the user's `0600` `live-ui.endpoint`; `harmon ui` reads that file and asks
-macOS to open the authenticated URL. Responses opt out of caching, referrers,
-external resources, and MIME sniffing. No CORS permission is emitted.
+The server binds `127.0.0.1` on a random free port. Each immutable server run
+owns its listener, nonblocking self-pipe, generation, and client set. The accept
+loop blocks in `poll`; stop writes the pipe, shuts down registered clients, and
+waits without holding the lifecycle lock until the accept loop and workers have
+closed their own descriptors. A timed-out run remains `CLOSING`, so a new
+generation cannot reuse its file descriptors. Listener, pipe, and accepted
+descriptors are close-on-exec; sockets carry `SO_NOSIGPIPE` and bounded send and
+receive timeouts. At most eight clients are dispatched concurrently, a ninth is
+closed immediately, and every complete request header has one absolute
+two-second/16 KiB bound.
 
-The browser receives schema v2 with one row per PID and an attribution timestamp
-and age. The shared core builder handles missing parents and cycles, aggregates
-every additive process metric with saturating arithmetic, and independently
-marks self/total availability and partial known totals. Lifetime peak remains
-self-only because summing historical peaks is misleading. All 64-bit integers
+Before routing or authorization, the parser requires exactly one
+case-insensitive `Host: 127.0.0.1:<actualPort>` header. Missing or duplicate Host
+is `400`; another name or port, including `localhost`, is `421`. The root HTML
+shell is public and contains no secret. Every browser `/api/live` call requires
+one constant-time-checked `Authorization: Bearer <token>` header. Query-token
+authorization exists only for the capture-free native endpoint probe and is
+rejected when `watch=1` is present. Cookies and CORS permissions are never
+emitted.
+
+The port and fresh 256-bit token are atomically published in the user's `0600`
+`live-ui.endpoint`. `harmon ui` opens
+`http://127.0.0.1:<port>/#token=<token>`; fragments are not sent to the server.
+Live-only bootstrap validates the token, stores it in that port's
+`sessionStorage`, and replaces the displayed history entry with `/` before its
+first relative API fetch. A missing/stale token or blocked storage/history
+shows `run harmon ui again` and renews no lease. Snapshot `file://` pages bypass
+this bootstrap and remain self-contained. Responses opt out of caching,
+referrers, external resources, and MIME sniffing.
+
+The browser still receives schema v2 with one row per PID and an attribution
+timestamp and age. The shared core builder handles missing parents and cycles,
+aggregates every additive process metric with saturating arithmetic, and
+independently marks self/total availability and partial known totals. Lifetime
+peak remains self-only because summing historical peaks is misleading. All 64-bit integers
 and process start times cross JSON as decimal strings, so JavaScript sorts them
 with `BigInt` without losing identity or overflow information.
 

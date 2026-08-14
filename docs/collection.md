@@ -35,14 +35,19 @@ always request the `FULL` collection profile. The independent Live UI sampler
 is demand-driven: an authenticated visible Live tab renews a lease, whose first
 capture is `FULL`; later captures use `LIVE_FAST` at `webSampleSeconds`, with a
 `FULL` selected by a monotonic deadline at least 30 seconds after the previous
-`FULL` start. The fast
-profile changes exactly one collector input: it passes zero process and region
+`FULL` start. Activation first reserves a generation and synchronously publishes
+its `WARMING` state, so concurrent renewals cannot create sessions or baselines
+for the same lease. The fast profile changes exactly one collector input: it
+passes zero process and region
 budgets to the `PROC_PIDREGIONINFO` attribution walk. Every other process and
 system source in the table below is collected normally.
 
 When the lease expires, the next activation starts a new pairwise-rate baseline
-rather than averaging counters across idle time. Captures are strictly serial,
-and missed deadlines do not enqueue catch-up work.
+rather than averaging counters across idle time and begins with `FULL` again.
+Captures are strictly serial and single-shot. After either a successful or
+failed capture, an overrun selects the first cadence tick strictly in the
+future; missed slots do not enqueue catch-up work. A completed result is
+published only while its atomic lease generation is still current.
 
 ## macOS data sources
 
@@ -255,9 +260,11 @@ Reports expose:
 
 A process outside that bounded set has `null`, which is distinct from a
 measured value of zero. `LIVE_FAST` performs no region calls and returns these
-two attribution fields as `null`; the Live session overlays its last `FULL`
-values by `(pid, startedAt)`. A newly observed identity therefore remains
-unavailable, and any ancestor's known subtotal is marked partial.
+two attribution fields as `null`; the Live session retains one immutable Last
+FULL state containing its timestamp, global measured/failed pair, and values by
+`(pid, startedAt)`. It overlays only identity matches. A newly observed identity
+therefore remains unavailable, a reused PID cannot inherit an old value, and
+any ancestor's known subtotal is marked partial.
 
 The counters mean exactly what they say:
 
@@ -311,6 +318,13 @@ metrics plus the cached attribution on every cadence capture. If a scheduled
 `FULL` request fails, fast updates continue; the timestamp stays unchanged, its
 age grows, and the payload/report carry the failure warning. A fast failure
 instead marks current metrics stale until another capture succeeds.
+
+The global Last FULL pair is deliberately not recomputed from a later process
+table: it describes that dated collector walk even after processes exit or new
+ones appear. Application coverage answers a different question and is counted
+from current group members whose identities still have cached values. Those
+per-application counts need not sum to the global Last FULL measured total, and
+reports label both scopes explicitly.
 
 ### Why root still does not make this exact
 
@@ -744,8 +758,8 @@ holds. `once` and `diagnose` write nothing.
 
 No outbound network request occurs unless Telegram or a webhook is configured
 and a notification is due. With `webUiEnabled=true`, the user agent also serves
-authenticated read-only HTML/JSON on a random `127.0.0.1` port; it never binds a
-non-loopback interface.
+a secret-free HTML shell and authenticated read-only JSON on a random
+`127.0.0.1` port; it never binds a non-loopback interface.
 
 ## Additional macOS signals worth considering
 

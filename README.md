@@ -266,21 +266,31 @@ subtree. Roots and their first child level start expanded. Expandable system
 details and the full text report remain below the tree.
 
 The live sampler stays idle until at least one visible tab is in Live mode. Its
-authenticated `watch=1` polling renews a shared lease of
+header-authenticated `watch=1` polling renews a shared lease of
 `max(5 seconds, 3 × webSampleSeconds)`; hidden, closed, and Snapshot tabs stop
 renewing it. The first capture after idle is a new `FULL` baseline, cadence
 captures are `LIVE_FAST`, and `FULL` attribution is refreshed at most once per
-30 seconds. Fast captures retain every metric except the VM-region walk and
-overlay cached attribution by PID plus start time. The UI shows its timestamp
-and age explicitly. This baseline remains independent of alert/history
-sampling and `intervalSeconds`. Snapshot freezes the current browser view, and
-Resume starts renewing the lease again. Column selection, sorting, search, and
-tree expansion survive live updates and WARMING/STALE transitions.
+30 seconds. A capture overrun schedules the first future cadence tick, so missed
+slots never queue or run as catch-up work. Fast captures retain every metric
+except the VM-region walk and overlay cached attribution by PID plus start time.
+The UI dates the global Last FULL measured/failed pair separately from each
+application's coverage of current members with cached values. This baseline
+remains independent of alert/history sampling and `intervalSeconds`. Snapshot
+freezes the current browser view, and Resume starts renewing the lease again.
+Column selection, sorting, search, and tree expansion survive live updates and
+WARMING/STALE transitions.
 
-The server chooses a fresh loopback port and 256-bit token on every start. Its
-endpoint manifest is user-only at
-`~/Library/Application Support/Harmon/live-ui.endpoint`; the token is never
-written to logs.
+The server chooses a fresh loopback port and 256-bit token on every start.
+`harmon ui` opens `http://127.0.0.1:<port>/#token=<token>` from the user-only
+`~/Library/Application Support/Harmon/live-ui.endpoint`. The fragment never
+enters an HTTP target or referrer. Live bootstrap validates it, stores it in
+that port's `sessionStorage`, and replaces the displayed URL with `/` before the
+first fetch. Subsequent relative `/api/live?watch=1` requests carry one Bearer
+header; query strings, cookies, the DOM, logs, and the displayed URL carry no
+secret. Reload in the same tab reuses the session token, while a missing/stale
+token or blocked storage/history shows `run harmon ui again` without renewing
+the sampling lease. Saved Snapshot pages remain self-contained and perform no
+storage access or network fetch. The Web UI payload schema remains version 2.
 
 `--sample-seconds` is the gap between those two snapshots and accepts 1 to 300
 seconds inclusive. A value outside that range, or one that is not an integer,

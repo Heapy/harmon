@@ -38,6 +38,16 @@ zero (`processes.zero-budget-skips-region-attribution`). This is the native
 guard that `LIVE_FAST` reaches no region-attribution candidate; Kotlin tests pin
 that profile to the same 0/0 arguments and pin `FULL` to 256/100,000.
 
+IPC framing checks use real `socketpair` pressure and monotonic deadlines. They
+pin the 32 MiB response limit, 4 KiB collector-request limit, and 30-second
+default; drip the header and payload separately to prove one absolute receive
+deadline; stop a blocked sender whose peer reads too slowly; and still require
+partial writes to complete when they fit inside the bound. The socket suite's
+`socket.collector-transport-stays-bounded` check spawns the real debug collector
+with `posix_spawn`, repeats ten silent-client rounds, and follows malformed,
+unknown-profile, oversized, and truncated requests with a healthy v3 probe. It
+runs in the ordinary and sanitized harnesses.
+
 Two shapes of anchor are in use — a *bracket* around the bridge's read and a
 *tolerance* on two reads in a row — and `test/native/anchors.h` describes both.
 The comparison helpers both shapes run through are pinned to exact values by the
@@ -187,6 +197,33 @@ scripts/test-native.sh --sanitize      # the same checks under ASan and UBSan
 build/tasks/_selftest_linkMacosArm64Debug/selftest.kexe binding.
 ```
 
+Live performance evidence is deliberately outside the assertion harness:
+
+```shell
+./kotlin build --variant release
+scripts/smoke-live-performance.py collector-only
+scripts/smoke-live-performance.py live-end-to-end \
+  --endpoint-file /explicit/live-ui.endpoint \
+  --agent-pid AGENT_PID --collector-pid COLLECTOR_PID
+```
+
+Both modes emit one machine-readable JSON object and always clean up only the
+processes they started. `collector-only` starts an unprivileged release
+collector on its own temporary Unix socket, grows the process table toward
+1,000 with temporary `/bin/sleep` children, and measures idle CPU plus strictly
+sequential v3 `FULL`/`LIVE_FAST` latency. It is a lower bound, not end-to-end
+Live CPU evidence. `live-end-to-end` requires an already-authorized running
+agent and collector plus explicit PIDs, renews the same Bearer-authenticated
+lease for 90 seconds, measures their cumulative CPU delta, checks both payload
+profiles, then stops renewing and verifies idle state. It neither installs,
+restarts, nor reconfigures anything and never prints the secret. The
+corresponding targets are collector idle CPU at most
+1%, unprivileged FAST p95 at most 500 ms, and—only from the end-to-end mode—
+combined active CPU at most 15% (with privileged FAST p95 reported only if the
+payload exposes it). CPU deltas use `proc_pid_rusage` v4; when macOS denies that
+call for the root collector, the end-to-end mode falls back to `ps` cumulative
+time and records the source for each PID in its JSON.
+
 The filter gates execution, not just reporting: `main.c` maps each suite to the
 prefixes it reports under and skips the ones the filter cannot select, so a
 filtered run neither forks children nor opens sockets for the suites it left out
@@ -215,6 +252,24 @@ to the debug variant: after
 `./kotlin build --variant release` the debug binary stays where it was, and the
 guard is what notices. The C tests need no guard — the script recompiles them
 every run.
+
+The real-binary socket integration has the same requirement for
+`harmon-collector`. `CollectorIpcIntegrationTest` rejects a missing debug binary
+or one older than the collector, core, probe/IPC bridge, module, or template
+inputs before the C harness is allowed to exercise it. `HARMON_COLLECTOR_BIN`
+overrides the resolved path when an explicit binary is under test.
+
+The demand-driven sampler is tested above cinterop with a deterministic
+monotonic clock, gates around capture/encoding, and diagnostics that are no-op
+in production. `LiveUiSamplerTest` proves synchronous one-generation WARMING,
+`maxInFlight == 1`, first-future-tick scheduling after success and error,
+missed-slot skipping without catch-up, reactivation with `FULL`, rejection of a
+late generation, encoding recovery, and bounded single-shot stop. HTTP endpoint
+tests use real loopback sockets for self-pipe/drain, cap-eight concurrency,
+descriptor options/reuse, the two-second header deadline, strict Host, and both
+auth paths. Chromium/WebKit fixtures separately pin fragment removal,
+`sessionStorage` reload, header-only token-free polling, port isolation, and the
+network-free Snapshot path.
 
 **Accepted coverage gaps**, listed so the table above does not read as a promise
 to cover everything. Each entry names the check that owns it; the reasoning —
