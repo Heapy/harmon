@@ -3,8 +3,11 @@ package dev.yoda.harmon.webuitest
 import com.microsoft.playwright.Page
 import com.microsoft.playwright.assertions.PlaywrightAssertions.assertThat
 import com.microsoft.playwright.options.AriaRole
+import java.util.Collections
 import kotlin.test.Test
 import kotlin.test.assertEquals
+import kotlin.test.assertFalse
+import kotlin.test.assertTrue
 
 class ProcessTreeUiTest {
     @Test
@@ -325,8 +328,15 @@ class ProcessTreeUiTest {
         Harness().use { harness ->
             onChromium { browser ->
                 browser.desktopContext().use { context ->
+                    context.addInitScript(LIVE_HTTP_FORBID_STORAGE_AND_HISTORY)
                     context.traced("file-snapshot") {
+                        val networkRequests = Collections.synchronizedList(mutableListOf<String>())
                         val page = context.newPage()
+                        page.onRequest { request ->
+                            if (request.url().startsWith("http://") || request.url().startsWith("https://")) {
+                                networkRequests += request.url()
+                            }
+                        }
                         page.navigate(harness.snapshotUrl)
 
                         assertThat(processUiRow(page, 100)).containsText("Firefox")
@@ -336,6 +346,8 @@ class ProcessTreeUiTest {
                         page.getByText("Full text report").click()
                         assertThat(page.locator(".report-details pre"))
                             .hasText("Fake Harmon report for browser tests.")
+                        assertEquals(listOf(false, false), page.evaluate(LIVE_HTTP_POLICY_TOUCHES))
+                        assertTrue(networkRequests.isEmpty(), "snapshot requested $networkRequests")
                     }
                 }
             }
@@ -347,24 +359,104 @@ class ProcessTreeUiTest {
         Harness().use { harness ->
             onWebKit { browser ->
                 browser.desktopContext().use { context ->
+                    context.addInitScript(LIVE_HTTP_FORBID_STORAGE_AND_HISTORY)
+                    val networkRequests = Collections.synchronizedList(mutableListOf<String>())
                     val page = context.newPage()
+                    page.onRequest { request ->
+                        if (request.url().startsWith("http://") || request.url().startsWith("https://")) {
+                            networkRequests += request.url()
+                        }
+                    }
                     page.navigate(harness.snapshotUrl)
 
                     assertThat(processUiRow(page, 100)).containsText("Firefox")
                     assertThat(page.locator(".mode-button")).containsText("Saved snapshot")
+                    assertEquals(listOf(false, false), page.evaluate(LIVE_HTTP_POLICY_TOUCHES))
+                    assertTrue(networkRequests.isEmpty(), "snapshot requested $networkRequests")
                 }
             }
         }
     }
 
     @Test
-    fun loopbackPageRejectsRequestsWithoutTheManifestToken() {
+    fun fragmentBootstrapClearsTheUrlAndReloadUsesHeaderAuthFromSessionStorage() {
         Harness().use { harness ->
             onChromium { browser ->
                 browser.desktopContext().use { context ->
-                    val response = context.request().get(harness.baseUrl + "/")
+                    val apiTargets = Collections.synchronizedList(mutableListOf<String>())
+                    val authorizationHeaders = Collections.synchronizedList(mutableListOf<String?>())
+                    val page = context.newPage()
+                    page.onRequest { request ->
+                        if (request.url().contains("/api/live")) {
+                            apiTargets += request.url()
+                            authorizationHeaders += request.headers()["authorization"]
+                        }
+                    }
+                    page.navigate(harness.liveUrl())
+                    assertThat(processUiRow(page, 100)).isVisible()
 
-                    assertEquals(403, response.status())
+                    assertEquals(harness.baseUrl + "/", page.url())
+                    assertTrue(apiTargets.isNotEmpty())
+                    assertTrue(apiTargets.all { it == harness.baseUrl + "/api/live?watch=1" })
+                    assertTrue(apiTargets.none { harness.token in it })
+                    assertTrue(authorizationHeaders.all { it == "Bearer ${harness.token}" })
+                    assertTrue(context.cookies().isEmpty())
+
+                    val watchesBeforeReload = harness.watchCount()
+                    page.reload()
+                    assertThat(processUiRow(page, 100)).isVisible()
+                    assertEquals(harness.baseUrl + "/", page.url())
+                    assertTrue(harness.watchCount() > watchesBeforeReload)
+                }
+            }
+        }
+    }
+
+    @Test
+    fun missingAndStaleSessionTokensDoNotRenewTheLease() {
+        Harness().use { harness ->
+            onChromium { browser ->
+                browser.desktopContext().use { context ->
+                    val missingPage = context.newPage()
+                    missingPage.navigate(harness.baseUrl + "/")
+                    assertThat(missingPage.locator(".notice.error")).containsText("run harmon ui again")
+                    assertEquals(0, harness.watchCount())
+                }
+
+                browser.desktopContext().use { context ->
+                    context.addInitScript(
+                        "sessionStorage.setItem('harmon.liveUiToken', '${"b".repeat(64)}')",
+                    )
+                    val stalePage = context.newPage()
+                    stalePage.navigate(harness.baseUrl + "/")
+                    assertThat(stalePage.locator(".notice.error")).containsText("run harmon ui again")
+                    assertEquals(0, harness.watchCount())
+                }
+            }
+        }
+    }
+
+    @Test
+    fun sessionTokensAreIsolatedByLoopbackPort() {
+        Harness().use { first ->
+            Harness().use { second ->
+                onChromium { browser ->
+                    browser.desktopContext().use { context ->
+                        val page = context.newPage()
+                        page.navigate(first.liveUrl())
+                        assertThat(processUiRow(page, 100)).isVisible()
+                        assertTrue(first.watchCount() > 0)
+
+                        page.navigate(second.baseUrl + "/")
+                        assertThat(page.locator(".notice.error")).containsText("run harmon ui again")
+                        assertEquals(0, second.watchCount())
+
+                        val authenticatedSecondPage = context.newPage()
+                        authenticatedSecondPage.navigate(second.liveUrl())
+                        assertThat(processUiRow(authenticatedSecondPage, 100)).isVisible()
+                        assertTrue(second.watchCount() > 0)
+                        assertFalse(first.token == second.token && first.port == second.port)
+                    }
                 }
             }
         }
@@ -469,3 +561,24 @@ private fun processUiRow(page: Page, pid: Int) = page.locator("tbody tr[data-pid
 private fun processUiRootPids(page: Page): List<String> = page.locator("tbody tr[aria-level='1']")
     .all()
     .map { it.getAttribute("data-pid") }
+
+private val LIVE_HTTP_FORBID_STORAGE_AND_HISTORY =
+    """
+    (() => {
+      window.__harmonStorageTouched = false;
+      window.__harmonHistoryTouched = false;
+      const denyStorage = () => {
+        window.__harmonStorageTouched = true;
+        throw new DOMException("storage denied", "SecurityError");
+      };
+      Storage.prototype.getItem = denyStorage;
+      Storage.prototype.setItem = denyStorage;
+      history.replaceState = () => {
+        window.__harmonHistoryTouched = true;
+        throw new DOMException("history denied", "SecurityError");
+      };
+    })();
+    """.trimIndent()
+
+private const val LIVE_HTTP_POLICY_TOUCHES =
+    "[Boolean(window.__harmonStorageTouched), Boolean(window.__harmonHistoryTouched)]"

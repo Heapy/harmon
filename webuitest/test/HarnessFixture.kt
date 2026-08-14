@@ -25,10 +25,12 @@ class Harness : AutoCloseable {
     private val stderr = StringBuilder()
     private val readers: List<Thread>
 
-    val port: Int
+    var port: Int
+        private set
     val token: String
     val snapshotUrl: String
-    val baseUrl: String
+    var baseUrl: String
+        private set
 
     init {
         configureAssertions()
@@ -62,7 +64,7 @@ class Harness : AutoCloseable {
         snapshotUrl = Path.of(snapshotPath).toUri().toString()
     }
 
-    fun liveUrl(): String = "$baseUrl/?token=$token"
+    fun liveUrl(): String = "$baseUrl/#token=$token"
 
     fun send(command: String) {
         require('\n' !in command && '\r' !in command)
@@ -87,6 +89,28 @@ class Harness : AutoCloseable {
         }
         return response.removePrefix("WATCH=").toIntOrNull()
             ?: harnessFailure("WATCH response is not numeric")
+    }
+
+    fun restart(count: Int = 1) {
+        require(count in 1..1_000)
+        val command = "restart $count"
+        send(command)
+        val nextPort = handshake("PORT=").toIntOrNull()
+            ?: harnessFailure("restart PORT response is not numeric")
+        val acknowledgement = nextLine()
+        if (acknowledgement != "ACK=$command") {
+            harnessFailure("expected command acknowledgement, got '$acknowledgement'")
+        }
+        port = nextPort
+        baseUrl = "http://127.0.0.1:$port"
+    }
+
+    fun setWatchDelay(milliseconds: Long) {
+        sendAndWait("watch delay $milliseconds")
+    }
+
+    fun rejectAcceptedClients(reject: Boolean) {
+        sendAndWait("reject clients ${if (reject) "on" else "off"}")
     }
 
     override fun close() {

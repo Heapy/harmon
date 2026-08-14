@@ -240,7 +240,30 @@ object ProcessPage {
         const root = document.getElementById("app");
         const bootstrapNode = document.getElementById("harmon-bootstrap");
         const pageMode = document.body.dataset.mode || "live";
-        const token = new URLSearchParams(location.search).get("token") || "";
+        const tokenPattern = /^[0-9a-f]{64}$/;
+        const tokenStorageKey = "harmon.liveUiToken";
+        let token = "";
+        let bootstrapError = null;
+        if (pageMode === "live") {
+          try {
+            if (location.hash) {
+              const fragmentTokens = new URLSearchParams(location.hash.slice(1)).getAll("token");
+              if (fragmentTokens.length !== 1 || !tokenPattern.test(fragmentTokens[0])) {
+                throw new Error("invalid live UI token");
+              }
+              sessionStorage.setItem(tokenStorageKey, fragmentTokens[0]);
+              history.replaceState(null, "", "/");
+              token = fragmentTokens[0];
+            } else {
+              const storedToken = sessionStorage.getItem(tokenStorageKey) || "";
+              if (!tokenPattern.test(storedToken)) throw new Error("missing live UI token");
+              token = storedToken;
+            }
+          } catch (_) {
+            token = "";
+            bootstrapError = "run harmon ui again";
+          }
+        }
         const e = (type, props, ...children) => h(type, props, ...children);
         const initial = JSON.parse(bootstrapNode.textContent || "null");
 
@@ -285,7 +308,7 @@ object ProcessPage {
           selectedColumns: new Set(presets.Overview),
           expanded: new Set(),
           initializedExpansion: false,
-          requestError: null,
+          requestError: bootstrapError,
           timer: null,
           pollGeneration: 0
         };
@@ -735,7 +758,8 @@ object ProcessPage {
         function draw() { render(e(App), root); }
 
         function canPoll() {
-          return pageMode === "live" && !state.frozen && document.visibilityState === "visible";
+          return pageMode === "live" && tokenPattern.test(token) &&
+            !state.frozen && document.visibilityState === "visible";
         }
 
         function schedule() {
@@ -750,9 +774,13 @@ object ProcessPage {
           if (!canPoll()) return;
           const generation = state.pollGeneration;
           try {
-            const response = await fetch("/api/live?token=" + encodeURIComponent(token) + "&watch=1", {
-              cache: "no-store", headers: { "Accept": "application/json" }
+            const response = await fetch("/api/live?watch=1", {
+              cache: "no-store",
+              headers: { "Accept": "application/json", "Authorization": "Bearer " + token }
             });
+            if (response.status === 401 || response.status === 403) {
+              throw new Error("run harmon ui again");
+            }
             if (!response.ok) throw new Error("HTTP " + response.status);
             const payload = await response.json();
             if (payload.schemaVersion !== 2) throw new Error("unsupported schema " + payload.schemaVersion);

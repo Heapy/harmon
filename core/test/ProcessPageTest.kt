@@ -21,7 +21,15 @@ class ProcessPageTest {
     fun liveModeRenewsOnlyAVisibleWatchAndKeepsInteractiveTableStateOutsidePayload() {
         val html = ProcessPage.document(payloadJson = "null", mode = "live")
 
-        assertContains(html, "&watch=1")
+        assertContains(html, "fetch(\"/api/live?watch=1\"")
+        assertContains(html, "\"Authorization\": \"Bearer \" + token")
+        assertContains(html, "new URLSearchParams(location.hash.slice(1)).getAll(\"token\")")
+        assertContains(html, "sessionStorage.setItem(tokenStorageKey, fragmentTokens[0])")
+        assertContains(html, "history.replaceState(null, \"\", \"/\")")
+        assertContains(html, "sessionStorage.getItem(tokenStorageKey)")
+        assertContains(html, "run harmon ui again")
+        assertFalse("/api/live?token=" in html)
+        assertFalse("location.search" in html)
         assertContains(html, "document.visibilityState === \"visible\"")
         assertContains(html, "visibilitychange")
         assertContains(html, "pollGeneration")
@@ -29,6 +37,16 @@ class ProcessPageTest {
         assertContains(html, "sort: { column: \"cpu\", scope: \"total\" }")
         assertContains(html, "const state = {")
         assertContains(html, "state.payload = payload")
+    }
+
+    @Test
+    fun snapshotModeGatesStorageAndHistoryBootstrapBeforeRendering() {
+        val html = ProcessPage.document(payloadJson = "null", mode = "snapshot")
+
+        val liveGate = html.indexOf("if (pageMode === \"live\")")
+        assertFalse(liveGate < 0)
+        assertFalse(html.indexOf("sessionStorage", startIndex = 0) < liveGate)
+        assertFalse(html.indexOf("history.replaceState", startIndex = 0) < liveGate)
     }
 
     @Test

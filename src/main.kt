@@ -84,6 +84,6 @@ fun main(arguments: Array<String>) {
         setup = setup::run,
         status = status::run,
         uninstall = uninstall::run,
-        openUi = LiveUiLauncher::open,
+        openUi = { LiveUiLauncher.open(LiveUiEndpointStore()) },
     )
 }

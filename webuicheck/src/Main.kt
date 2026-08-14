@@ -22,8 +22,10 @@ import dev.yoda.harmon.report.WebUiSwapSummary
 import dev.yoda.harmon.report.WebUiVirtualMemorySummary
 import dev.yoda.harmon.util.printError
 import dev.yoda.harmon.web.LiveUiEndpoint
+import dev.yoda.harmon.web.LiveHttpSocketKind
 import dev.yoda.harmon.web.LiveUiServer
 import dev.yoda.harmon.web.LiveUiState
+import dev.yoda.harmon.web.configureLiveHttpSocket
 import dev.yoda.harmon.web.liveUiEndpointResponds
 import kotlinx.cinterop.ExperimentalForeignApi
 import kotlinx.cinterop.addressOf
@@ -57,14 +59,23 @@ fun main(args: Array<String>) {
 
     val first = sampleOne()
     val state = LiveUiState(WebUiPayloadJson.encode(first))
-    val watchCounter = WatchCounter()
+    val watchCounter = LiveHttpWatchCounter()
+    val acceptedSetup = LiveHttpAcceptedSetupControl()
     val server = LiveUiServer(
         state = state,
         token = TOKEN,
         onWatch = watchCounter::increment,
         logError = ::printError,
+        configureSocket = { descriptor, kind ->
+            configureLiveHttpSocket(descriptor, kind)
+                ?: if (kind == LiveHttpSocketKind.CLIENT && acceptedSetup.rejectsClients()) {
+                    "injected accepted socket setup failure"
+                } else {
+                    null
+                }
+        },
     )
-    val port = server.start()
+    var port = server.start()
     check(liveUiEndpointResponds(LiveUiEndpoint(port, TOKEN))) {
         "production endpoint probe rejected the live fixture"
     }
@@ -99,8 +110,29 @@ fun main(args: Array<String>) {
                     fflush(stdout)
                     continue
                 }
+                "reject clients on" -> acceptedSetup.setRejectClients(true)
+                "reject clients off" -> acceptedSetup.setRejectClients(false)
                 "" -> Unit
-                else -> exitProcess(3)
+                else -> when {
+                    command.startsWith("watch delay ") -> {
+                        val delay = command.substringAfterLast(' ').toLongOrNull()
+                            ?: exitProcess(3)
+                        watchCounter.setDelayMillis(delay)
+                    }
+                    command.startsWith("restart ") -> {
+                        val count = command.substringAfterLast(' ').toIntOrNull()
+                            ?.takeIf { it in 1..1_000 }
+                            ?: exitProcess(3)
+                        repeat(count) {
+                            server.stop()
+                            port = server.start()
+                        }
+                        println("PORT=$port")
+                        fflush(stdout)
+                    }
+                    command.isNotEmpty() -> exitProcess(3)
+                    else -> Unit
+                }
             }
             if (command.isNotEmpty()) {
                 println("ACK=$command")
@@ -113,23 +145,60 @@ fun main(args: Array<String>) {
     }
 }
 
-private class WatchCounter {
+private class LiveHttpWatchCounter {
     private val lock = NSLock()
     private var value = 0
+    private var delayMillis = 0L
 
     fun increment() {
+        val delay: Long
         lock.lock()
         try {
             value += 1
+            delay = delayMillis
         } finally {
             lock.unlock()
         }
+        if (delay > 0L) usleep((delay * 1_000L).toUInt())
     }
 
     fun current(): Int {
         lock.lock()
         return try {
             value
+        } finally {
+            lock.unlock()
+        }
+    }
+
+    fun setDelayMillis(next: Long) {
+        require(next in 0L..10_000L) { "watch delay must be between 0 and 10000 ms" }
+        lock.lock()
+        try {
+            delayMillis = next
+        } finally {
+            lock.unlock()
+        }
+    }
+}
+
+private class LiveHttpAcceptedSetupControl {
+    private val lock = NSLock()
+    private var rejectClients = false
+
+    fun rejectsClients(): Boolean {
+        lock.lock()
+        return try {
+            rejectClients
+        } finally {
+            lock.unlock()
+        }
+    }
+
+    fun setRejectClients(next: Boolean) {
+        lock.lock()
+        try {
+            rejectClients = next
         } finally {
             lock.unlock()
         }

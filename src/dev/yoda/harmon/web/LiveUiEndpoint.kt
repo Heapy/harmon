@@ -33,7 +33,7 @@ data class LiveUiEndpoint(
     }
 
     val url: String
-        get() = "http://127.0.0.1:$port/?token=$token"
+        get() = "http://127.0.0.1:$port/#token=$token"
 
     val apiUrl: String
         get() = "http://127.0.0.1:$port/api/live?token=$token"
@@ -107,7 +107,7 @@ class LiveUiEndpointStore(
 }
 
 object LiveUiLauncher {
-    fun open(store: LiveUiEndpointStore = LiveUiEndpointStore()) {
+    fun open(store: LiveUiEndpointStore) {
         val endpoint = store.read()
         if (!liveUiEndpointResponds(endpoint)) {
             store.removeIfCurrent(endpoint)
