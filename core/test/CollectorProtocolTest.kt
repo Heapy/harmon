@@ -74,19 +74,19 @@ class CollectorProtocolTest {
 
     @Test
     fun rejectsUnknownFieldsInEveryFrameDirection() {
-        val frames = listOf<Pair<String, () -> Unit>>(
-            "hello" to {
+        val frames = listOf<Triple<String, String, () -> Unit>>(
+            Triple("hello", "Collector returned") {
                 CollectorProtocol.decodeHello(withUnknownField(CollectorProtocol.encodeHello()))
             },
-            "request" to {
+            Triple("request", "Collector received") {
                 CollectorProtocol.decodeRequest(
                     withUnknownField(CollectorProtocol.encodeCapture(CollectionProfile.FULL)),
                 )
             },
-            "ack" to {
+            Triple("ack", "Collector returned") {
                 CollectorProtocol.decodeAck(withUnknownField(CollectorProtocol.encodeAck()))
             },
-            "snapshot" to {
+            Triple("snapshot", "Collector returned") {
                 CollectorProtocol.decodeSnapshot(
                     withUnknownField(
                         CollectorProtocol.encodeSnapshot(emptySnapshot(), CollectionProfile.FULL),
@@ -96,9 +96,10 @@ class CollectorProtocolTest {
             },
         )
 
-        for ((name, decode) in frames) {
+        for ((name, direction, decode) in frames) {
             val failure = assertFailsWith<CollectorProtocolException>(name, decode)
             assertContains(assertNotNull(failure.message), "invalid")
+            assertContains(assertNotNull(failure.message), direction)
         }
     }
 

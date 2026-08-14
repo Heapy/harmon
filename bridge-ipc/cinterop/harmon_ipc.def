@@ -8,6 +8,8 @@ headerFilter = harmon_ipc.h
 #include <arpa/inet.h>
 #include <errno.h>
 #include <fcntl.h>
+#include <limits.h>
+#include <poll.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -24,6 +26,11 @@ extern "C" {
 #endif
 
 #define HM_MAX_JSON_FRAME_SIZE (32U * 1024U * 1024U)
+#define HM_MAX_COLLECTOR_REQUEST_FRAME_SIZE (4U * 1024U)
+#define HM_DEFAULT_FRAME_TIMEOUT_MILLISECONDS 30000ULL
+
+#define HM_IPC_NANOSECONDS_PER_MILLISECOND 1000000ULL
+#define HM_IPC_NANOSECONDS_PER_SECOND 1000000000ULL
 
 static inline void hm_sleep_millis(uint64_t milliseconds) {
     struct timespec requested = {
@@ -233,47 +240,240 @@ static inline int hm_unix_connect(const char *path) {
     return descriptor;
 }
 
-static inline int hm_send_all(int descriptor, const void *buffer, size_t size) {
+static inline uint64_t hm_ipc_saturating_add_uint64(uint64_t left, uint64_t right) {
+    return UINT64_MAX - left < right ? UINT64_MAX : left + right;
+}
+
+static inline int hm_ipc_monotonic_nanoseconds(uint64_t *result) {
+    if (result == NULL) {
+        errno = EINVAL;
+        return -1;
+    }
+
+    struct timespec now;
+    if (clock_gettime(CLOCK_MONOTONIC, &now) != 0) {
+        return -1;
+    }
+    if (now.tv_sec < 0 || now.tv_nsec < 0) {
+        errno = EOVERFLOW;
+        return -1;
+    }
+
+    const uint64_t seconds = (uint64_t)now.tv_sec;
+    const uint64_t second_nanoseconds =
+        seconds > UINT64_MAX / HM_IPC_NANOSECONDS_PER_SECOND
+            ? UINT64_MAX
+            : seconds * HM_IPC_NANOSECONDS_PER_SECOND;
+    *result = hm_ipc_saturating_add_uint64(
+        second_nanoseconds,
+        (uint64_t)now.tv_nsec
+    );
+    return 0;
+}
+
+static inline int hm_ipc_deadline_after_millis(
+    uint64_t timeout_milliseconds,
+    uint64_t *deadline_nanoseconds
+) {
+    if (deadline_nanoseconds == NULL) {
+        errno = EINVAL;
+        return -1;
+    }
+    uint64_t now;
+    if (hm_ipc_monotonic_nanoseconds(&now) != 0) {
+        return -1;
+    }
+
+    const uint64_t timeout_nanoseconds =
+        timeout_milliseconds > UINT64_MAX / HM_IPC_NANOSECONDS_PER_MILLISECOND
+            ? UINT64_MAX
+            : timeout_milliseconds * HM_IPC_NANOSECONDS_PER_MILLISECOND;
+    *deadline_nanoseconds = hm_ipc_saturating_add_uint64(now, timeout_nanoseconds);
+    return 0;
+}
+
+static inline int hm_ipc_wait_until_ready(
+    int descriptor,
+    short events,
+    uint64_t deadline_nanoseconds
+) {
+    while (1) {
+        uint64_t now;
+        if (hm_ipc_monotonic_nanoseconds(&now) != 0) {
+            return -1;
+        }
+        if (now >= deadline_nanoseconds) {
+            errno = ETIMEDOUT;
+            return -1;
+        }
+
+        const uint64_t remaining_nanoseconds = deadline_nanoseconds - now;
+        uint64_t timeout_milliseconds =
+            remaining_nanoseconds / HM_IPC_NANOSECONDS_PER_MILLISECOND;
+        if (remaining_nanoseconds % HM_IPC_NANOSECONDS_PER_MILLISECOND != 0) {
+            timeout_milliseconds++;
+        }
+        const int poll_timeout = timeout_milliseconds > (uint64_t)INT_MAX
+            ? INT_MAX
+            : (int)timeout_milliseconds;
+        struct pollfd candidate = {
+            .fd = descriptor,
+            .events = events,
+            .revents = 0,
+        };
+        const int status = poll(&candidate, 1, poll_timeout);
+        if (status > 0) {
+            if ((candidate.revents & POLLNVAL) != 0) {
+                errno = EBADF;
+                return -1;
+            }
+            if ((candidate.revents & (events | POLLERR | POLLHUP)) != 0) {
+                return 0;
+            }
+            continue;
+        }
+        if (status == 0 || errno == EINTR) {
+            continue;
+        }
+        return -1;
+    }
+}
+
+static inline int hm_send_all_deadline(
+    int descriptor,
+    const void *buffer,
+    size_t size,
+    uint64_t deadline_nanoseconds
+) {
+    if (buffer == NULL && size > 0) {
+        errno = EINVAL;
+        return -1;
+    }
+    if (size == 0) {
+        return 0;
+    }
+    const int original_flags = fcntl(descriptor, F_GETFL);
+    if (original_flags < 0) {
+        return -1;
+    }
+    const int changed_flags = (original_flags & O_NONBLOCK) == 0;
+    if (changed_flags && fcntl(descriptor, F_SETFL, original_flags | O_NONBLOCK) != 0) {
+        return -1;
+    }
+
+    int status = 0;
     const uint8_t *cursor = (const uint8_t *)buffer;
     size_t remaining = size;
     while (remaining > 0) {
-        ssize_t written = send(descriptor, cursor, remaining, 0);
-        if (written < 0 && errno == EINTR) {
-            continue;
+        if (hm_ipc_wait_until_ready(descriptor, POLLOUT, deadline_nanoseconds) != 0) {
+            status = -1;
+            break;
         }
-        if (written <= 0) {
-            if (written == 0) {
-                errno = EPIPE;
+        ssize_t written = send(descriptor, cursor, remaining, 0);
+        if (written < 0) {
+            if (errno == EINTR || errno == EAGAIN || errno == EWOULDBLOCK) {
+                continue;
             }
-            return -1;
+            status = -1;
+            break;
+        }
+        if (written == 0) {
+            errno = EPIPE;
+            status = -1;
+            break;
         }
         cursor += (size_t)written;
         remaining -= (size_t)written;
     }
-    return 0;
+    const int operation_errno = errno;
+    if (changed_flags && fcntl(descriptor, F_SETFL, original_flags) != 0) {
+        return -1;
+    }
+    errno = operation_errno;
+    return status;
 }
 
-static inline int hm_receive_all(int descriptor, void *buffer, size_t size) {
+static inline int hm_receive_all_deadline(
+    int descriptor,
+    void *buffer,
+    size_t size,
+    uint64_t deadline_nanoseconds
+) {
+    if (buffer == NULL && size > 0) {
+        errno = EINVAL;
+        return -1;
+    }
+    if (size == 0) {
+        return 0;
+    }
+    const int original_flags = fcntl(descriptor, F_GETFL);
+    if (original_flags < 0) {
+        return -1;
+    }
+    const int changed_flags = (original_flags & O_NONBLOCK) == 0;
+    if (changed_flags && fcntl(descriptor, F_SETFL, original_flags | O_NONBLOCK) != 0) {
+        return -1;
+    }
+
+    int status = 0;
     uint8_t *cursor = (uint8_t *)buffer;
     size_t remaining = size;
     while (remaining > 0) {
-        ssize_t received = recv(descriptor, cursor, remaining, 0);
-        if (received < 0 && errno == EINTR) {
-            continue;
+        if (hm_ipc_wait_until_ready(descriptor, POLLIN, deadline_nanoseconds) != 0) {
+            status = -1;
+            break;
         }
-        if (received <= 0) {
-            if (received == 0) {
-                errno = ECONNRESET;
+        ssize_t received = recv(descriptor, cursor, remaining, 0);
+        if (received < 0) {
+            if (errno == EINTR || errno == EAGAIN || errno == EWOULDBLOCK) {
+                continue;
             }
-            return -1;
+            status = -1;
+            break;
+        }
+        if (received == 0) {
+            errno = ECONNRESET;
+            status = -1;
+            break;
         }
         cursor += (size_t)received;
         remaining -= (size_t)received;
     }
-    return 0;
+    const int operation_errno = errno;
+    if (changed_flags && fcntl(descriptor, F_SETFL, original_flags) != 0) {
+        return -1;
+    }
+    errno = operation_errno;
+    return status;
 }
 
-static inline int hm_send_json_frame(int descriptor, const char *json) {
+static inline int hm_send_all(int descriptor, const void *buffer, size_t size) {
+    uint64_t deadline_nanoseconds;
+    if (hm_ipc_deadline_after_millis(
+            HM_DEFAULT_FRAME_TIMEOUT_MILLISECONDS,
+            &deadline_nanoseconds
+        ) != 0) {
+        return -1;
+    }
+    return hm_send_all_deadline(descriptor, buffer, size, deadline_nanoseconds);
+}
+
+static inline int hm_receive_all(int descriptor, void *buffer, size_t size) {
+    uint64_t deadline_nanoseconds;
+    if (hm_ipc_deadline_after_millis(
+            HM_DEFAULT_FRAME_TIMEOUT_MILLISECONDS,
+            &deadline_nanoseconds
+        ) != 0) {
+        return -1;
+    }
+    return hm_receive_all_deadline(descriptor, buffer, size, deadline_nanoseconds);
+}
+
+static inline int hm_send_json_frame_deadline(
+    int descriptor,
+    const char *json,
+    uint64_t deadline_nanoseconds
+) {
     if (json == NULL) {
         errno = EINVAL;
         return -1;
@@ -284,19 +484,41 @@ static inline int hm_send_json_frame(int descriptor, const char *json) {
         return -1;
     }
     uint32_t network_length = htonl((uint32_t)length);
-    if (hm_send_all(descriptor, &network_length, sizeof(network_length)) != 0) {
+    if (hm_send_all_deadline(
+            descriptor,
+            &network_length,
+            sizeof(network_length),
+            deadline_nanoseconds
+        ) != 0) {
         return -1;
     }
-    return hm_send_all(descriptor, json, length);
+    return hm_send_all_deadline(descriptor, json, length, deadline_nanoseconds);
 }
 
-static inline char *hm_receive_json_frame(
+static inline int hm_send_json_frame(int descriptor, const char *json) {
+    uint64_t deadline_nanoseconds;
+    if (hm_ipc_deadline_after_millis(
+            HM_DEFAULT_FRAME_TIMEOUT_MILLISECONDS,
+            &deadline_nanoseconds
+        ) != 0) {
+        return -1;
+    }
+    return hm_send_json_frame_deadline(descriptor, json, deadline_nanoseconds);
+}
+
+static inline char *hm_receive_json_frame_deadline(
     int descriptor,
     uint32_t maximum_size,
-    uint32_t *output_size
+    uint32_t *output_size,
+    uint64_t deadline_nanoseconds
 ) {
     uint32_t network_length = 0;
-    if (hm_receive_all(descriptor, &network_length, sizeof(network_length)) != 0) {
+    if (hm_receive_all_deadline(
+            descriptor,
+            &network_length,
+            sizeof(network_length),
+            deadline_nanoseconds
+        ) != 0) {
         return NULL;
     }
     uint32_t length = ntohl(network_length);
@@ -312,7 +534,12 @@ static inline char *hm_receive_json_frame(
         errno = ENOMEM;
         return NULL;
     }
-    if (hm_receive_all(descriptor, json, length) != 0) {
+    if (hm_receive_all_deadline(
+            descriptor,
+            json,
+            length,
+            deadline_nanoseconds
+        ) != 0) {
         int saved_errno = errno;
         free(json);
         errno = saved_errno;
@@ -328,6 +555,26 @@ static inline char *hm_receive_json_frame(
         *output_size = length;
     }
     return json;
+}
+
+static inline char *hm_receive_json_frame(
+    int descriptor,
+    uint32_t maximum_size,
+    uint32_t *output_size
+) {
+    uint64_t deadline_nanoseconds;
+    if (hm_ipc_deadline_after_millis(
+            HM_DEFAULT_FRAME_TIMEOUT_MILLISECONDS,
+            &deadline_nanoseconds
+        ) != 0) {
+        return NULL;
+    }
+    return hm_receive_json_frame_deadline(
+        descriptor,
+        maximum_size,
+        output_size,
+        deadline_nanoseconds
+    );
 }
 
 static inline void hm_close_descriptor(int descriptor) {

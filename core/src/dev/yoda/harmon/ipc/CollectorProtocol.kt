@@ -61,13 +61,31 @@ object CollectorProtocol {
         requireSupportedVersion(payload)
         return when (kindOf(payload)) {
             PROBE_KIND -> {
-                val frame = decodeStrict<ProbeFrame>(payload, "collector request")
-                requireKind(frame.kind, PROBE_KIND, "collector request")
+                val frame = decodeStrict<ProbeFrame>(
+                    payload,
+                    "collector request",
+                    invalidSubject = "Collector received",
+                )
+                requireKind(
+                    frame.kind,
+                    PROBE_KIND,
+                    "collector request",
+                    invalidSubject = "Collector received",
+                )
                 CollectorRequest.Probe
             }
             CAPTURE_KIND -> {
-                val frame = decodeStrict<CaptureFrame>(payload, "collector request")
-                requireKind(frame.kind, CAPTURE_KIND, "collector request")
+                val frame = decodeStrict<CaptureFrame>(
+                    payload,
+                    "collector request",
+                    invalidSubject = "Collector received",
+                )
+                requireKind(
+                    frame.kind,
+                    CAPTURE_KIND,
+                    "collector request",
+                    invalidSubject = "Collector received",
+                )
                 CollectorRequest.Capture(frame.profile)
             }
             else -> throw CollectorProtocolException("Collector received an unknown request frame")
@@ -130,14 +148,18 @@ object CollectorProtocol {
         return decodeStrict(payload, description)
     }
 
-    private inline fun <reified T> decodeStrict(payload: String, description: String): T = try {
+    private inline fun <reified T> decodeStrict(
+        payload: String,
+        description: String,
+        invalidSubject: String = "Collector returned",
+    ): T = try {
         json.decodeFromString<T>(payload)
     } catch (failure: SerializationException) {
         throw versionMismatch(payload)
-            ?: CollectorProtocolException("Collector returned invalid $description JSON", failure)
+            ?: CollectorProtocolException("$invalidSubject invalid $description JSON", failure)
     } catch (failure: IllegalArgumentException) {
         throw versionMismatch(payload)
-            ?: CollectorProtocolException("Collector returned invalid $description data", failure)
+            ?: CollectorProtocolException("$invalidSubject invalid $description data", failure)
     }
 
     private fun requireSupportedVersion(payload: String) {
@@ -149,9 +171,14 @@ object CollectorProtocol {
         }
     }
 
-    private fun requireKind(actual: String, expected: String, description: String) {
+    private fun requireKind(
+        actual: String,
+        expected: String,
+        description: String,
+        invalidSubject: String = "Collector returned",
+    ) {
         if (actual != expected) {
-            throw CollectorProtocolException("Collector returned an invalid $description frame")
+            throw CollectorProtocolException("$invalidSubject an invalid $description frame")
         }
     }
 

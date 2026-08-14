@@ -2,9 +2,14 @@
 
 #include <dirent.h>
 #include <limits.h>
+#include <signal.h>
+#include <spawn.h>
+#include <sys/wait.h>
 
 #include "harness.h"
 
+
+extern char **environ;
 
 static char hm_socket_test_directory[PATH_MAX] = "";
 
@@ -518,6 +523,438 @@ static void hm_check_remove_bad_input(void) {
     );
 }
 
+#define HM_COLLECTOR_IPC_CHECK "socket.collector-transport-stays-bounded"
+#define HM_COLLECTOR_IPC_REPETITIONS 10
+#define HM_COLLECTOR_IPC_CONNECT_TIMEOUT_MILLISECONDS 5000ULL
+#define HM_COLLECTOR_IPC_RESPONSE_TIMEOUT_MILLISECONDS 10000ULL
+#define HM_COLLECTOR_IPC_MINIMUM_STALL_NANOSECONDS 2000000000ULL
+#define HM_COLLECTOR_IPC_MAXIMUM_STALL_NANOSECONDS 10000000000ULL
+#define HM_COLLECTOR_IPC_DETAIL_BYTES 512
+
+typedef struct {
+    pid_t process_id;
+    char socket_path[PATH_MAX];
+    char detail[HM_COLLECTOR_IPC_DETAIL_BYTES];
+} HMCollectorIpcIntegration;
+
+__attribute__((format(printf, 2, 3)))
+static void hm_collector_ipc_fail(
+    HMCollectorIpcIntegration *state,
+    const char *format,
+    ...
+) {
+    if (state->detail[0] != '\0') {
+        return;
+    }
+    va_list arguments;
+    va_start(arguments, format);
+    vsnprintf(state->detail, sizeof(state->detail), format, arguments);
+    va_end(arguments);
+}
+
+static const char *hm_collector_ipc_binary(void) {
+    const char *override = getenv("HARMON_COLLECTOR_BIN");
+    return override == NULL || override[0] == '\0'
+        ? "build/tasks/_harmon-collector_linkMacosArm64Debug/harmon-collector.kexe"
+        : override;
+}
+
+static int hm_collector_ipc_spawn(HMCollectorIpcIntegration *state) {
+    const char *binary = hm_collector_ipc_binary();
+    if (access(binary, X_OK) != 0) {
+        hm_collector_ipc_fail(
+            state,
+            "debug collector binary is not executable at %s; run ./kotlin build first: %s",
+            binary,
+            strerror(errno)
+        );
+        return -1;
+    }
+
+    char user_id[32];
+    char group_id[32];
+    snprintf(user_id, sizeof(user_id), "%u", (unsigned int)geteuid());
+    snprintf(group_id, sizeof(group_id), "%u", (unsigned int)getegid());
+    char *arguments[] = {
+        (char *)binary,
+        "--socket",
+        state->socket_path,
+        "--allowed-uid",
+        user_id,
+        "--allowed-gid",
+        group_id,
+        "--allow-unprivileged",
+        NULL,
+    };
+
+    posix_spawn_file_actions_t actions;
+    int status = posix_spawn_file_actions_init(&actions);
+    if (status != 0) {
+        hm_collector_ipc_fail(
+            state,
+            "cannot initialize collector posix_spawn actions: %s",
+            strerror(status)
+        );
+        return -1;
+    }
+    status = posix_spawn_file_actions_addopen(
+        &actions,
+        STDOUT_FILENO,
+        "/dev/null",
+        O_WRONLY,
+        0
+    );
+    if (status == 0) {
+        status = posix_spawn_file_actions_addopen(
+            &actions,
+            STDERR_FILENO,
+            "/dev/null",
+            O_WRONLY,
+            0
+        );
+    }
+    if (status != 0) {
+        posix_spawn_file_actions_destroy(&actions);
+        hm_collector_ipc_fail(
+            state,
+            "cannot prepare collector posix_spawn actions: %s",
+            strerror(status)
+        );
+        return -1;
+    }
+
+    status = posix_spawn(
+        &state->process_id,
+        binary,
+        &actions,
+        NULL,
+        arguments,
+        environ
+    );
+    const int destroy_status = posix_spawn_file_actions_destroy(&actions);
+    if (status != 0 || destroy_status != 0) {
+        hm_collector_ipc_fail(
+            state,
+            "cannot posix_spawn collector %s: %s",
+            binary,
+            strerror(status != 0 ? status : destroy_status)
+        );
+        return -1;
+    }
+    return 0;
+}
+
+static int hm_collector_ipc_connect(
+    HMCollectorIpcIntegration *state,
+    uint64_t timeout_milliseconds
+) {
+    uint64_t deadline = 0;
+    if (hm_ipc_deadline_after_millis(timeout_milliseconds, &deadline) != 0) {
+        hm_collector_ipc_fail(state, "cannot start connect deadline: %s", strerror(errno));
+        return -1;
+    }
+
+    int last_failure = 0;
+    while (1) {
+        const int descriptor = hm_unix_connect(state->socket_path);
+        if (descriptor >= 0) {
+            return descriptor;
+        }
+        last_failure = errno;
+        uint64_t now = 0;
+        if (hm_ipc_monotonic_nanoseconds(&now) != 0 || now >= deadline) {
+            hm_collector_ipc_fail(
+                state,
+                "collector did not accept %s within %llu ms: %s",
+                state->socket_path,
+                timeout_milliseconds,
+                strerror(last_failure)
+            );
+            return -1;
+        }
+        hm_sleep_millis(20);
+    }
+}
+
+static int hm_collector_ipc_receive_kind(
+    HMCollectorIpcIntegration *state,
+    int descriptor,
+    uint64_t timeout_milliseconds,
+    const char *kind
+) {
+    uint64_t deadline = 0;
+    if (hm_ipc_deadline_after_millis(timeout_milliseconds, &deadline) != 0) {
+        hm_collector_ipc_fail(state, "cannot start receive deadline: %s", strerror(errno));
+        return -1;
+    }
+    uint32_t size = 0;
+    errno = 0;
+    char *payload = hm_receive_json_frame_deadline(
+        descriptor,
+        HM_MAX_COLLECTOR_REQUEST_FRAME_SIZE,
+        &size,
+        deadline
+    );
+    const int failure = errno;
+    if (payload == NULL) {
+        hm_collector_ipc_fail(
+            state,
+            "collector did not return %s within %llu ms: %s",
+            kind,
+            timeout_milliseconds,
+            strerror(failure)
+        );
+        return -1;
+    }
+
+    char expected[64];
+    snprintf(expected, sizeof(expected), "\"kind\":\"%s\"", kind);
+    const int matches =
+        strstr(payload, "\"protocolVersion\":3") != NULL &&
+        strstr(payload, expected) != NULL;
+    if (!matches) {
+        hm_collector_ipc_fail(
+            state,
+            "collector returned %u bytes without protocol v3 %s: %.160s",
+            size,
+            kind,
+            payload
+        );
+    }
+    free(payload);
+    return matches ? 0 : -1;
+}
+
+static int hm_collector_ipc_probe(HMCollectorIpcIntegration *state) {
+    int descriptor = hm_collector_ipc_connect(
+        state,
+        HM_COLLECTOR_IPC_CONNECT_TIMEOUT_MILLISECONDS
+    );
+    if (descriptor < 0) {
+        return -1;
+    }
+    int status = hm_collector_ipc_receive_kind(
+        state,
+        descriptor,
+        HM_COLLECTOR_IPC_RESPONSE_TIMEOUT_MILLISECONDS,
+        "hello"
+    );
+    if (status == 0 && hm_send_json_frame(
+            descriptor,
+            "{\"protocolVersion\":3,\"kind\":\"probe\"}"
+        ) != 0) {
+        hm_collector_ipc_fail(state, "cannot send collector probe: %s", strerror(errno));
+        status = -1;
+    }
+    if (status == 0) {
+        status = hm_collector_ipc_receive_kind(
+            state,
+            descriptor,
+            HM_COLLECTOR_IPC_CONNECT_TIMEOUT_MILLISECONDS,
+            "ack"
+        );
+    }
+    close(descriptor);
+    return status;
+}
+
+static int hm_collector_ipc_stall_round(
+    HMCollectorIpcIntegration *state,
+    int iteration
+) {
+    int silent = hm_collector_ipc_connect(
+        state,
+        HM_COLLECTOR_IPC_CONNECT_TIMEOUT_MILLISECONDS
+    );
+    if (silent < 0) {
+        return -1;
+    }
+    if (hm_collector_ipc_receive_kind(
+            state,
+            silent,
+            HM_COLLECTOR_IPC_CONNECT_TIMEOUT_MILLISECONDS,
+            "hello"
+        ) != 0) {
+        close(silent);
+        return -1;
+    }
+
+    uint64_t started = 0;
+    uint64_t ended = 0;
+    const int clock_started = hm_ipc_monotonic_nanoseconds(&started);
+    const int probe_status = clock_started == 0 ? hm_collector_ipc_probe(state) : -1;
+    const int clock_finished = hm_ipc_monotonic_nanoseconds(&ended);
+    close(silent);
+    if (clock_started != 0 || clock_finished != 0) {
+        hm_collector_ipc_fail(state, "cannot measure silent request %d", iteration);
+        return -1;
+    }
+    if (probe_status != 0) {
+        return -1;
+    }
+
+    const uint64_t elapsed = ended >= started ? ended - started : UINT64_MAX;
+    if (elapsed < HM_COLLECTOR_IPC_MINIMUM_STALL_NANOSECONDS ||
+        elapsed > HM_COLLECTOR_IPC_MAXIMUM_STALL_NANOSECONDS) {
+        hm_collector_ipc_fail(
+            state,
+            "silent request %d took %.3f s; expected one bounded five-second deadline",
+            iteration,
+            (double)elapsed / 1000000000.0
+        );
+        return -1;
+    }
+    return 0;
+}
+
+typedef enum {
+    HM_COLLECTOR_IPC_MALFORMED,
+    HM_COLLECTOR_IPC_UNKNOWN_PROFILE,
+    HM_COLLECTOR_IPC_OVERSIZED,
+    HM_COLLECTOR_IPC_TRUNCATED,
+} HMCollectorIpcInvalidRequest;
+
+static int hm_collector_ipc_send_prefix(
+    int descriptor,
+    uint32_t declared_length,
+    const char *payload,
+    size_t payload_size
+) {
+    uint64_t deadline = 0;
+    if (hm_ipc_deadline_after_millis(
+            HM_DEFAULT_FRAME_TIMEOUT_MILLISECONDS,
+            &deadline
+        ) != 0) {
+        return -1;
+    }
+    const uint32_t network_length = htonl(declared_length);
+    if (hm_send_all_deadline(
+            descriptor,
+            &network_length,
+            sizeof(network_length),
+            deadline
+        ) != 0) {
+        return -1;
+    }
+    return hm_send_all_deadline(descriptor, payload, payload_size, deadline);
+}
+
+static int hm_collector_ipc_rejects(
+    HMCollectorIpcIntegration *state,
+    HMCollectorIpcInvalidRequest request
+) {
+    int descriptor = hm_collector_ipc_connect(
+        state,
+        HM_COLLECTOR_IPC_CONNECT_TIMEOUT_MILLISECONDS
+    );
+    if (descriptor < 0) {
+        return -1;
+    }
+    int status = hm_collector_ipc_receive_kind(
+        state,
+        descriptor,
+        HM_COLLECTOR_IPC_CONNECT_TIMEOUT_MILLISECONDS,
+        "hello"
+    );
+    if (status == 0) {
+        switch (request) {
+            case HM_COLLECTOR_IPC_MALFORMED:
+                status = hm_send_json_frame(descriptor, "{\"protocolVersion\":3,");
+                break;
+            case HM_COLLECTOR_IPC_UNKNOWN_PROFILE:
+                status = hm_send_json_frame(
+                    descriptor,
+                    "{\"protocolVersion\":3,\"kind\":\"capture\",\"profile\":\"FUTURE\"}"
+                );
+                break;
+            case HM_COLLECTOR_IPC_OVERSIZED:
+                status = hm_collector_ipc_send_prefix(
+                    descriptor,
+                    HM_MAX_COLLECTOR_REQUEST_FRAME_SIZE + 1U,
+                    NULL,
+                    0
+                );
+                break;
+            case HM_COLLECTOR_IPC_TRUNCATED:
+                status = hm_collector_ipc_send_prefix(descriptor, 16, "{", 1);
+                if (status == 0) {
+                    status = shutdown(descriptor, SHUT_WR);
+                }
+                break;
+        }
+    }
+    if (status != 0) {
+        hm_collector_ipc_fail(state, "cannot send invalid request: %s", strerror(errno));
+    }
+    close(descriptor);
+    return status == 0 ? hm_collector_ipc_probe(state) : -1;
+}
+
+static void hm_collector_ipc_stop(HMCollectorIpcIntegration *state) {
+    if (state->process_id <= 0) {
+        return;
+    }
+    if (kill(state->process_id, SIGTERM) != 0 && errno != ESRCH) {
+        hm_collector_ipc_fail(state, "cannot kill collector: %s", strerror(errno));
+    }
+    int status = 0;
+    pid_t waited;
+    do {
+        waited = waitpid(state->process_id, &status, 0);
+    } while (waited < 0 && errno == EINTR);
+    if (waited != state->process_id) {
+        hm_collector_ipc_fail(state, "cannot waitpid collector: %s", strerror(errno));
+    }
+    state->process_id = -1;
+}
+static void hm_check_collector_transport_stays_bounded(void) {
+    alarm(75);
+    HMCollectorIpcIntegration state;
+    memset(&state, 0, sizeof(state));
+    state.process_id = -1;
+    if (hm_socket_test_path(
+            state.socket_path,
+            sizeof(state.socket_path),
+            "collector-integration.sock"
+        ) != 0) {
+        CHECK(HM_COLLECTOR_IPC_CHECK, 0, "no temporary directory: %s", strerror(errno));
+        alarm(HM_TEST_TIMEOUT_SECONDS);
+        return;
+    }
+
+    if (hm_collector_ipc_spawn(&state) == 0) {
+        for (int iteration = 1;
+             iteration <= HM_COLLECTOR_IPC_REPETITIONS && state.detail[0] == '\0';
+             iteration++) {
+            hm_collector_ipc_stall_round(&state, iteration);
+        }
+        if (state.detail[0] == '\0') {
+            hm_collector_ipc_rejects(&state, HM_COLLECTOR_IPC_MALFORMED);
+        }
+        if (state.detail[0] == '\0') {
+            hm_collector_ipc_rejects(&state, HM_COLLECTOR_IPC_UNKNOWN_PROFILE);
+        }
+        if (state.detail[0] == '\0') {
+            hm_collector_ipc_rejects(&state, HM_COLLECTOR_IPC_OVERSIZED);
+        }
+        if (state.detail[0] == '\0') {
+            hm_collector_ipc_rejects(&state, HM_COLLECTOR_IPC_TRUNCATED);
+        }
+        if (state.detail[0] == '\0' && kill(state.process_id, 0) != 0) {
+            hm_collector_ipc_fail(&state, "collector stopped unexpectedly");
+        }
+    }
+    hm_collector_ipc_stop(&state);
+    unlink(state.socket_path);
+    CHECK(
+        HM_COLLECTOR_IPC_CHECK,
+        state.detail[0] == '\0',
+        "%s",
+        state.detail[0] == '\0' ? "ok" : state.detail
+    );
+    alarm(HM_TEST_TIMEOUT_SECONDS);
+}
+
 void hm_run_socket_tests(void) {
     hm_check_bad_paths("socket.rejects-bad-path", hm_server_open_rejects);
     hm_check_refuses_foreign_occupant();
@@ -529,4 +966,5 @@ void hm_run_socket_tests(void) {
     hm_check_descriptor_options();
     hm_check_accept_rejects_foreign_uid();
     hm_check_remove_bad_input();
+    hm_check_collector_transport_stays_bounded();
 }

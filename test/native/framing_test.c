@@ -495,6 +495,140 @@ static void hm_test_pause(long milliseconds) {
 
 typedef struct {
     int descriptor;
+    const uint8_t *wire;
+    size_t size;
+    size_t immediate_bytes;
+    long drip_milliseconds;
+    size_t sent;
+    int failure;
+} HMDripWriter;
+
+static void *hm_write_drip_frame(void *argument) {
+    HMDripWriter *writer = (HMDripWriter *)argument;
+    if (writer->immediate_bytes > 0) {
+        if (hm_send_all(
+                writer->descriptor,
+                writer->wire,
+                writer->immediate_bytes
+            ) != 0) {
+            writer->failure = errno;
+            return NULL;
+        }
+        writer->sent = writer->immediate_bytes;
+    }
+    while (writer->sent < writer->size) {
+        hm_test_pause(writer->drip_milliseconds);
+        const ssize_t sent = send(
+            writer->descriptor,
+            writer->wire + writer->sent,
+            1,
+            MSG_DONTWAIT
+        );
+        if (sent != 1) {
+            writer->failure = sent < 0 ? errno : EPIPE;
+            return NULL;
+        }
+        writer->sent++;
+    }
+    return NULL;
+}
+
+#define HM_DEADLINE_TEST_MILLISECONDS 200ULL
+#define HM_DEADLINE_TEST_MINIMUM_NANOSECONDS 150000000ULL
+#define HM_DEADLINE_TEST_MAXIMUM_NANOSECONDS 1500000000ULL
+#define HM_DRIP_MILLISECONDS 80
+
+static void hm_check_receive_deadline(
+    const char *check,
+    size_t immediate_bytes
+) {
+    int pair[2];
+    if (hm_test_socket_pair(pair, 0) != 0) {
+        CHECK(check, 0, "socketpair failed: %s", strerror(errno));
+        return;
+    }
+
+    const char *payload = "deadline";
+    uint8_t wire[sizeof(uint32_t) + 8U];
+    const size_t wire_size = hm_build_frame(wire, 8, payload, 8);
+    HMDripWriter writer = {
+        pair[0],
+        wire,
+        wire_size,
+        immediate_bytes,
+        HM_DRIP_MILLISECONDS,
+        0,
+        0,
+    };
+    pthread_t thread;
+    if (pthread_create(&thread, NULL, hm_write_drip_frame, &writer) != 0) {
+        CHECK(check, 0, "pthread_create failed: %s", strerror(errno));
+        close(pair[0]);
+        close(pair[1]);
+        return;
+    }
+
+    uint64_t deadline = 0;
+    uint64_t started = 0;
+    uint64_t ended = 0;
+    const int clock_ready =
+        hm_ipc_deadline_after_millis(HM_DEADLINE_TEST_MILLISECONDS, &deadline) == 0 &&
+        hm_ipc_monotonic_nanoseconds(&started) == 0;
+    uint32_t size = 0;
+    errno = 0;
+    char *received = clock_ready
+        ? hm_receive_json_frame_deadline(
+            pair[1],
+            HM_MAX_JSON_FRAME_SIZE,
+            &size,
+            deadline
+        )
+        : NULL;
+    const int failure = errno;
+    const int clock_finished = hm_ipc_monotonic_nanoseconds(&ended) == 0;
+    pthread_join(thread, NULL);
+
+    const uint64_t elapsed = ended >= started ? ended - started : UINT64_MAX;
+    CHECK(
+        check,
+        clock_ready &&
+            clock_finished &&
+            received == NULL &&
+            failure == ETIMEDOUT &&
+            size == 0 &&
+            writer.failure == 0 &&
+            elapsed >= HM_DEADLINE_TEST_MINIMUM_NANOSECONDS &&
+            elapsed <= HM_DEADLINE_TEST_MAXIMUM_NANOSECONDS,
+        "expected NULL/ETIMEDOUT around %llu ms with no output size; got %s/%s, "
+            "size %u, writer sent %zu/%zu with %s, elapsed %.3f ms",
+        HM_DEADLINE_TEST_MILLISECONDS,
+        received == NULL ? "NULL" : "a frame",
+        strerror(failure),
+        size,
+        writer.sent,
+        writer.size,
+        writer.failure == 0 ? "ok" : strerror(writer.failure),
+        (double)elapsed / 1000000.0
+    );
+
+    free(received);
+    close(pair[0]);
+    close(pair[1]);
+}
+
+static void hm_check_receive_deadline_covers_header(void) {
+    hm_check_receive_deadline("framing.receive-deadline-covers-header", 0);
+}
+
+static void hm_check_receive_deadline_covers_payload(void) {
+    hm_check_receive_deadline(
+        "framing.receive-deadline-covers-payload",
+        sizeof(uint32_t)
+    );
+}
+
+typedef struct {
+    int descriptor;
     const char *payload;
     size_t length;
     size_t first_chunk;
@@ -551,15 +685,25 @@ static void hm_check_receive_assembles_split_payload(void) {
         return;
     }
 
+    uint64_t deadline = 0;
+    const int deadline_ready = hm_ipc_deadline_after_millis(500, &deadline) == 0;
     uint32_t size = 0;
     errno = 0;
-    char *received = hm_receive_json_frame(pair[1], HM_MAX_JSON_FRAME_SIZE, &size);
+    char *received = deadline_ready
+        ? hm_receive_json_frame_deadline(
+            pair[1],
+            HM_MAX_JSON_FRAME_SIZE,
+            &size,
+            deadline
+        )
+        : NULL;
     const int failure = errno;
     pthread_join(thread, NULL);
 
     CHECK(
         "framing.receive-assembles-split-payload",
-        writer.status == 0 &&
+        deadline_ready &&
+            writer.status == 0 &&
             received != NULL &&
             size == (uint32_t)strlen(payload) &&
             strcmp(received, payload) == 0,
@@ -585,6 +729,8 @@ typedef struct {
     int chunks;
 } HMThrottledReader;
 
+#define HM_SMALL_SOCKET_BUFFER 4096
+
 static void *hm_read_throttled(void *argument) {
     HMThrottledReader *reader = (HMThrottledReader *)argument;
     while (reader->received < reader->capacity) {
@@ -606,6 +752,106 @@ static void *hm_read_throttled(void *argument) {
         hm_test_pause(reader->pause_milliseconds);
     }
     return NULL;
+}
+
+#define HM_DEADLINE_SEND_BYTES (256 * 1024)
+#define HM_DEADLINE_READER_PAUSE_MILLISECONDS 80
+
+static void hm_check_send_deadline_stops_slow_reader(void) {
+    int pair[2];
+    if (hm_test_socket_pair(pair, HM_SMALL_SOCKET_BUFFER) != 0) {
+        CHECK(
+            "framing.send-deadline-stops-slow-reader",
+            0,
+            "socketpair failed: %s",
+            strerror(errno)
+        );
+        return;
+    }
+
+    char *payload = (char *)malloc(HM_DEADLINE_SEND_BYTES + 1U);
+    uint8_t *wire = (uint8_t *)malloc(
+        sizeof(uint32_t) + HM_DEADLINE_SEND_BYTES
+    );
+    if (payload == NULL || wire == NULL) {
+        free(payload);
+        free(wire);
+        close(pair[0]);
+        close(pair[1]);
+        CHECK("framing.send-deadline-stops-slow-reader", 0, "out of memory");
+        return;
+    }
+    memset(payload, 's', HM_DEADLINE_SEND_BYTES);
+    payload[HM_DEADLINE_SEND_BYTES] = '\0';
+
+    HMThrottledReader reader = {
+        pair[1],
+        wire,
+        sizeof(uint32_t) + HM_DEADLINE_SEND_BYTES,
+        0,
+        HM_DEADLINE_READER_PAUSE_MILLISECONDS,
+        0,
+        0,
+    };
+    pthread_t thread;
+    if (pthread_create(&thread, NULL, hm_read_throttled, &reader) != 0) {
+        free(payload);
+        free(wire);
+        close(pair[0]);
+        close(pair[1]);
+        CHECK(
+            "framing.send-deadline-stops-slow-reader",
+            0,
+            "pthread_create failed: %s",
+            strerror(errno)
+        );
+        return;
+    }
+
+    uint64_t deadline = 0;
+    uint64_t started = 0;
+    uint64_t ended = 0;
+    const int clock_ready =
+        hm_ipc_deadline_after_millis(HM_DEADLINE_TEST_MILLISECONDS, &deadline) == 0 &&
+        hm_ipc_monotonic_nanoseconds(&started) == 0;
+    errno = 0;
+    const int sent = clock_ready
+        ? hm_send_json_frame_deadline(pair[0], payload, deadline)
+        : -1;
+    const int failure = errno;
+    const int clock_finished = hm_ipc_monotonic_nanoseconds(&ended) == 0;
+    close(pair[0]);
+    shutdown(pair[1], SHUT_RDWR);
+    pthread_join(thread, NULL);
+
+    const uint64_t elapsed = ended >= started ? ended - started : UINT64_MAX;
+    CHECK(
+        "framing.send-deadline-stops-slow-reader",
+        clock_ready &&
+            clock_finished &&
+            sent == -1 &&
+            failure == ETIMEDOUT &&
+            reader.failure == ECONNRESET &&
+            reader.chunks > 0 &&
+            reader.received < reader.capacity &&
+            elapsed >= HM_DEADLINE_TEST_MINIMUM_NANOSECONDS &&
+            elapsed <= HM_DEADLINE_TEST_MAXIMUM_NANOSECONDS,
+        "expected -1/ETIMEDOUT around %llu ms while a slow reader made partial "
+            "progress; got %d/%s, reader %zu/%zu bytes in %d chunks ending in %s, "
+            "elapsed %.3f ms",
+        HM_DEADLINE_TEST_MILLISECONDS,
+        sent,
+        strerror(failure),
+        reader.received,
+        reader.capacity,
+        reader.chunks,
+        strerror(reader.failure),
+        (double)elapsed / 1000000.0
+    );
+
+    free(payload);
+    free(wire);
+    close(pair[1]);
 }
 
 typedef struct {
@@ -655,7 +901,6 @@ static int hm_send_counting(
     return 0;
 }
 
-#define HM_SMALL_SOCKET_BUFFER 4096
 #define HM_PROBE_BYTES (16 * 1024)
 #define HM_PARTIAL_WRITE_BYTES (64 * 1024)
 
@@ -850,10 +1095,38 @@ static void hm_check_maximum_frame_size(void) {
         "expected 33554432, got %u",
         HM_MAX_JSON_FRAME_SIZE
     );
+    CHECK(
+        "framing.collector-request-maximum-is-pinned",
+        HM_MAX_COLLECTOR_REQUEST_FRAME_SIZE == 4U * 1024U,
+        "expected 4096, got %u",
+        HM_MAX_COLLECTOR_REQUEST_FRAME_SIZE
+    );
+    CHECK(
+        "framing.default-deadline-is-pinned",
+        HM_DEFAULT_FRAME_TIMEOUT_MILLISECONDS == 30000ULL,
+        "expected 30000 ms, got %llu",
+        HM_DEFAULT_FRAME_TIMEOUT_MILLISECONDS
+    );
+}
+
+static void hm_check_deadline_arithmetic_saturates(void) {
+    uint64_t deadline = 0;
+    errno = 0;
+    const int status = hm_ipc_deadline_after_millis(UINT64_MAX, &deadline);
+    const int failure = errno;
+    CHECK(
+        "framing.deadline-arithmetic-saturates",
+        status == 0 && deadline == UINT64_MAX,
+        "expected 0 and UINT64_MAX, got %d/%s and %llu",
+        status,
+        status == 0 ? "ok" : strerror(failure),
+        (unsigned long long)deadline
+    );
 }
 
 void hm_run_framing_tests(void) {
     hm_check_maximum_frame_size();
+    hm_check_deadline_arithmetic_saturates();
     hm_check_send_rejects_bad_payload();
     hm_check_round_trip();
     hm_check_receive_rejects_lengths();
@@ -861,6 +1134,9 @@ void hm_run_framing_tests(void) {
     hm_check_receive_frees_rejected_frame();
     hm_check_receive_terminates_payload();
     hm_check_receive_rejects_truncated_frames();
+    hm_check_receive_deadline_covers_header();
+    hm_check_receive_deadline_covers_payload();
     hm_check_receive_assembles_split_payload();
+    hm_check_send_deadline_stops_slow_reader();
     hm_check_send_completes_partial_write();
 }

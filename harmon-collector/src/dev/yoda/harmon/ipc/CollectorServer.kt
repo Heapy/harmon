@@ -2,18 +2,21 @@ package dev.yoda.harmon.ipc
 
 import dev.yoda.harmon.monitor.CollectionException
 import dev.yoda.harmon.monitor.SystemCollector
-import dev.yoda.harmon.nativebridge.ipc.HM_MAX_JSON_FRAME_SIZE
+import dev.yoda.harmon.nativebridge.ipc.HM_MAX_COLLECTOR_REQUEST_FRAME_SIZE
 import dev.yoda.harmon.nativebridge.ipc.hm_close_descriptor
 import dev.yoda.harmon.nativebridge.ipc.hm_free
-import dev.yoda.harmon.nativebridge.ipc.hm_receive_json_frame
+import dev.yoda.harmon.nativebridge.ipc.hm_ipc_deadline_after_millis
+import dev.yoda.harmon.nativebridge.ipc.hm_receive_json_frame_deadline
 import dev.yoda.harmon.nativebridge.ipc.hm_remove_socket
 import dev.yoda.harmon.nativebridge.ipc.hm_send_json_frame
+import dev.yoda.harmon.nativebridge.ipc.hm_send_json_frame_deadline
 import dev.yoda.harmon.nativebridge.ipc.hm_sleep_millis
 import dev.yoda.harmon.nativebridge.ipc.hm_unix_accept
 import dev.yoda.harmon.nativebridge.ipc.hm_unix_server_open
 import dev.yoda.harmon.util.failureDescription
 import dev.yoda.harmon.util.printError
 import kotlinx.cinterop.ExperimentalForeignApi
+import kotlinx.cinterop.ULongVar
 import kotlinx.cinterop.UIntVar
 import kotlinx.cinterop.alloc
 import kotlinx.cinterop.memScoped
@@ -26,6 +29,7 @@ import kotlin.time.Clock
 
 /** Prevents a permanently broken listener from spinning the CPU. */
 private const val ACCEPT_FAILURE_PAUSE_MILLISECONDS = 100uL
+private const val COLLECTOR_REQUEST_DEADLINE_MILLISECONDS = 5_000uL
 
 class CollectorServer(
     private val socketPath: String,
@@ -89,8 +93,9 @@ class CollectorServer(
     @OptIn(ExperimentalForeignApi::class)
     private fun serveClient(clientDescriptor: Int) {
         try {
-            sendPayload(clientDescriptor, CollectorProtocol.encodeHello())
-            val request = receivePayload(clientDescriptor)
+            val requestDeadline = collectorRequestDeadline()
+            sendPayload(clientDescriptor, CollectorProtocol.encodeHello(), requestDeadline)
+            val request = receiveRequest(clientDescriptor, requestDeadline)
             sendPayload(clientDescriptor, requestHandler.respond(request))
         } catch (failure: Throwable) {
             logError(
@@ -103,17 +108,39 @@ class CollectorServer(
     }
 
     @OptIn(ExperimentalForeignApi::class)
-    private fun receivePayload(descriptor: Int): String = memScoped {
+    private fun receiveRequest(descriptor: Int, deadline: ULong): String = memScoped {
         val size = alloc<UIntVar>()
-        val payload = hm_receive_json_frame(
+        val payload = hm_receive_json_frame_deadline(
             descriptor,
-            HM_MAX_JSON_FRAME_SIZE,
+            HM_MAX_COLLECTOR_REQUEST_FRAME_SIZE,
             size.ptr,
+            deadline,
         ) ?: throw nativeCollectionFailure("Unable to receive collector request")
         try {
             payload.toKString()
         } finally {
             hm_free(payload)
+        }
+    }
+
+    @OptIn(ExperimentalForeignApi::class)
+    private fun collectorRequestDeadline(): ULong = memScoped {
+        val deadline = alloc<ULongVar>()
+        if (
+            hm_ipc_deadline_after_millis(
+                COLLECTOR_REQUEST_DEADLINE_MILLISECONDS,
+                deadline.ptr,
+            ) != 0
+        ) {
+            throw nativeCollectionFailure("Unable to start collector request deadline")
+        }
+        deadline.value
+    }
+
+    @OptIn(ExperimentalForeignApi::class)
+    private fun sendPayload(descriptor: Int, payload: String, deadline: ULong) {
+        if (hm_send_json_frame_deadline(descriptor, payload, deadline) != 0) {
+            throw nativeCollectionFailure("Unable to send collector protocol frame")
         }
     }
 

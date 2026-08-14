@@ -68,6 +68,9 @@ private val C_HARNESS_CHECKS = setOf(
     "snapshot.storage-matches-a-fresh-read",
     "snapshot.battery-matches-a-fresh-read",
     "framing.maximum-size-is-pinned",
+    "framing.collector-request-maximum-is-pinned",
+    "framing.default-deadline-is-pinned",
+    "framing.deadline-arithmetic-saturates",
     "framing.send-rejects-null",
     "framing.send-rejects-empty",
     "framing.send-rejects-oversized",
@@ -81,7 +84,10 @@ private val C_HARNESS_CHECKS = setOf(
     "framing.receive-terminates-the-payload",
     "framing.receive-rejects-truncated-header",
     "framing.receive-rejects-truncated-payload",
+    "framing.receive-deadline-covers-header",
+    "framing.receive-deadline-covers-payload",
     "framing.receive-assembles-split-payload",
+    "framing.send-deadline-stops-slow-reader",
     "framing.send-completes-partial-write",
     "socket.rejects-bad-path",
     "socket.refuses-foreign-occupant",
@@ -93,16 +99,19 @@ private val C_HARNESS_CHECKS = setOf(
     "socket.descriptors-carry-options",
     "socket.accept-rejects-foreign-uid",
     "socket.remove-handles-bad-input",
+    "socket.collector-transport-stays-bounded",
 )
 
 class NativeCTest {
     @Test
     fun runsTheCHarness() {
+        assertCollectorIpcBinaryIsCurrent()
         assertHarnessSucceeded(runNativeHarness(cTestHarness()), C_HARNESS_CHECKS)
     }
 
     @Test
     fun runsTheCHarnessUnderSanitizers() {
+        assertCollectorIpcBinaryIsCurrent()
         assertHarnessSucceeded(
             runNativeHarness(cTestHarness(), listOf("--sanitize")),
             C_HARNESS_CHECKS,

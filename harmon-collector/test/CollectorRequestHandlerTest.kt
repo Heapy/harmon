@@ -1,4 +1,5 @@
 import dev.yoda.harmon.ipc.CollectorProtocol
+import dev.yoda.harmon.ipc.CollectorProtocolException
 import dev.yoda.harmon.ipc.CollectorRequestHandler
 import dev.yoda.harmon.model.LoadAverages
 import dev.yoda.harmon.model.PowerState
@@ -11,12 +12,13 @@ import dev.yoda.harmon.monitor.CollectionProfile
 import dev.yoda.harmon.monitor.SystemCollector
 import kotlin.test.Test
 import kotlin.test.assertEquals
+import kotlin.test.assertFailsWith
 import kotlin.time.Instant
 
 class CollectorRequestHandlerTest {
     @Test
     fun probeAcknowledgesWithoutCapturing() {
-        val collector = RecordingCollector()
+        val collector = CollectorIpcRecordingCollector()
         val response = CollectorRequestHandler(collector).respond(CollectorProtocol.encodeProbe())
 
         CollectorProtocol.decodeAck(response)
@@ -25,7 +27,7 @@ class CollectorRequestHandlerTest {
 
     @Test
     fun captureAppliesAndReportsBothRequestedProfiles() {
-        val collector = RecordingCollector()
+        val collector = CollectorIpcRecordingCollector()
         val handler = CollectorRequestHandler(collector)
 
         for (profile in CollectionProfile.entries) {
@@ -38,8 +40,27 @@ class CollectorRequestHandlerTest {
         assertEquals(CollectionProfile.entries.toList(), collector.profiles)
     }
 
-    private class RecordingCollector : SystemCollector {
-        val snapshot = emptyRawSnapshot()
+    @Test
+    fun malformedAndUnknownRequestsNeverCapture() {
+        val collector = CollectorIpcRecordingCollector()
+        val handler = CollectorRequestHandler(collector)
+        val invalidRequests = listOf(
+            "{\"protocolVersion\":${CollectorProtocol.VERSION},",
+            """{"protocolVersion":${CollectorProtocol.VERSION},"kind":"unknown"}""",
+            """{"protocolVersion":${CollectorProtocol.VERSION},"kind":"capture","profile":"FUTURE"}""",
+        )
+
+        for (request in invalidRequests) {
+            assertFailsWith<CollectorProtocolException> {
+                handler.respond(request)
+            }
+        }
+
+        assertEquals(emptyList(), collector.profiles)
+    }
+
+    private class CollectorIpcRecordingCollector : SystemCollector {
+        val snapshot = collectorIpcEmptyRawSnapshot()
         val profiles = mutableListOf<CollectionProfile>()
 
         override fun capture(profile: CollectionProfile): RawSystemSnapshot {
@@ -49,7 +70,7 @@ class CollectorRequestHandlerTest {
     }
 }
 
-private fun emptyRawSnapshot(): RawSystemSnapshot = RawSystemSnapshot(
+private fun collectorIpcEmptyRawSnapshot(): RawSystemSnapshot = RawSystemSnapshot(
     capturedAt = Instant.fromEpochSeconds(1),
     monotonicTimeNs = 1_000_000_000u,
     physicalMemoryBytes = 0u,
