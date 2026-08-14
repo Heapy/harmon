@@ -1,6 +1,7 @@
 import dev.yoda.harmon.setup.MacOsVersion
 import dev.yoda.harmon.setup.SetupException
 import dev.yoda.harmon.setup.SetupValidation
+import dev.yoda.harmon.setup.StopValidation
 import dev.yoda.harmon.setup.UninstallValidation
 import kotlin.test.Test
 import kotlin.test.assertEquals
@@ -80,6 +81,27 @@ class SetupValidationTest {
         }
         assertFailsWith<SetupException> {
             UninstallValidation.validateSystemPhase(0u, 0u)
+        }
+    }
+
+    @Test
+    fun validatesBothStopPrivilegePhases() {
+        StopValidation.validateUserPhase(501u, null)
+        assertFailsWith<SetupException> {
+            StopValidation.validateUserPhase(0u, null)
+        }
+        assertFailsWith<SetupException> {
+            StopValidation.validateUserPhase(501u, 501u)
+        }
+        assertEquals(
+            501u,
+            StopValidation.validateSystemPhase(0u, 501u),
+        )
+        assertFailsWith<SetupException> {
+            StopValidation.validateSystemPhase(501u, 501u)
+        }
+        assertFailsWith<SetupException> {
+            StopValidation.validateSystemPhase(0u, 0u)
         }
     }
 }

@@ -68,19 +68,19 @@ class SystemSetup(
         fileSystem.removeFileIfExists(SystemSetupPaths.legacyCollectorBinary)
 
         commandRunner.requireSuccess(
-            listOf("/bin/launchctl", "bootstrap", "system", SystemSetupPaths.collectorPlist),
+            listOf("/bin/launchctl", "enable", collectorService),
         )
         commandRunner.requireSuccess(
-            listOf("/bin/launchctl", "enable", collectorService),
+            listOf("/bin/launchctl", "bootstrap", "system", SystemSetupPaths.collectorPlist),
         )
         commandRunner.requireSuccess(
             listOf("/bin/launchctl", "kickstart", "-k", collectorService),
         )
         commandRunner.requireSuccess(
-            listOf("/bin/launchctl", "bootstrap", agentDomain, userPaths.agentPlist),
+            listOf("/bin/launchctl", "enable", agentService),
         )
         commandRunner.requireSuccess(
-            listOf("/bin/launchctl", "enable", agentService),
+            listOf("/bin/launchctl", "bootstrap", agentDomain, userPaths.agentPlist),
         )
         commandRunner.requireSuccess(
             listOf("/bin/launchctl", "kickstart", "-k", agentService),

@@ -125,6 +125,28 @@ class CliParserTest {
     }
 
     @Test
+    fun parsesUserAndPublicSystemStopForms() {
+        assertEquals(
+            Command.Stop(system = false, userId = null),
+            CliParser.parse(arrayOf("stop")),
+        )
+        assertEquals(
+            Command.Stop(system = true, userId = 501u),
+            CliParser.parse(arrayOf("stop", "--system", "--uid", "501")),
+        )
+
+        assertFailsWith<CliException> {
+            CliParser.parse(arrayOf("stop", "--uid", "501"))
+        }
+        assertFailsWith<CliException> {
+            CliParser.parse(arrayOf("stop", "--system"))
+        }
+        assertFailsWith<CliException> {
+            CliParser.parse(arrayOf("stop", "--config", "/tmp/config"))
+        }
+    }
+
+    @Test
     fun parsesUserAndPublicSystemUninstallForms() {
         assertEquals(
             Command.Uninstall(system = false, userId = null),

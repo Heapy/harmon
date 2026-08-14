@@ -7,6 +7,7 @@ import dev.yoda.harmon.setup.ProtocolObservation
 import dev.yoda.harmon.setup.StatusEvaluator
 import dev.yoda.harmon.setup.parseBinaryVersion
 import dev.yoda.harmon.setup.parseLaunchctlPrint
+import dev.yoda.harmon.setup.parseLaunchctlPrintDisabled
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFalse
@@ -88,6 +89,51 @@ class StatusTest {
     }
 
     @Test
+    fun reportsBothDisabledServicesAsAnIntentionalStop() {
+        val stoppedService: (String) -> LaunchdServiceObservation = { service ->
+            LaunchdServiceObservation(
+                service = service,
+                loaded = false,
+                error = "Could not find service",
+                disabled = true,
+            )
+        }
+        val report = StatusEvaluator.evaluate(
+            healthyStatusSnapshot().copy(
+                liveProtocol = ProtocolObservation(SOCKET, error = "Connection refused"),
+                agentService = stoppedService(AGENT_SERVICE),
+                collectorService = stoppedService(COLLECTOR_SERVICE),
+            ),
+        )
+
+        assertEquals(1, report.exitCode)
+        assertTrue(report.intentionallyStopped)
+        assertTrue(report.issues.isEmpty())
+        assertTrue(report.render().contains("Harmon is intentionally stopped."))
+        assertTrue(report.render().contains("agent service:      stopped (disabled)"))
+        assertTrue(report.render().contains("not running (intentionally stopped)"))
+        assertFalse(report.render().contains("Problems:"))
+    }
+
+    @Test
+    fun aSingleDisabledServiceIsStillAnIncompleteState() {
+        val report = StatusEvaluator.evaluate(
+            healthyStatusSnapshot().copy(
+                agentService = LaunchdServiceObservation(
+                    service = AGENT_SERVICE,
+                    loaded = false,
+                    error = "Could not find service",
+                    disabled = true,
+                ),
+            ),
+        )
+
+        assertEquals(1, report.exitCode)
+        assertFalse(report.intentionallyStopped)
+        assertTrue(report.issues.any { "agent service is disabled and not loaded" in it })
+    }
+
+    @Test
     fun parsesLaunchctlStatePidAndExecutablePath() {
         val invocation = CommandInvocation(
             listOf("/bin/launchctl", "print", AGENT_SERVICE),
@@ -113,6 +159,38 @@ class StatusTest {
         assertTrue(observation.running)
         assertEquals(4321, observation.processId)
         assertEquals(INSTALLED_AGENT, observation.program)
+    }
+
+    @Test
+    fun parsesEnabledDisabledAndLegacyBooleanOverrides() {
+        val invocation = CommandInvocation(
+            listOf("/bin/launchctl", "print-disabled", "gui/501"),
+        )
+        val result = CommandResult(
+            invocation,
+            0,
+            """
+                disabled services = {
+                    "enabled.service" => enabled
+                    "disabled.service" => disabled
+                    "legacy.disabled" => true
+                    "legacy.enabled" => false
+                }
+            """.trimIndent(),
+        )
+
+        assertEquals(false, parseLaunchctlPrintDisabled("enabled.service", result))
+        assertEquals(true, parseLaunchctlPrintDisabled("disabled.service", result))
+        assertEquals(true, parseLaunchctlPrintDisabled("legacy.disabled", result))
+        assertEquals(false, parseLaunchctlPrintDisabled("legacy.enabled", result))
+        assertEquals(false, parseLaunchctlPrintDisabled("missing.service", result))
+        assertEquals(
+            null,
+            parseLaunchctlPrintDisabled(
+                "disabled.service",
+                CommandResult(invocation, 1, "permission denied"),
+            ),
+        )
     }
 
     @Test

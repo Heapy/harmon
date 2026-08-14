@@ -9,6 +9,7 @@ import dev.yoda.harmon.history.History
 import dev.yoda.harmon.report.ReportFormatter
 import dev.yoda.harmon.runtime.HarmonService
 import dev.yoda.harmon.setup.SetupRequest
+import dev.yoda.harmon.setup.StopRequest
 import dev.yoda.harmon.setup.UninstallRequest
 import dev.yoda.harmon.util.failureDescription
 import dev.yoda.harmon.util.printError
@@ -22,6 +23,7 @@ object HarmonApplication {
         historyFactory: (HarmonConfig) -> History?,
         setup: (SetupRequest) -> Unit,
         status: () -> Int,
+        stop: (StopRequest) -> Unit,
         uninstall: (UninstallRequest) -> Unit,
         openUi: () -> Unit,
     ) {
@@ -96,6 +98,19 @@ object HarmonApplication {
                     }
                 } catch (failure: Throwable) {
                     printError("status error: ${failureDescription(failure)}")
+                    exitProcess(1)
+                }
+            }
+            is Command.Stop -> {
+                try {
+                    stop(
+                        StopRequest(
+                            system = command.system,
+                            userId = command.userId,
+                        ),
+                    )
+                } catch (failure: Throwable) {
+                    printError("stop error: ${failureDescription(failure)}")
                     exitProcess(1)
                 }
             }
@@ -187,6 +202,11 @@ sealed interface Command {
 
     data object Status : Command
 
+    data class Stop(
+        val system: Boolean,
+        val userId: UInt?,
+    ) : Command
+
     data object Ui : Command
 
     data class Uninstall(
@@ -212,6 +232,9 @@ object CliParser {
         val optionStart = if (commandName == "run" && arguments.first().startsWith('-')) 0 else 1
         if (commandName == "setup") {
             return parseSetup(arguments.drop(1))
+        }
+        if (commandName == "stop") {
+            return parseStop(arguments.drop(1))
         }
         if (commandName == "uninstall") {
             return parseUninstall(arguments.drop(1))
@@ -295,6 +318,8 @@ object CliParser {
           harmon setup
           harmon setup --system --uid UID --gid GID
           harmon status
+          harmon stop
+          harmon stop --system --uid UID
           harmon ui
           harmon uninstall
           harmon uninstall --system --uid UID
@@ -317,6 +342,9 @@ object CliParser {
 
         status is read-only and exits non-zero when the installed copies,
         collector protocol, socket, or launchd jobs need setup.
+
+        stop stops and disables both launchd services without removing the
+        installation or user data. Run setup to enable and start them again.
 
         ui opens the authenticated loopback process tree published by the
         running user agent.
@@ -396,6 +424,38 @@ object CliParser {
             throw CliException("--system requires --uid")
         }
         return Command.Uninstall(system, userId)
+    }
+
+    private fun parseStop(arguments: List<String>): Command.Stop {
+        var system = false
+        var userId: UInt? = null
+        var index = 0
+        while (index < arguments.size) {
+            when (val option = arguments[index]) {
+                "--system" -> {
+                    if (system) {
+                        throw CliException("--system may be specified only once")
+                    }
+                    system = true
+                    index += 1
+                }
+                "--uid" -> {
+                    if (userId != null) {
+                        throw CliException("--uid may be specified only once")
+                    }
+                    userId = arguments.unsignedValueAfter(index, option)
+                    index += 2
+                }
+                else -> throw CliException("unknown stop option '$option'")
+            }
+        }
+        if (!system && userId != null) {
+            throw CliException("--uid requires --system")
+        }
+        if (system && userId == null) {
+            throw CliException("--system requires --uid")
+        }
+        return Command.Stop(system, userId)
     }
 
     private fun Array<String>.valueAfter(index: Int, option: String): String =

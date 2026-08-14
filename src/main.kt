@@ -8,6 +8,7 @@ import dev.yoda.harmon.notify.from
 import dev.yoda.harmon.runtime.HarmonService
 import dev.yoda.harmon.setup.HarmonSetup
 import dev.yoda.harmon.setup.HarmonStatus
+import dev.yoda.harmon.setup.HarmonStop
 import dev.yoda.harmon.setup.HarmonUninstall
 import dev.yoda.harmon.util.failureDescription
 import dev.yoda.harmon.util.printError
@@ -20,6 +21,7 @@ import kotlin.time.Clock
 fun main(arguments: Array<String>) {
     val setup = HarmonSetup()
     val status = HarmonStatus()
+    val stop = HarmonStop()
     val uninstall = HarmonUninstall()
     val serviceFactory: (HarmonConfig, History?) -> HarmonService = { config, history ->
         HarmonService(
@@ -83,6 +85,7 @@ fun main(arguments: Array<String>) {
         },
         setup = setup::run,
         status = status::run,
+        stop = stop::run,
         uninstall = uninstall::run,
         openUi = { LiveUiLauncher.open(LiveUiEndpointStore()) },
     )

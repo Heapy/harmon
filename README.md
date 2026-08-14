@@ -577,8 +577,11 @@ harmon status
 It is read-only and needs no sudo. The report shows the running CLI and paired
 source collector versions, the copies in `Harmon.app` and
 `/Library/PrivilegedHelperTools`, expected and live protocol versions, socket
-health, and both launchd jobs with their PID and executable path. Any stale,
-mixed, unloaded, or failed state exits 1 and says to run `harmon setup`.
+health, and both launchd jobs with their PID, executable path, and persistent
+enablement. A pair disabled by `harmon stop` is reported as intentionally
+stopped and still exits 1 because monitoring is not running. Any stale, mixed,
+unexpectedly unloaded, or failed state also exits 1 and says to run
+`harmon setup`.
 
 Inspect services and logs:
 
@@ -588,6 +591,17 @@ sudo launchctl print system/dev.yoda.harmon.collector
 tail -f ~/Library/Logs/Harmon/agent.log
 sudo tail -f /Library/Logs/Harmon/collector.log
 ```
+
+Stop both services and keep them disabled across login and reboot, without
+removing the installation or any user data:
+
+```shell
+harmon stop
+```
+
+The command removes the live UI endpoint and requests sudo once for the root
+collector. `harmon status` then reports that Harmon is intentionally stopped;
+run `harmon setup` to enable and start both services again.
 
 Remove both services and installed binaries while preserving configuration,
 logs, generated reports and the sample history:

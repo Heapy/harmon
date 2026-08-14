@@ -63,12 +63,27 @@ atomically renamed. No text template or XML substitution remains.
 `harmon status` is the read-only side of the upgrade contract. It compares the
 running CLI and adjacent source collector with the copies in `Harmon.app` and
 `/Library/PrivilegedHelperTools`, probes the socket's advertised protocol, and
-parses `launchctl print` for both jobs, including PID and executable path. A
+parses `launchctl print` plus `print-disabled` for both jobs, including PID,
+executable path, and persistent enablement. A pair that is explicitly disabled
+and unloaded is reported as intentionally stopped; status skips the expected
+dead socket probe, exits 1 because monitoring is not running, and names setup as
+the restart path without presenting the stopped services as failures. A
 Homebrew/source version newer than either installed copy, a mixed installed
-pair, an old live protocol, a wrong program path, or an unloaded/non-running
-job produces exit 1 and the explicit action `Run 'harmon setup'`. Healthy
-versions, protocol, socket, and jobs produce exit 0. Status never invokes sudo
-or mutates a service.
+pair, an old live protocol, a wrong program path, or any other unloaded,
+disabled, or non-running job produces exit 1 and the explicit action
+`Run 'harmon setup'`. Healthy versions, protocol, socket, and jobs produce exit
+0. Status never invokes sudo or mutates a service.
+
+`harmon stop` disables and unloads the user agent and root collector while
+leaving their plists, deployed binaries, configuration, logs, reports, and
+history in place. The login-user phase disables the current and legacy agent
+labels before unloading them, then makes one sudo re-exec as
+`stop --system --uid N`; the root phase applies the same operation to the
+collector and both user labels. Disabling precedes unloading so launchd cannot
+restart a keep-alive job during the transition. `harmon setup` explicitly
+re-enables and starts both current jobs, and is therefore the restart path. The
+user phase also removes the ephemeral live UI endpoint after unloading the
+agent, so `harmon ui` does not have to discover and clean a stale endpoint.
 
 The Homebrew formula is a distribution layer, not a service manager. A release
 archive contains exactly `bin/harmon`, `libexec/harmon-collector`, and the three

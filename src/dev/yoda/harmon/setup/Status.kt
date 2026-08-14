@@ -27,9 +27,13 @@ data class LaunchdServiceObservation(
     val processId: Int? = null,
     val program: String? = null,
     val error: String? = null,
+    val disabled: Boolean? = null,
 ) {
     val running: Boolean
         get() = loaded && state == "running"
+
+    val intentionallyStopped: Boolean
+        get() = !loaded && disabled == true
 }
 
 data class HarmonStatusSnapshot(
@@ -50,8 +54,12 @@ data class HarmonStatusReport(
     val snapshot: HarmonStatusSnapshot,
     val issues: List<String>,
 ) {
+    val intentionallyStopped: Boolean
+        get() = snapshot.agentService.intentionallyStopped &&
+            snapshot.collectorService.intentionallyStopped
+
     val exitCode: Int
-        get() = if (issues.isEmpty()) 0 else 1
+        get() = if (issues.isEmpty() && !intentionallyStopped) 0 else 1
 
     fun render(): String = buildString {
         appendLine("Harmon status")
@@ -65,13 +73,21 @@ data class HarmonStatusReport(
         )
         appendLine("  agent service:      ${snapshot.agentService.description()}")
         appendLine("  collector service:  ${snapshot.collectorService.description()}")
-        if (issues.isEmpty()) {
+        if (intentionallyStopped) {
+            appendLine()
+            appendLine("Harmon is intentionally stopped.")
+            append("Run 'harmon setup' to enable and start both services.")
+        }
+        if (issues.isNotEmpty()) {
+            if (intentionallyStopped) {
+                appendLine()
+            }
+            appendLine()
+            appendLine(if (intentionallyStopped) "Other problems:" else "Problems:")
+            issues.forEach { issue -> appendLine("  - $issue") }
+        } else if (!intentionallyStopped) {
             appendLine()
             append("Installation is healthy.")
-        } else {
-            appendLine()
-            appendLine("Problems:")
-            issues.forEach { issue -> appendLine("  - $issue") }
         }
     }
 
@@ -80,17 +96,25 @@ data class HarmonStatusReport(
             ?: "unavailable ($path: ${error.orEmpty().oneLine()})"
 
     private fun ProtocolObservation.description(): String =
-        version?.let { "live $it ($socket)" }
-            ?: "unavailable ($socket: ${error.orEmpty().oneLine()})"
+        if (intentionallyStopped) {
+            "not running (intentionally stopped)"
+        } else {
+            version?.let { "live $it ($socket)" }
+                ?: "unavailable ($socket: ${error.orEmpty().oneLine()})"
+        }
 
     private fun LaunchdServiceObservation.description(): String {
         if (!loaded) {
+            if (disabled == true) {
+                return "stopped (disabled)"
+            }
             return "unloaded (${error.orEmpty().oneLine()})"
         }
         val details = buildList {
             state?.let { add("state $it") }
             processId?.let { add("pid $it") }
             program?.let { add("program $it") }
+            if (disabled == true) add("disabled")
         }
         return details.joinToString().ifEmpty { "loaded" }
     }
@@ -99,6 +123,8 @@ data class HarmonStatusReport(
 object StatusEvaluator {
     fun evaluate(snapshot: HarmonStatusSnapshot): HarmonStatusReport {
         val issues = mutableListOf<String>()
+        val intentionallyStopped = snapshot.agentService.intentionallyStopped &&
+            snapshot.collectorService.intentionallyStopped
         val sourceVersion = snapshot.runningCliVersion
         val sourceCollectorVersion = snapshot.sourceCollector.version
         if (sourceCollectorVersion == null) {
@@ -134,31 +160,33 @@ object StatusEvaluator {
             )
         }
 
-        val liveVersion = snapshot.liveProtocol.version
-        if (liveVersion == null) {
-            issues += actionable(
-                "The collector socket is not healthy: " +
-                    snapshot.liveProtocol.error.orEmpty().oneLine() + ".",
+        if (!intentionallyStopped) {
+            val liveVersion = snapshot.liveProtocol.version
+            if (liveVersion == null) {
+                issues += actionable(
+                    "The collector socket is not healthy: " +
+                        snapshot.liveProtocol.error.orEmpty().oneLine() + ".",
+                )
+            } else if (liveVersion != snapshot.expectedProtocol) {
+                issues += actionable(
+                    "The loaded collector speaks protocol $liveVersion but this CLI expects " +
+                        "${snapshot.expectedProtocol}; the daemon may still be running an old copy.",
+                )
+            }
+
+            inspectService(
+                label = "agent",
+                observation = snapshot.agentService,
+                expectedProgram = snapshot.expectedAgentProgram,
+                issues = issues,
             )
-        } else if (liveVersion != snapshot.expectedProtocol) {
-            issues += actionable(
-                "The loaded collector speaks protocol $liveVersion but this CLI expects " +
-                    "${snapshot.expectedProtocol}; the daemon may still be running an old copy.",
+            inspectService(
+                label = "collector",
+                observation = snapshot.collectorService,
+                expectedProgram = snapshot.expectedCollectorProgram,
+                issues = issues,
             )
         }
-
-        inspectService(
-            label = "agent",
-            observation = snapshot.agentService,
-            expectedProgram = snapshot.expectedAgentProgram,
-            issues = issues,
-        )
-        inspectService(
-            label = "collector",
-            observation = snapshot.collectorService,
-            expectedProgram = snapshot.expectedCollectorProgram,
-            issues = issues,
-        )
         return HarmonStatusReport(snapshot, issues)
     }
 
@@ -189,8 +217,14 @@ object StatusEvaluator {
         issues: MutableList<String>,
     ) {
         when {
+            observation.intentionallyStopped -> issues += actionable(
+                "The $label service is disabled and not loaded.",
+            )
             !observation.loaded -> issues += actionable(
                 "The $label service is not loaded: ${observation.error.orEmpty().oneLine()}.",
+            )
+            observation.disabled == true -> issues += actionable(
+                "The $label service is loaded but disabled.",
             )
             !observation.running -> issues += actionable(
                 "The $label service is loaded but its state is " +
@@ -236,21 +270,30 @@ class HarmonStatus(
             path = SystemSetupPaths.collectorBinary,
             expectedName = "harmon-collector",
         )
-        val liveProtocol = try {
-            ProtocolObservation(
-                socket = SystemSetupPaths.socket,
-                version = protocolProbe(SystemSetupPaths.socket),
-            )
-        } catch (failure: Throwable) {
-            ProtocolObservation(
-                socket = SystemSetupPaths.socket,
-                error = failureDescription(failure),
-            )
-        }
         val agentServiceName = "gui/$userId/$AGENT_LABEL"
         val collectorServiceName = "system/$COLLECTOR_LABEL"
         val agentService = inspectService(agentServiceName)
         val collectorService = inspectService(collectorServiceName)
+        val servicesIntentionallyStopped = agentService.intentionallyStopped &&
+            collectorService.intentionallyStopped
+        val liveProtocol = if (servicesIntentionallyStopped) {
+            ProtocolObservation(
+                socket = SystemSetupPaths.socket,
+                error = "not probed because both services are disabled",
+            )
+        } else {
+            try {
+                ProtocolObservation(
+                    socket = SystemSetupPaths.socket,
+                    version = protocolProbe(SystemSetupPaths.socket),
+                )
+            } catch (failure: Throwable) {
+                ProtocolObservation(
+                    socket = SystemSetupPaths.socket,
+                    error = failureDescription(failure),
+                )
+            }
+        }
 
         val report = StatusEvaluator.evaluate(
             HarmonStatusSnapshot(
@@ -294,10 +337,19 @@ class HarmonStatus(
     }
 
     private fun inspectService(service: String): LaunchdServiceObservation {
-        val result = commandRunner.run(
+        val printResult = commandRunner.run(
             listOf("/bin/launchctl", "print", service),
         )
-        return parseLaunchctlPrint(service, result)
+        val domain = service.substringBeforeLast('/')
+        val label = service.substringAfterLast('/')
+        val disabledResult = commandRunner.run(
+            listOf("/bin/launchctl", "print-disabled", domain),
+        )
+        return parseLaunchctlPrint(
+            service = service,
+            result = printResult,
+            disabled = parseLaunchctlPrintDisabled(label, disabledResult),
+        )
     }
 }
 
@@ -312,12 +364,14 @@ fun parseBinaryVersion(output: String, expectedName: String): String? {
 fun parseLaunchctlPrint(
     service: String,
     result: CommandResult,
+    disabled: Boolean? = null,
 ): LaunchdServiceObservation {
     if (!result.successful) {
         return LaunchdServiceObservation(
             service = service,
             loaded = false,
             error = result.output.ifBlank { "exit code ${result.exitCode}" },
+            disabled = disabled,
         )
     }
     var state: String? = null
@@ -341,7 +395,33 @@ fun parseLaunchctlPrint(
         state = state,
         processId = processId,
         program = program,
+        disabled = disabled,
     )
+}
+
+fun parseLaunchctlPrintDisabled(
+    serviceLabel: String,
+    result: CommandResult,
+): Boolean? {
+    if (!result.successful) {
+        return null
+    }
+    var foundDictionary = false
+    var serviceState: String? = null
+    result.output.lineSequence().forEach { rawLine ->
+        val line = rawLine.trim()
+        if (line == "disabled services = {") {
+            foundDictionary = true
+        }
+        val match = LAUNCHCTL_DISABLED_ENTRY_PATTERN.matchEntire(line)
+        if (match?.groupValues?.get(1) == serviceLabel) {
+            serviceState = match.groupValues[2]
+        }
+    }
+    if (!foundDictionary) {
+        return null
+    }
+    return serviceState == "disabled" || serviceState == "true"
 }
 
 private fun String.oneLine(): String =
@@ -354,3 +434,6 @@ private fun statusEffectiveUserId(): UInt = geteuid()
 private fun statusHomeDirectory(): String =
     getenv("HOME")?.toKString()
         ?: throw SetupException("HOME is not set")
+
+private val LAUNCHCTL_DISABLED_ENTRY_PATTERN =
+    Regex("""^"([^"]+)"\s*=>\s*(enabled|disabled|true|false)$""")

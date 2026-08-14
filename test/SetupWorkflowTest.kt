@@ -10,9 +10,11 @@ import dev.yoda.harmon.setup.SetupException
 import dev.yoda.harmon.setup.SetupFileSystem
 import dev.yoda.harmon.setup.SystemSetup
 import dev.yoda.harmon.setup.SystemSetupPaths
+import dev.yoda.harmon.setup.SystemStop
 import dev.yoda.harmon.setup.SystemUninstall
 import dev.yoda.harmon.setup.UserSetup
 import dev.yoda.harmon.setup.UserSetupPaths
+import dev.yoda.harmon.setup.UserStop
 import dev.yoda.harmon.setup.UserUninstall
 import dev.yoda.harmon.setup.ValidatedInstallResources
 import dev.yoda.harmon.setup.renderApplicationInfoPlist
@@ -154,14 +156,14 @@ class SetupWorkflowTest {
                 ),
                 listOf(
                     "/bin/launchctl",
-                    "bootstrap",
-                    "system",
-                    "/Library/LaunchDaemons/dev.yoda.harmon.collector.plist",
+                    "enable",
+                    "system/dev.yoda.harmon.collector",
                 ),
                 listOf(
                     "/bin/launchctl",
-                    "enable",
-                    "system/dev.yoda.harmon.collector",
+                    "bootstrap",
+                    "system",
+                    "/Library/LaunchDaemons/dev.yoda.harmon.collector.plist",
                 ),
                 listOf(
                     "/bin/launchctl",
@@ -171,14 +173,14 @@ class SetupWorkflowTest {
                 ),
                 listOf(
                     "/bin/launchctl",
-                    "bootstrap",
-                    "gui/501",
-                    "$TEST_HOME/Library/LaunchAgents/dev.yoda.harmon.agent.plist",
+                    "enable",
+                    "gui/501/dev.yoda.harmon.agent",
                 ),
                 listOf(
                     "/bin/launchctl",
-                    "enable",
-                    "gui/501/dev.yoda.harmon.agent",
+                    "bootstrap",
+                    "gui/501",
+                    "$TEST_HOME/Library/LaunchAgents/dev.yoda.harmon.agent.plist",
                 ),
                 listOf(
                     "/bin/launchctl",
@@ -359,6 +361,110 @@ class SetupWorkflowTest {
                     "gui/501/dev.yoda.harmon.agent",
                 )
             },
+        )
+    }
+
+    @Test
+    fun userStopDisablesServicesBeforeBootoutAndRequestsTheSystemPhase() {
+        val fileSystem = workflowFileSystem()
+        val runner = WorkflowCommandRunner(fileSystem)
+        val paths = UserSetupPaths.forHome(TEST_HOME)
+        fileSystem.files[paths.liveUiEndpoint] = "stale endpoint"
+
+        UserStop(
+            executablePath = TEST_AGENT_SOURCE,
+            userId = 501u,
+            home = TEST_HOME,
+            fileSystem = fileSystem,
+            commandRunner = runner,
+        ).run()
+
+        assertEquals(
+            listOf(
+                listOf(
+                    "/bin/launchctl",
+                    "disable",
+                    "gui/501/dev.yoda.harmon.agent",
+                ),
+                listOf(
+                    "/bin/launchctl",
+                    "disable",
+                    "gui/501/dev.yoda.harmon",
+                ),
+                listOf(
+                    "/bin/launchctl",
+                    "bootout",
+                    "gui/501/dev.yoda.harmon.agent",
+                ),
+                listOf(
+                    "/bin/launchctl",
+                    "bootout",
+                    "gui/501/dev.yoda.harmon",
+                ),
+                listOf(
+                    "/usr/bin/sudo",
+                    TEST_AGENT_SOURCE,
+                    "stop",
+                    "--system",
+                    "--uid",
+                    "501",
+                ),
+            ),
+            runner.invocations.map(CommandInvocation::arguments),
+        )
+        assertFalse(runner.invocations.last().captureOutput)
+        assertFalse(paths.liveUiEndpoint in fileSystem.files)
+        assertFalse(
+            runner.pathsPresentWhenInvoked
+                .single { it.first == "/usr/bin/sudo" }
+                .second.contains(paths.liveUiEndpoint),
+            "the stale live UI endpoint was still present during the system phase",
+        )
+    }
+
+    @Test
+    fun systemStopDisablesEveryServiceBeforeIdempotentBootout() {
+        val runner = WorkflowCommandRunner()
+
+        SystemStop(
+            targetUserId = 501u,
+            commandRunner = runner,
+        ).run()
+
+        assertEquals(
+            listOf(
+                listOf(
+                    "/bin/launchctl",
+                    "disable",
+                    "system/dev.yoda.harmon.collector",
+                ),
+                listOf(
+                    "/bin/launchctl",
+                    "disable",
+                    "gui/501/dev.yoda.harmon.agent",
+                ),
+                listOf(
+                    "/bin/launchctl",
+                    "disable",
+                    "gui/501/dev.yoda.harmon",
+                ),
+                listOf(
+                    "/bin/launchctl",
+                    "bootout",
+                    "system/dev.yoda.harmon.collector",
+                ),
+                listOf(
+                    "/bin/launchctl",
+                    "bootout",
+                    "gui/501/dev.yoda.harmon.agent",
+                ),
+                listOf(
+                    "/bin/launchctl",
+                    "bootout",
+                    "gui/501/dev.yoda.harmon",
+                ),
+            ),
+            runner.invocations.map(CommandInvocation::arguments),
         )
     }
 }
