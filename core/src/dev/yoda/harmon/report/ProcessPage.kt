@@ -811,6 +811,7 @@ object ProcessPage {
           if (canPoll()) refresh();
         });
 
+        root.replaceChildren();
         draw();
         if (canPoll()) refresh();
     """.trimIndent()

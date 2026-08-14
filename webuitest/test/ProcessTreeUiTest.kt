@@ -11,6 +11,12 @@ import kotlin.test.assertTrue
 
 class ProcessTreeUiTest {
     @Test
+    fun removesTheLoadingPlaceholderAfterClientRendering() =
+        processUiOnLivePage("loading-placeholder") { _, page ->
+            assertThat(page.locator("#app > .loading")).hasCount(0)
+        }
+
+    @Test
     fun defaultsToOverviewAndRecursiveCpuTotalsWithPinnedIdentityColumns() =
         processUiOnLivePage("overview-totals") { _, page ->
             val rows = page.locator("tbody tr")
