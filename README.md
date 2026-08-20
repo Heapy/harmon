@@ -623,10 +623,10 @@ the root-owned helper, LaunchDaemon, and service bootstrap. It:
   `~/Library/Application Support/Harmon/Harmon.app`;
 - installs `harmon-collector` at the root-owned
   `/Library/PrivilegedHelperTools/harmon-collector` path;
-- registers `dev.yoda.harmon.collector` as a system LaunchDaemon;
+- registers `io.heapy.harmon.collector` as a system LaunchDaemon;
 - creates `/var/run/harmon.collector.sock`, accessible only to root and the
   configured login user;
-- registers `dev.yoda.harmon.agent` in the Aqua user session;
+- registers `io.heapy.harmon.agent` in the Aqua user session;
 - preserves an existing user configuration.
 
 An old `~/.local/bin/harmon` symlink managed by the former installer is removed
@@ -652,8 +652,8 @@ unexpectedly unloaded, or failed state also exits 1 and says to run
 Inspect services and logs:
 
 ```shell
-launchctl print "gui/$(id -u)/dev.yoda.harmon.agent"
-sudo launchctl print system/dev.yoda.harmon.collector
+launchctl print "gui/$(id -u)/io.heapy.harmon.agent"
+sudo launchctl print system/io.heapy.harmon.collector
 tail -f ~/Library/Logs/Harmon/agent.log
 sudo tail -f /Library/Logs/Harmon/collector.log
 ```

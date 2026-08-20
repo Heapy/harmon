@@ -9,4 +9,4 @@ dependencies:
 
 settings:
   native:
-    entryPoint: dev.yoda.harmon.webuicheck.main
+    entryPoint: io.heapy.harmon.webuicheck.main

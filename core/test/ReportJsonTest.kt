@@ -1,5 +1,5 @@
-import dev.yoda.harmon.model.MonitoringReport
-import dev.yoda.harmon.report.ReportJson
+import io.heapy.harmon.model.MonitoringReport
+import io.heapy.harmon.report.ReportJson
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonArray
 import kotlinx.serialization.json.JsonObject

@@ -124,27 +124,27 @@ programs:
 
 ```shell
 /usr/bin/plutil -lint \
-  "$HOME/Library/LaunchAgents/dev.yoda.harmon.agent.plist"
+  "$HOME/Library/LaunchAgents/io.heapy.harmon.agent.plist"
 sudo /usr/bin/plutil -lint \
-  /Library/LaunchDaemons/dev.yoda.harmon.collector.plist
+  /Library/LaunchDaemons/io.heapy.harmon.collector.plist
 
 /usr/bin/stat -f '%Lp %Su:%Sg %N' \
   "$HARMON_ACCEPTANCE_CONFIG" \
-  "$HOME/Library/LaunchAgents/dev.yoda.harmon.agent.plist" \
+  "$HOME/Library/LaunchAgents/io.heapy.harmon.agent.plist" \
   "$HOME/Library/Application Support/Harmon/Harmon.app/Contents/MacOS/harmon"
 sudo /usr/bin/stat -f '%Lp %Su:%Sg %N' \
   /Library/PrivilegedHelperTools/harmon-collector \
-  /Library/LaunchDaemons/dev.yoda.harmon.collector.plist
+  /Library/LaunchDaemons/io.heapy.harmon.collector.plist
 
 /usr/libexec/PlistBuddy -c 'Print :ProgramArguments:0' \
-  "$HOME/Library/LaunchAgents/dev.yoda.harmon.agent.plist"
+  "$HOME/Library/LaunchAgents/io.heapy.harmon.agent.plist"
 sudo /usr/libexec/PlistBuddy -c 'Print :ProgramArguments:0' \
-  /Library/LaunchDaemons/dev.yoda.harmon.collector.plist
+  /Library/LaunchDaemons/io.heapy.harmon.collector.plist
 
 /usr/bin/codesign --verify --deep --strict \
   "$HOME/Library/Application Support/Harmon/Harmon.app"
-/bin/launchctl print "gui/$(id -u)/dev.yoda.harmon.agent"
-sudo /bin/launchctl print system/dev.yoda.harmon.collector
+/bin/launchctl print "gui/$(id -u)/io.heapy.harmon.agent"
+sudo /bin/launchctl print system/io.heapy.harmon.collector
 ```
 
 The expected modes are `0600` for config and LaunchAgent, `0755` for both
@@ -167,13 +167,19 @@ test "$HARMON_ACCEPTANCE_CONFIG_SHA" = "$(
 "$HARMON_ACCEPTANCE_CLI" status
 ```
 
-On a machine migrated from the old source installer, also verify that only its
-managed legacy artifacts disappeared:
+On a machine migrated from a pre-rename release or the old source installer,
+also verify that only their managed compatibility artifacts disappeared:
 
 ```shell
+test ! -e "$HOME/Library/LaunchAgents/dev.yoda.harmon.agent.plist"
 test ! -e "$HOME/Library/LaunchAgents/dev.yoda.harmon.plist"
 test ! -L "$HOME/.local/bin/harmon"
+sudo test ! -e /Library/LaunchDaemons/dev.yoda.harmon.collector.plist
 sudo test ! -e /Library/PrivilegedHelperTools/dev.yoda.harmon
+
+! /bin/launchctl print "gui/$(id -u)/dev.yoda.harmon.agent"
+! /bin/launchctl print "gui/$(id -u)/dev.yoda.harmon"
+! sudo /bin/launchctl print system/dev.yoda.harmon.collector
 ```
 
 Finally publish a newer release into the same tap and exercise the upgrade gap:
@@ -207,11 +213,21 @@ and binaries while preserving user data:
 ```shell
 "$HARMON_ACCEPTANCE_CLI" uninstall
 
+test ! -e "$HOME/Library/LaunchAgents/io.heapy.harmon.agent.plist"
 test ! -e "$HOME/Library/LaunchAgents/dev.yoda.harmon.agent.plist"
+test ! -e "$HOME/Library/LaunchAgents/dev.yoda.harmon.plist"
 test ! -e "$HOME/Library/Application Support/Harmon/Harmon.app"
+sudo test ! -e /Library/LaunchDaemons/io.heapy.harmon.collector.plist
 sudo test ! -e /Library/LaunchDaemons/dev.yoda.harmon.collector.plist
 sudo test ! -e /Library/PrivilegedHelperTools/harmon-collector
+sudo test ! -e /Library/PrivilegedHelperTools/dev.yoda.harmon
 sudo test ! -e /var/run/harmon.collector.sock
+
+! /bin/launchctl print "gui/$(id -u)/io.heapy.harmon.agent"
+! /bin/launchctl print "gui/$(id -u)/dev.yoda.harmon.agent"
+! /bin/launchctl print "gui/$(id -u)/dev.yoda.harmon"
+! sudo /bin/launchctl print system/io.heapy.harmon.collector
+! sudo /bin/launchctl print system/dev.yoda.harmon.collector
 
 test -f "$HARMON_ACCEPTANCE_CONFIG"
 test -d "$HOME/Library/Logs/Harmon"
@@ -228,8 +244,13 @@ test ! -e "$HOME/Library/Application Support/Harmon"
 test ! -e "$HOME/.config/harmon"
 test ! -e "$HOME/Library/Logs/Harmon"
 sudo test ! -e /Library/Logs/Harmon
+test ! -e "$HOME/Library/LaunchAgents/io.heapy.harmon.agent.plist"
+test ! -e "$HOME/Library/LaunchAgents/dev.yoda.harmon.agent.plist"
+test ! -e "$HOME/Library/LaunchAgents/dev.yoda.harmon.plist"
+sudo test ! -e /Library/LaunchDaemons/io.heapy.harmon.collector.plist
 sudo test ! -e /Library/LaunchDaemons/dev.yoda.harmon.collector.plist
 sudo test ! -e /Library/PrivilegedHelperTools/harmon-collector
+sudo test ! -e /Library/PrivilegedHelperTools/dev.yoda.harmon
 ```
 
 The command prints each removed tree before deleting anything and never prompts,

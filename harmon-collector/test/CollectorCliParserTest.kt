@@ -1,6 +1,6 @@
-import dev.yoda.harmon.collector.CollectorCliException
-import dev.yoda.harmon.collector.CollectorCliParser
-import dev.yoda.harmon.collector.CollectorCommand
+import io.heapy.harmon.collector.CollectorCliException
+import io.heapy.harmon.collector.CollectorCliParser
+import io.heapy.harmon.collector.CollectorCommand
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFailsWith

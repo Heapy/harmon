@@ -1,7 +1,7 @@
-import dev.yoda.harmon.model.ProcessUsage
-import dev.yoda.harmon.model.ReparentedFrom
-import dev.yoda.harmon.monitor.CollectionException
-import dev.yoda.harmon.monitor.UsageCalculator
+import io.heapy.harmon.model.ProcessUsage
+import io.heapy.harmon.model.ReparentedFrom
+import io.heapy.harmon.monitor.CollectionException
+import io.heapy.harmon.monitor.UsageCalculator
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFailsWith

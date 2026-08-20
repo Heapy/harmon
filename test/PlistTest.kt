@@ -1,5 +1,5 @@
-import dev.yoda.harmon.setup.PlistValue
-import dev.yoda.harmon.setup.PlistXml
+import io.heapy.harmon.setup.PlistValue
+import io.heapy.harmon.setup.PlistXml
 import kotlin.test.Test
 import kotlin.test.assertFalse
 import kotlin.test.assertTrue

@@ -1,7 +1,7 @@
-import dev.yoda.harmon.cli.CliException
-import dev.yoda.harmon.cli.CliParser
-import dev.yoda.harmon.cli.Command
-import dev.yoda.harmon.config.SAMPLE_SECONDS_RANGE
+import io.heapy.harmon.cli.CliException
+import io.heapy.harmon.cli.CliParser
+import io.heapy.harmon.cli.Command
+import io.heapy.harmon.config.SAMPLE_SECONDS_RANGE
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFailsWith

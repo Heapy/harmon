@@ -1,6 +1,6 @@
-import dev.yoda.harmon.config.ConfigLoader
-import dev.yoda.harmon.config.HarmonConfig
-import dev.yoda.harmon.history.HistoryStore
+import io.heapy.harmon.config.ConfigLoader
+import io.heapy.harmon.config.HarmonConfig
+import io.heapy.harmon.history.HistoryStore
 import platform.Foundation.NSFileManager
 import kotlin.test.Test
 import kotlin.test.assertFalse

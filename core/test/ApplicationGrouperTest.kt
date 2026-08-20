@@ -1,4 +1,4 @@
-import dev.yoda.harmon.analysis.ApplicationGrouper
+import io.heapy.harmon.analysis.ApplicationGrouper
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertNotEquals

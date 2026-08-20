@@ -1,8 +1,8 @@
-import dev.yoda.harmon.analysis.AlertKeyState
-import dev.yoda.harmon.analysis.AlertStateSnapshot
-import dev.yoda.harmon.model.DeliveryResult
-import dev.yoda.harmon.model.MonitoringReport
-import dev.yoda.harmon.model.SystemUsage
+import io.heapy.harmon.analysis.AlertKeyState
+import io.heapy.harmon.analysis.AlertStateSnapshot
+import io.heapy.harmon.model.DeliveryResult
+import io.heapy.harmon.model.MonitoringReport
+import io.heapy.harmon.model.SystemUsage
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertNull

@@ -1,19 +1,19 @@
-import dev.yoda.harmon.setup.BinaryVersionObservation
-import dev.yoda.harmon.setup.CommandInvocation
-import dev.yoda.harmon.setup.CommandResult
-import dev.yoda.harmon.setup.HarmonStatusSnapshot
-import dev.yoda.harmon.setup.LaunchdEnablement
-import dev.yoda.harmon.setup.LaunchdEnablement.DISABLED
-import dev.yoda.harmon.setup.LaunchdEnablement.ENABLED
-import dev.yoda.harmon.setup.LaunchdEnablement.UNKNOWN
-import dev.yoda.harmon.setup.LaunchdEnablementObservation
-import dev.yoda.harmon.setup.LaunchdLoadState
-import dev.yoda.harmon.setup.LaunchdServiceObservation
-import dev.yoda.harmon.setup.ProtocolObservation
-import dev.yoda.harmon.setup.StatusEvaluator
-import dev.yoda.harmon.setup.parseBinaryVersion
-import dev.yoda.harmon.setup.parseLaunchctlPrint
-import dev.yoda.harmon.setup.parseLaunchctlPrintDisabled
+import io.heapy.harmon.setup.BinaryVersionObservation
+import io.heapy.harmon.setup.CommandInvocation
+import io.heapy.harmon.setup.CommandResult
+import io.heapy.harmon.setup.HarmonStatusSnapshot
+import io.heapy.harmon.setup.LaunchdEnablement
+import io.heapy.harmon.setup.LaunchdEnablement.DISABLED
+import io.heapy.harmon.setup.LaunchdEnablement.ENABLED
+import io.heapy.harmon.setup.LaunchdEnablement.UNKNOWN
+import io.heapy.harmon.setup.LaunchdEnablementObservation
+import io.heapy.harmon.setup.LaunchdLoadState
+import io.heapy.harmon.setup.LaunchdServiceObservation
+import io.heapy.harmon.setup.ProtocolObservation
+import io.heapy.harmon.setup.StatusEvaluator
+import io.heapy.harmon.setup.parseBinaryVersion
+import io.heapy.harmon.setup.parseLaunchctlPrint
+import io.heapy.harmon.setup.parseLaunchctlPrintDisabled
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFalse
@@ -238,7 +238,7 @@ class StatusTest {
                 invocation,
                 0,
                 """
-                    gui/501/dev.yoda.harmon.agent = {
+                    gui/501/io.heapy.harmon.agent = {
                         state = running
                         program = $INSTALLED_AGENT
                         pid = 4321
@@ -265,7 +265,7 @@ class StatusTest {
             CommandResult(
                 invocation,
                 113,
-                "Could not find service \"dev.yoda.harmon.agent\" in domain for user gui: 501",
+                "Could not find service \"io.heapy.harmon.agent\" in domain for user gui: 501",
             ),
         )
         val unknown = parseLaunchctlPrint(
@@ -305,13 +305,13 @@ class StatusTest {
             0,
             "\n\tdisabled services = {\n" +
                 "\t\t\"com.docker.helper\" => enabled\n" +
-                "\t\t\"dev.yoda.harmon.agent\" => disabled\n" +
+                "\t\t\"io.heapy.harmon.agent\" => disabled\n" +
                 "\t}\n",
         )
 
-        assertEquals(DISABLED, parseLaunchctlPrintDisabled("dev.yoda.harmon.agent", real).state)
+        assertEquals(DISABLED, parseLaunchctlPrintDisabled("io.heapy.harmon.agent", real).state)
         assertEquals(ENABLED, parseLaunchctlPrintDisabled("com.docker.helper", real).state)
-        assertEquals(ENABLED, parseLaunchctlPrintDisabled("dev.yoda.harmon", real).state)
+        assertEquals(ENABLED, parseLaunchctlPrintDisabled("io.heapy.harmon", real).state)
     }
 
     @Test
@@ -421,5 +421,5 @@ private const val INSTALLED_AGENT =
     "/Users/tester/Library/Application Support/Harmon/Harmon.app/Contents/MacOS/harmon"
 private const val INSTALLED_COLLECTOR = "/Library/PrivilegedHelperTools/harmon-collector"
 private const val SOCKET = "/var/run/harmon.collector.sock"
-private const val AGENT_SERVICE = "gui/501/dev.yoda.harmon.agent"
-private const val COLLECTOR_SERVICE = "system/dev.yoda.harmon.collector"
+private const val AGENT_SERVICE = "gui/501/io.heapy.harmon.agent"
+private const val COLLECTOR_SERVICE = "system/io.heapy.harmon.collector"

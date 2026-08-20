@@ -1,4 +1,4 @@
-import dev.yoda.harmon.history.toSqlTimestamp
+import io.heapy.harmon.history.toSqlTimestamp
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertTrue

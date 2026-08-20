@@ -1,4 +1,4 @@
-package dev.yoda.harmon.sqldelight
+package io.heapy.harmon.sqldelight
 
 import app.cash.sqldelight.core.SqlDelightCompilationUnit
 import app.cash.sqldelight.core.SqlDelightDatabaseName
@@ -77,7 +77,7 @@ fun generateDatabase(
     }
 }
 
-private const val DATABASE_PACKAGE = "dev.yoda.harmon.db"
+private const val DATABASE_PACKAGE = "io.heapy.harmon.db"
 
 private const val DATABASE_CLASS_NAME = "HarmonDatabase"
 

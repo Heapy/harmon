@@ -4,8 +4,8 @@ import app.cash.sqldelight.db.SqlDriver
 import app.cash.sqldelight.db.SqlPreparedStatement
 import app.cash.sqldelight.db.SqlSchema
 import app.cash.sqldelight.driver.native.NativeSqliteDriver
-import dev.yoda.harmon.db.HarmonDatabase
-import dev.yoda.harmon.history.HistoryStore
+import io.heapy.harmon.db.HarmonDatabase
+import io.heapy.harmon.history.HistoryStore
 import kotlinx.cinterop.ExperimentalForeignApi
 import platform.Foundation.NSFileManager
 import platform.posix.S_IRUSR

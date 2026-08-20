@@ -1,7 +1,7 @@
-import dev.yoda.harmon.ipc.CollectorProtocol
-import dev.yoda.harmon.ipc.CollectorProtocolException
-import dev.yoda.harmon.ipc.CollectorRequest
-import dev.yoda.harmon.monitor.CollectionProfile
+import io.heapy.harmon.ipc.CollectorProtocol
+import io.heapy.harmon.ipc.CollectorProtocolException
+import io.heapy.harmon.ipc.CollectorRequest
+import io.heapy.harmon.monitor.CollectionProfile
 import kotlin.test.Test
 import kotlin.test.assertContains
 import kotlin.test.assertEquals

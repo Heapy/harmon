@@ -1,14 +1,14 @@
-import dev.yoda.harmon.analysis.DELIVERY_RETRY_THRESHOLD
-import dev.yoda.harmon.config.HarmonConfig
-import dev.yoda.harmon.config.NotificationConfig
-import dev.yoda.harmon.config.SAMPLE_SECONDS_RANGE
-import dev.yoda.harmon.model.NotificationPayload
-import dev.yoda.harmon.model.RawSystemSnapshot
-import dev.yoda.harmon.monitor.CollectionProfile
-import dev.yoda.harmon.monitor.SystemCollector
-import dev.yoda.harmon.notify.NotificationChannel
-import dev.yoda.harmon.notify.NotificationDispatcher
-import dev.yoda.harmon.runtime.HarmonService
+import io.heapy.harmon.analysis.DELIVERY_RETRY_THRESHOLD
+import io.heapy.harmon.config.HarmonConfig
+import io.heapy.harmon.config.NotificationConfig
+import io.heapy.harmon.config.SAMPLE_SECONDS_RANGE
+import io.heapy.harmon.model.NotificationPayload
+import io.heapy.harmon.model.RawSystemSnapshot
+import io.heapy.harmon.monitor.CollectionProfile
+import io.heapy.harmon.monitor.SystemCollector
+import io.heapy.harmon.notify.NotificationChannel
+import io.heapy.harmon.notify.NotificationDispatcher
+import io.heapy.harmon.runtime.HarmonService
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.jsonArray
 import kotlinx.serialization.json.jsonObject
@@ -490,7 +490,7 @@ private fun crowdedSnapshot(seconds: ULong, footprints: List<ULong>): RawSystemS
     )
 
 private object UnusedCollector : SystemCollector {
-    override fun capture(profile: dev.yoda.harmon.monitor.CollectionProfile): RawSystemSnapshot =
+    override fun capture(profile: io.heapy.harmon.monitor.CollectionProfile): RawSystemSnapshot =
         error("handleSample must not capture")
 }
 
@@ -498,7 +498,7 @@ private class ScriptedCollector(vararg snapshots: RawSystemSnapshot) : SystemCol
     private val remaining = snapshots.toMutableList()
     val profiles = mutableListOf<CollectionProfile>()
 
-    override fun capture(profile: dev.yoda.harmon.monitor.CollectionProfile): RawSystemSnapshot {
+    override fun capture(profile: io.heapy.harmon.monitor.CollectionProfile): RawSystemSnapshot {
         profiles += profile
         return remaining.removeFirst()
     }
@@ -507,7 +507,7 @@ private class ScriptedCollector(vararg snapshots: RawSystemSnapshot) : SystemCol
 private class FlakyCollector(private val snapshot: RawSystemSnapshot) : SystemCollector {
     private var attempts = 0
 
-    override fun capture(profile: dev.yoda.harmon.monitor.CollectionProfile): RawSystemSnapshot {
+    override fun capture(profile: io.heapy.harmon.monitor.CollectionProfile): RawSystemSnapshot {
         attempts += 1
         if (attempts == 1) {
             error("collector socket refused the connection")

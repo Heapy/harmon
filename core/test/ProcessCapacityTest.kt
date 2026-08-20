@@ -1,6 +1,6 @@
-import dev.yoda.harmon.monitor.MIN_PROCESS_CAPACITY
-import dev.yoda.harmon.monitor.PROCESS_CAPACITY_HEADROOM
-import dev.yoda.harmon.monitor.processCapacityFor
+import io.heapy.harmon.monitor.MIN_PROCESS_CAPACITY
+import io.heapy.harmon.monitor.PROCESS_CAPACITY_HEADROOM
+import io.heapy.harmon.monitor.processCapacityFor
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertTrue

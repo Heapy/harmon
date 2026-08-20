@@ -1,4 +1,4 @@
-package = dev.yoda.harmon.nativebridge.ipc
+package = io.heapy.harmon.nativebridge.ipc
 headerFilter = harmon_ipc.h
 
 ---

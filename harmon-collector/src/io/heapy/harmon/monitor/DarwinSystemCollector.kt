@@ -1,0 +1,341 @@
+package io.heapy.harmon.monitor
+
+import io.heapy.harmon.model.PowerState
+import io.heapy.harmon.model.ProcessorCounters
+import io.heapy.harmon.model.ProcessCollectionIssue
+import io.heapy.harmon.model.ProcessCollectionIssueReason
+import io.heapy.harmon.model.ProcessIdentity
+import io.heapy.harmon.model.RawProcessSample
+import io.heapy.harmon.model.RawSystemSnapshot
+import io.heapy.harmon.model.LoadAverages
+import io.heapy.harmon.model.StorageCounters
+import io.heapy.harmon.model.SwapUsage
+import io.heapy.harmon.model.VirtualMemoryCounters
+import io.heapy.harmon.nativebridge.probe.HMBatterySample
+import io.heapy.harmon.nativebridge.probe.HMLoadAverageSample
+import io.heapy.harmon.nativebridge.probe.HMProcessorSample
+import io.heapy.harmon.nativebridge.probe.HMProcessIssue
+import io.heapy.harmon.nativebridge.probe.HMProcessSample
+import io.heapy.harmon.nativebridge.probe.HM_PROCESS_ISSUE_CAPACITY
+import io.heapy.harmon.nativebridge.probe.HMStorageSample
+import io.heapy.harmon.nativebridge.probe.HMSwapSample
+import io.heapy.harmon.nativebridge.probe.HMVirtualMemorySample
+import io.heapy.harmon.nativebridge.probe.hm_count_processes
+import io.heapy.harmon.nativebridge.probe.hm_list_processes
+import io.heapy.harmon.nativebridge.probe.hm_monotonic_time_ns
+import io.heapy.harmon.nativebridge.probe.hm_read_battery
+import io.heapy.harmon.nativebridge.probe.hm_read_load_averages
+import io.heapy.harmon.nativebridge.probe.hm_read_physical_memory
+import io.heapy.harmon.nativebridge.probe.hm_read_processor
+import io.heapy.harmon.nativebridge.probe.hm_read_storage
+import io.heapy.harmon.nativebridge.probe.hm_read_swap
+import io.heapy.harmon.nativebridge.probe.hm_read_virtual_memory
+import kotlinx.cinterop.ByteVar
+import kotlinx.cinterop.CArrayPointer
+import kotlinx.cinterop.ExperimentalForeignApi
+import kotlinx.cinterop.IntVar
+import kotlinx.cinterop.ULongVar
+import kotlinx.cinterop.alloc
+import kotlinx.cinterop.allocArray
+import kotlinx.cinterop.get
+import kotlinx.cinterop.memScoped
+import kotlinx.cinterop.ptr
+import kotlinx.cinterop.toKString
+import kotlinx.cinterop.value
+import platform.posix.EACCES
+import platform.posix.EPERM
+import platform.posix.ESRCH
+import kotlin.time.Clock
+
+const val FULL_COMPRESSED_ATTRIBUTION_PROCESS_LIMIT = 256
+const val FULL_ATTRIBUTION_REGION_BUDGET = 100_000
+
+data class AttributionLimits(
+    val processLimit: Int,
+    val regionBudget: Int,
+)
+
+fun attributionLimitsFor(
+    profile: CollectionProfile,
+    fullProcessLimit: Int = FULL_COMPRESSED_ATTRIBUTION_PROCESS_LIMIT,
+    fullRegionBudget: Int = FULL_ATTRIBUTION_REGION_BUDGET,
+): AttributionLimits = when (profile) {
+    CollectionProfile.FULL -> AttributionLimits(fullProcessLimit, fullRegionBudget)
+    CollectionProfile.LIVE_FAST -> AttributionLimits(processLimit = 0, regionBudget = 0)
+}
+
+class DarwinSystemCollector(
+    private val processCapacity: Int = DEFAULT_PROCESS_CAPACITY,
+    private val issueCapacity: Int = DEFAULT_ISSUE_CAPACITY,
+    private val compressedAttributionProcessLimit: Int =
+        FULL_COMPRESSED_ATTRIBUTION_PROCESS_LIMIT,
+    private val attributionRegionBudget: Int = FULL_ATTRIBUTION_REGION_BUDGET,
+) : SystemCollector {
+    init {
+        require(processCapacity > 0) { "processCapacity must be positive" }
+        require(issueCapacity > 0) { "issueCapacity must be positive" }
+        require(compressedAttributionProcessLimit >= 0) {
+            "compressedAttributionProcessLimit must not be negative"
+        }
+        require(attributionRegionBudget >= 0) {
+            "attributionRegionBudget must not be negative"
+        }
+    }
+
+    @OptIn(ExperimentalForeignApi::class)
+    override fun capture(profile: CollectionProfile): RawSystemSnapshot = memScoped {
+        val attributionLimits = attributionLimitsFor(
+            profile = profile,
+            fullProcessLimit = compressedAttributionProcessLimit,
+            fullRegionBudget = attributionRegionBudget,
+        )
+        val pidCount = hm_count_processes()
+        val sampleSlots = processCapacityFor(pidCount, processCapacity)
+        val issueSlots = processCapacityFor(pidCount, issueCapacity)
+        val nativeProcesses = allocArray<HMProcessSample>(sampleSlots)
+        val nativeIssues = allocArray<HMProcessIssue>(issueSlots)
+        val totalProcesses = alloc<IntVar>()
+        val inaccessibleProcesses = alloc<IntVar>()
+        val writtenIssues = alloc<IntVar>()
+        val processCount = hm_list_processes(
+            nativeProcesses,
+            sampleSlots,
+            nativeIssues,
+            issueSlots,
+            attributionLimits.processLimit,
+            attributionLimits.regionBudget,
+            totalProcesses.ptr,
+            inaccessibleProcesses.ptr,
+            writtenIssues.ptr,
+        )
+        if (processCount < 0) {
+            throw CollectionException("Unable to enumerate macOS processes")
+        }
+
+        val swapSample = alloc<HMSwapSample>()
+        if (hm_read_swap(swapSample.ptr) != 0) {
+            throw CollectionException("Unable to read vm.swapusage")
+        }
+
+        val physicalMemory = alloc<ULongVar>()
+        if (hm_read_physical_memory(physicalMemory.ptr) != 0) {
+            throw CollectionException("Unable to read hw.memsize")
+        }
+
+        val batterySample = alloc<HMBatterySample>()
+        val batteryRead = hm_read_battery(batterySample.ptr) == 0
+
+        val processorSample = alloc<HMProcessorSample>()
+        if (hm_read_processor(processorSample.ptr) != 0) {
+            throw CollectionException("Unable to read host CPU counters")
+        }
+
+        val loadAverageSample = alloc<HMLoadAverageSample>()
+        if (hm_read_load_averages(loadAverageSample.ptr) != 0) {
+            throw CollectionException("Unable to read system load averages")
+        }
+
+        val virtualMemorySample = alloc<HMVirtualMemorySample>()
+        if (hm_read_virtual_memory(virtualMemorySample.ptr) != 0) {
+            throw CollectionException("Unable to read HOST_VM_INFO64")
+        }
+
+        val storageSample = alloc<HMStorageSample>()
+        val storageRead = hm_read_storage(storageSample.ptr) == 0
+
+        val processes = buildList(processCount) {
+            for (index in 0..<processCount) {
+                val sample = nativeProcesses[index]
+                add(
+                    RawProcessSample(
+                        identity = ProcessIdentity(
+                            pid = sample.pid,
+                            startedAt = sample.started_at,
+                        ),
+                        parentPid = sample.parent_pid,
+                        uid = sample.uid.toNullableUid(),
+                        name = sample.name.toKString(),
+                        executablePath = sample.executable_path.toOptionalString(),
+                        userTimeNs = sample.user_time_ns,
+                        systemTimeNs = sample.system_time_ns,
+                        packageIdleWakeups = sample.package_idle_wakeups,
+                        interruptWakeups = sample.interrupt_wakeups,
+                        pageIns = sample.pageins,
+                        diskBytesRead = sample.disk_bytes_read,
+                        diskBytesWritten = sample.disk_bytes_written,
+                        logicalWritesBytes = sample.logical_writes_bytes,
+                        instructions = sample.instructions,
+                        cycles = sample.cycles,
+                        energyNanojoules = sample.energy_nanojoules,
+                        wiredBytes = sample.wired_bytes,
+                        residentBytes = sample.resident_bytes,
+                        physicalFootprintBytes = sample.physical_footprint_bytes,
+                        lifetimeMaxPhysicalFootprintBytes =
+                            sample.lifetime_max_physical_footprint_bytes,
+                        compressedOrPagedOutBytes =
+                            sample.compressed_or_paged_out_bytes.takeIf {
+                                sample.compressed_attribution_available != 0
+                            },
+                        virtualMemoryRegionCount =
+                            sample.virtual_memory_region_count.takeIf {
+                                sample.compressed_attribution_available != 0
+                            },
+                        faults = sample.faults,
+                        copyOnWriteFaults = sample.copy_on_write_faults,
+                        machSystemCalls = sample.mach_system_calls,
+                        unixSystemCalls = sample.unix_system_calls,
+                        contextSwitches = sample.context_switches,
+                        threadCount = sample.thread_count,
+                        runningThreadCount = sample.running_thread_count,
+                        billedEnergy = sample.billed_energy,
+                    ),
+                )
+            }
+        }
+        val processIssues = buildList(writtenIssues.value) {
+            for (index in 0..<writtenIssues.value) {
+                val issue = nativeIssues[index]
+                val executablePath = issue.executable_path.toOptionalString()
+                add(
+                    ProcessCollectionIssue(
+                        pid = issue.pid,
+                        parentPid = issue.parent_pid.takeIf { it > 0 },
+                        uid = issue.uid.toNullableUid(),
+                        name = issue.name.toOptionalString()
+                            ?: executablePath?.substringAfterLast('/'),
+                        executablePath = executablePath,
+                        reason = issue.toReason(),
+                        errorCode = issue.error_code.takeIf { it != 0 },
+                    ),
+                )
+            }
+        }
+
+        RawSystemSnapshot(
+            capturedAt = Clock.System.now(),
+            monotonicTimeNs = hm_monotonic_time_ns(),
+            physicalMemoryBytes = physicalMemory.value,
+            swap = SwapUsage(
+                totalBytes = swapSample.total_bytes,
+                availableBytes = swapSample.available_bytes,
+                usedBytes = swapSample.used_bytes,
+                encrypted = swapSample.encrypted != 0,
+            ),
+            power = if (batteryRead) {
+                PowerState(
+                    batteryAvailable = batterySample.available != 0,
+                    onBattery = batterySample.on_battery != 0,
+                    charging = batterySample.charging != 0,
+                    percentage = batterySample.percentage.takeIf { it >= 0 },
+                    minutesRemaining = batterySample.minutes_remaining.takeIf { it >= 0 },
+                )
+            } else {
+                PowerState(
+                    batteryAvailable = false,
+                    onBattery = false,
+                    charging = false,
+                    percentage = null,
+                    minutesRemaining = null,
+                )
+            },
+            processor = ProcessorCounters(
+                userTicks = processorSample.user_ticks,
+                systemTicks = processorSample.system_ticks,
+                idleTicks = processorSample.idle_ticks,
+                niceTicks = processorSample.nice_ticks,
+            ),
+            loadAverages = LoadAverages(
+                oneMinute = loadAverageSample.one_minute,
+                fiveMinutes = loadAverageSample.five_minutes,
+                fifteenMinutes = loadAverageSample.fifteen_minutes,
+            ),
+            virtualMemory = VirtualMemoryCounters(
+                pageSizeBytes = virtualMemorySample.page_size_bytes,
+                freeBytes = virtualMemorySample.free_bytes,
+                activeBytes = virtualMemorySample.active_bytes,
+                inactiveBytes = virtualMemorySample.inactive_bytes,
+                wiredBytes = virtualMemorySample.wired_bytes,
+                purgeableBytes = virtualMemorySample.purgeable_bytes,
+                compressedBytes = virtualMemorySample.compressed_bytes,
+                uncompressedBytesInCompressor =
+                    virtualMemorySample.uncompressed_bytes_in_compressor,
+                swapBackedUncompressedBytes =
+                    virtualMemorySample.swap_backed_uncompressed_bytes,
+                pageIns = virtualMemorySample.pageins,
+                pageOuts = virtualMemorySample.pageouts,
+                faults = virtualMemorySample.faults,
+                copyOnWriteFaults = virtualMemorySample.copy_on_write_faults,
+                compressions = virtualMemorySample.compressions,
+                decompressions = virtualMemorySample.decompressions,
+                swapIns = virtualMemorySample.swapins,
+                swapOuts = virtualMemorySample.swapouts,
+            ),
+            storage = if (storageRead) {
+                StorageCounters(
+                    available = storageSample.available != 0,
+                    deviceCount = storageSample.device_count,
+                    bytesRead = storageSample.bytes_read,
+                    bytesWritten = storageSample.bytes_written,
+                    readOperations = storageSample.read_operations,
+                    writeOperations = storageSample.write_operations,
+                    readTimeNs = storageSample.read_time_ns,
+                    writeTimeNs = storageSample.write_time_ns,
+                    rootFileSystemTotalBytes =
+                        storageSample.root_filesystem_total_bytes,
+                    rootFileSystemAvailableBytes =
+                        storageSample.root_filesystem_available_bytes,
+                )
+            } else {
+                StorageCounters(
+                    available = false,
+                    deviceCount = 0,
+                    bytesRead = 0u,
+                    bytesWritten = 0u,
+                    readOperations = 0u,
+                    writeOperations = 0u,
+                    readTimeNs = 0u,
+                    writeTimeNs = 0u,
+                    rootFileSystemTotalBytes = 0u,
+                    rootFileSystemAvailableBytes = 0u,
+                )
+            },
+            totalProcessCount = totalProcesses.value,
+            inaccessibleProcessCount = inaccessibleProcesses.value +
+                (totalProcesses.value - processCount - inaccessibleProcesses.value).coerceAtLeast(0),
+            compressedAttributionProcessCount = processes.count {
+                it.compressedOrPagedOutBytes != null
+            },
+            compressedAttributionFailureCount = (0..<processCount).count { index ->
+                val sample = nativeProcesses[index]
+                sample.compressed_attribution_attempted != 0 &&
+                    sample.compressed_attribution_available == 0
+            },
+            processes = processes,
+            processIssues = processIssues,
+        )
+    }
+
+    private fun UInt.toNullableUid(): UInt? =
+        takeUnless { it == UInt.MAX_VALUE }
+
+    @OptIn(ExperimentalForeignApi::class)
+    private fun CArrayPointer<ByteVar>.toOptionalString(): String? =
+        toKString().takeIf { it.isNotEmpty() }
+
+    @OptIn(ExperimentalForeignApi::class)
+    private fun HMProcessIssue.toReason(): ProcessCollectionIssueReason = when {
+        reason == HM_PROCESS_ISSUE_CAPACITY ->
+            ProcessCollectionIssueReason.CAPACITY_LIMIT
+        error_code == EACCES || error_code == EPERM ->
+            ProcessCollectionIssueReason.PERMISSION_DENIED
+        error_code == ESRCH ->
+            ProcessCollectionIssueReason.EXITED_DURING_COLLECTION
+        else ->
+            ProcessCollectionIssueReason.RESOURCE_USAGE_UNAVAILABLE
+    }
+
+    private companion object {
+        const val DEFAULT_PROCESS_CAPACITY = 16_384
+        const val DEFAULT_ISSUE_CAPACITY = 4_096
+    }
+}

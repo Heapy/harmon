@@ -1,4 +1,4 @@
-package = dev.yoda.harmon.nativebridge.probe
+package = io.heapy.harmon.nativebridge.probe
 headerFilter = harmon_probe.h
 linkerOpts = -framework IOKit -framework CoreFoundation
 

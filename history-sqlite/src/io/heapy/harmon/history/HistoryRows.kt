@@ -1,0 +1,251 @@
+package io.heapy.harmon.history
+
+import io.heapy.harmon.analysis.AlertKeyState
+import io.heapy.harmon.analysis.AlertStateSnapshot
+import io.heapy.harmon.db.AlertsQueries
+import io.heapy.harmon.db.ApplicationsQueries
+import io.heapy.harmon.db.ProcessesQueries
+import io.heapy.harmon.db.SamplesQueries
+import io.heapy.harmon.model.Alert
+import io.heapy.harmon.model.ApplicationUsage
+import io.heapy.harmon.model.DeliveryResult
+import io.heapy.harmon.model.ProcessUsage
+import io.heapy.harmon.model.SystemUsage
+
+fun SamplesQueries.insertSample(usage: SystemUsage) {
+    val swap = usage.swap
+    val power = usage.power
+    val processor = usage.processor
+    val load = usage.loadAverages
+    val vm = usage.virtualMemory
+    val storage = usage.storage
+
+    insert(
+        captured_at = usage.capturedAt.toSqlTimestamp(),
+        elapsed_seconds = usage.elapsedSeconds,
+        physical_memory_bytes = usage.physicalMemoryBytes.toSqlLong(),
+
+        swap_total_bytes = swap.totalBytes.toSqlLong(),
+        swap_available_bytes = swap.availableBytes.toSqlLong(),
+        swap_used_bytes = swap.usedBytes.toSqlLong(),
+        swap_encrypted = swap.encrypted.toSqlLong(),
+
+        battery_available = power.batteryAvailable.toSqlLong(),
+        on_battery = power.onBattery.toSqlLong(),
+        charging = power.charging.toSqlLong(),
+        battery_percentage = power.percentage?.toLong(),
+        battery_minutes_remaining = power.minutesRemaining?.toLong(),
+
+        processor_total_percent = processor.totalPercent,
+        processor_user_percent = processor.userPercent,
+        processor_system_percent = processor.systemPercent,
+        processor_nice_percent = processor.nicePercent,
+        processor_idle_percent = processor.idlePercent,
+
+        load_average_1m = load.oneMinute,
+        load_average_5m = load.fiveMinutes,
+        load_average_15m = load.fifteenMinutes,
+
+        vm_free_bytes = vm.freeBytes.toSqlLong(),
+        vm_active_bytes = vm.activeBytes.toSqlLong(),
+        vm_inactive_bytes = vm.inactiveBytes.toSqlLong(),
+        vm_wired_bytes = vm.wiredBytes.toSqlLong(),
+        vm_purgeable_bytes = vm.purgeableBytes.toSqlLong(),
+        vm_compressed_bytes = vm.compressedBytes.toSqlLong(),
+        vm_uncompressed_bytes_in_compressor = vm.uncompressedBytesInCompressor.toSqlLong(),
+        vm_swap_backed_uncompressed_bytes = vm.swapBackedUncompressedBytes.toSqlLong(),
+        vm_page_in_bytes_per_second = vm.pageInBytesPerSecond,
+        vm_page_out_bytes_per_second = vm.pageOutBytesPerSecond,
+        vm_fault_rate = vm.faultRate,
+        vm_copy_on_write_fault_rate = vm.copyOnWriteFaultRate,
+        vm_compression_bytes_per_second = vm.compressionBytesPerSecond,
+        vm_decompression_bytes_per_second = vm.decompressionBytesPerSecond,
+        vm_swap_in_bytes_per_second = vm.swapInBytesPerSecond,
+        vm_swap_out_bytes_per_second = vm.swapOutBytesPerSecond,
+
+        storage_available = storage.available.toSqlLong(),
+        storage_device_count = storage.deviceCount.toLong(),
+        storage_read_bytes_per_second = storage.readBytesPerSecond,
+        storage_write_bytes_per_second = storage.writeBytesPerSecond,
+        storage_read_operations_per_second = storage.readOperationsPerSecond,
+        storage_write_operations_per_second = storage.writeOperationsPerSecond,
+        storage_read_service_time_percent = storage.readServiceTimePercent,
+        storage_write_service_time_percent = storage.writeServiceTimePercent,
+        storage_root_total_bytes = storage.rootFileSystemTotalBytes.toSqlLong(),
+        storage_root_available_bytes = storage.rootFileSystemAvailableBytes.toSqlLong(),
+
+        total_process_count = usage.totalProcessCount.toLong(),
+        inaccessible_process_count = usage.inaccessibleProcessCount.toLong(),
+        compressed_attribution_process_count = usage.compressedAttributionProcessCount.toLong(),
+        compressed_attribution_failure_count = usage.compressedAttributionFailureCount.toLong(),
+    )
+}
+
+fun ProcessesQueries.upsertProcess(process: ProcessUsage): Long {
+    val pid = process.identity.pid.toLong()
+    val startedAt = process.identity.startedAt.toSqlLong()
+
+    insertProcess(
+        pid = pid,
+        started_at = startedAt,
+        name = process.name,
+        executable_path = process.executablePath,
+        uid = process.uid?.toLong(),
+        parent_pid = process.parentPid.toLong(),
+    )
+
+    return selectProcessId(pid = pid, started_at = startedAt).executeAsOne()
+}
+
+fun ProcessesQueries.insertProcessUsage(
+    sampleId: Long,
+    processId: Long,
+    applicationId: Long?,
+    usage: ProcessUsage,
+) {
+    insertProcessSample(
+        sample_id = sampleId,
+        process_id = processId,
+        application_id = applicationId,
+
+        cpu_percent = usage.cpuPercent,
+        user_cpu_percent = usage.userCpuPercent,
+        system_cpu_percent = usage.systemCpuPercent,
+
+        physical_footprint_bytes = usage.physicalFootprintBytes.toSqlLong(),
+        resident_bytes = usage.residentBytes.toSqlLong(),
+        wired_bytes = usage.wiredBytes.toSqlLong(),
+        lifetime_max_physical_footprint_bytes = usage.lifetimeMaxPhysicalFootprintBytes.toSqlLong(),
+        compressed_or_paged_out_bytes = usage.compressedOrPagedOutBytes?.toSqlLong(),
+        virtual_memory_region_count = usage.virtualMemoryRegionCount?.toLong(),
+
+        wakeups_per_second = usage.wakeupsPerSecond,
+        page_ins_per_second = usage.pageInsPerSecond,
+        disk_read_bytes_per_second = usage.diskReadBytesPerSecond,
+        disk_write_bytes_per_second = usage.diskWriteBytesPerSecond,
+        logical_write_bytes_per_second = usage.logicalWriteBytesPerSecond,
+        instructions_per_second = usage.instructionsPerSecond,
+        cycles_per_second = usage.cyclesPerSecond,
+        energy_watts = usage.energyWatts,
+        faults_per_second = usage.faultsPerSecond,
+        copy_on_write_faults_per_second = usage.copyOnWriteFaultsPerSecond,
+        system_calls_per_second = usage.systemCallsPerSecond,
+        context_switches_per_second = usage.contextSwitchesPerSecond,
+        thread_count = usage.threadCount.toLong(),
+        running_thread_count = usage.runningThreadCount.toLong(),
+        billed_energy_per_second = usage.billedEnergyPerSecond,
+        battery_impact_score = usage.batteryImpactScore,
+    )
+}
+
+/** Singleton groups without a bundle are intentionally omitted from application history. */
+fun ApplicationsQueries.upsertApplication(application: ApplicationUsage): Long? {
+    val bundlePath = application.bundlePath ?: return null
+
+    insertApplication(
+        key = application.id,
+        name = application.name,
+        bundle_path = bundlePath,
+    )
+
+    return selectApplicationId(application.id).executeAsOne()
+}
+
+fun ApplicationsQueries.insertApplicationUsage(
+    sampleId: Long,
+    applicationId: Long,
+    usage: ApplicationUsage,
+) {
+    insertApplicationSample(
+        sample_id = sampleId,
+        application_id = applicationId,
+        root_pid = usage.rootPid.toLong(),
+        process_count = usage.processCount.toLong(),
+
+        cpu_percent = usage.cpuPercent,
+        user_cpu_percent = usage.userCpuPercent,
+        system_cpu_percent = usage.systemCpuPercent,
+
+        physical_footprint_bytes = usage.physicalFootprintBytes.toSqlLong(),
+        resident_bytes = usage.residentBytes.toSqlLong(),
+        wired_bytes = usage.wiredBytes.toSqlLong(),
+        lifetime_max_physical_footprint_bytes = usage.lifetimeMaxPhysicalFootprintBytes.toSqlLong(),
+        compressed_or_paged_out_bytes = usage.compressedOrPagedOutBytes.toSqlLong(),
+        compressed_attribution_process_count = usage.compressedAttributionProcessCount.toLong(),
+
+        wakeups_per_second = usage.wakeupsPerSecond,
+        page_ins_per_second = usage.pageInsPerSecond,
+        disk_read_bytes_per_second = usage.diskReadBytesPerSecond,
+        disk_write_bytes_per_second = usage.diskWriteBytesPerSecond,
+        logical_write_bytes_per_second = usage.logicalWriteBytesPerSecond,
+        instructions_per_second = usage.instructionsPerSecond,
+        cycles_per_second = usage.cyclesPerSecond,
+        energy_watts = usage.energyWatts,
+        faults_per_second = usage.faultsPerSecond,
+        copy_on_write_faults_per_second = usage.copyOnWriteFaultsPerSecond,
+        system_calls_per_second = usage.systemCallsPerSecond,
+        context_switches_per_second = usage.contextSwitchesPerSecond,
+        thread_count = usage.threadCount.toLong(),
+        running_thread_count = usage.runningThreadCount.toLong(),
+        billed_energy_per_second = usage.billedEnergyPerSecond,
+        battery_impact_score = usage.batteryImpactScore,
+    )
+}
+
+/** Stores severity by name so enum reordering cannot reinterpret existing rows. */
+fun AlertsQueries.insertReportedAlert(sampleId: Long, alert: Alert) {
+    insertAlert(
+        sample_id = sampleId,
+        key = alert.key,
+        reported = true.toSqlLong(),
+        severity = alert.severity.name,
+        title = alert.title,
+        message = alert.message,
+    )
+}
+
+/** Suppressed rows preserve capped alerts that have no other historical representation. */
+fun AlertsQueries.insertSuppressedAlert(sampleId: Long, key: String) {
+    insertAlert(
+        sample_id = sampleId,
+        key = key,
+        reported = false.toSqlLong(),
+        severity = null,
+        title = null,
+        message = null,
+    )
+}
+
+fun AlertsQueries.insertDeliveryResult(sampleId: Long, result: DeliveryResult) {
+    insertAlertDelivery(
+        sample_id = sampleId,
+        channel = result.channel,
+        successful = result.successful.toSqlLong(),
+        detail = result.detail,
+    )
+}
+
+/** Replaces the firing-key snapshot wholesale; absence is how a cleared key is represented. */
+fun AlertsQueries.replaceAlertState(snapshot: AlertStateSnapshot) {
+    deleteAlertState()
+
+    for ((key, state) in snapshot.keys) {
+        insertAlertState(
+            key = key,
+            settled = state.settled.toSqlLong(),
+            failures = state.failures.toLong(),
+            retry_at_sample = state.retryAtSample,
+        )
+    }
+}
+
+fun AlertsQueries.selectAlertKeyStates(): Map<String, AlertKeyState> =
+    selectAlertState().executeAsList().associate { row ->
+        row.key to AlertKeyState(
+            settled = row.settled != 0L,
+            failures = row.failures.toInt(),
+            retryAtSample = row.retry_at_sample,
+        )
+    }
+
+private fun Boolean.toSqlLong(): Long = if (this) 1L else 0L

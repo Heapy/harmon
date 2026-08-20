@@ -1,5 +1,5 @@
-import dev.yoda.harmon.model.NotificationPayload
-import dev.yoda.harmon.notify.NotificationDispatcher
+import io.heapy.harmon.model.NotificationPayload
+import io.heapy.harmon.notify.NotificationDispatcher
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFalse

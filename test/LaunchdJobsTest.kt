@@ -1,8 +1,13 @@
-import dev.yoda.harmon.setup.AGENT_LABEL
-import dev.yoda.harmon.setup.AgentLaunchdPaths
-import dev.yoda.harmon.setup.COLLECTOR_LABEL
-import dev.yoda.harmon.setup.CollectorLaunchdSettings
-import dev.yoda.harmon.setup.LaunchdJobs
+import io.heapy.harmon.setup.AGENT_LABEL
+import io.heapy.harmon.setup.AgentLaunchdPaths
+import io.heapy.harmon.setup.COLLECTOR_LABEL
+import io.heapy.harmon.setup.CollectorLaunchdSettings
+import io.heapy.harmon.setup.LEGACY_AGENT_LABEL
+import io.heapy.harmon.setup.LaunchdJobs
+import io.heapy.harmon.setup.PREVIOUS_AGENT_LABEL
+import io.heapy.harmon.setup.PREVIOUS_COLLECTOR_LABEL
+import io.heapy.harmon.setup.SystemSetupPaths
+import io.heapy.harmon.setup.UserSetupPaths
 import kotlinx.cinterop.ExperimentalForeignApi
 import kotlinx.cinterop.cstr
 import kotlinx.cinterop.memScoped
@@ -19,6 +24,41 @@ import kotlin.test.assertTrue
 import kotlin.test.fail
 
 class LaunchdJobsTest {
+    @Test
+    fun migrationIdentifiersRemainTiedToTheirInstallGeneration() {
+        assertEquals("io.heapy.harmon.agent", AGENT_LABEL)
+        assertEquals("io.heapy.harmon.collector", COLLECTOR_LABEL)
+        assertEquals("dev.yoda.harmon.agent", PREVIOUS_AGENT_LABEL)
+        assertEquals("dev.yoda.harmon.collector", PREVIOUS_COLLECTOR_LABEL)
+        assertEquals("dev.yoda.harmon", LEGACY_AGENT_LABEL)
+
+        val userPaths = UserSetupPaths.forHome("/Users/tester")
+        assertEquals(
+            "/Users/tester/Library/LaunchAgents/io.heapy.harmon.agent.plist",
+            userPaths.agentPlist,
+        )
+        assertEquals(
+            "/Users/tester/Library/LaunchAgents/dev.yoda.harmon.agent.plist",
+            userPaths.previousAgentPlist,
+        )
+        assertEquals(
+            "/Users/tester/Library/LaunchAgents/dev.yoda.harmon.plist",
+            userPaths.legacyAgentPlist,
+        )
+        assertEquals(
+            "/Library/LaunchDaemons/io.heapy.harmon.collector.plist",
+            SystemSetupPaths.collectorPlist,
+        )
+        assertEquals(
+            "/Library/LaunchDaemons/dev.yoda.harmon.collector.plist",
+            SystemSetupPaths.previousCollectorPlist,
+        )
+        assertEquals(
+            "/Library/PrivilegedHelperTools/dev.yoda.harmon",
+            SystemSetupPaths.legacyCollectorBinary,
+        )
+    }
+
     @Test
     fun agentJobPreservesTheLaunchAgentContract() {
         val job = LaunchdJobs.agent(

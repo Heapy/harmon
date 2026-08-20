@@ -1,8 +1,8 @@
-import dev.yoda.harmon.setup.MacOsVersion
-import dev.yoda.harmon.setup.SetupException
-import dev.yoda.harmon.setup.SetupValidation
-import dev.yoda.harmon.setup.StopValidation
-import dev.yoda.harmon.setup.UninstallValidation
+import io.heapy.harmon.setup.MacOsVersion
+import io.heapy.harmon.setup.SetupException
+import io.heapy.harmon.setup.SetupValidation
+import io.heapy.harmon.setup.StopValidation
+import io.heapy.harmon.setup.UninstallValidation
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFailsWith

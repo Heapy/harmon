@@ -1,8 +1,8 @@
-import dev.yoda.harmon.ipc.AcceptDecision
-import dev.yoda.harmon.ipc.CONSECUTIVE_ACCEPT_FAILURE_LIMIT
-import dev.yoda.harmon.ipc.UNAUTHORIZED_CLIENT
-import dev.yoda.harmon.ipc.acceptDecision
-import dev.yoda.harmon.ipc.consecutiveFailuresAfter
+import io.heapy.harmon.ipc.AcceptDecision
+import io.heapy.harmon.ipc.CONSECUTIVE_ACCEPT_FAILURE_LIMIT
+import io.heapy.harmon.ipc.UNAUTHORIZED_CLIENT
+import io.heapy.harmon.ipc.acceptDecision
+import io.heapy.harmon.ipc.consecutiveFailuresAfter
 import kotlin.test.Test
 import kotlin.test.assertEquals
 

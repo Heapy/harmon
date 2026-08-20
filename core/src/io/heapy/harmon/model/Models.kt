@@ -1,0 +1,370 @@
+package io.heapy.harmon.model
+
+import kotlinx.serialization.KSerializer
+import kotlinx.serialization.Serializable
+import kotlinx.serialization.descriptors.PrimitiveKind
+import kotlinx.serialization.descriptors.PrimitiveSerialDescriptor
+import kotlinx.serialization.descriptors.SerialDescriptor
+import kotlinx.serialization.encoding.Decoder
+import kotlinx.serialization.encoding.Encoder
+import kotlin.time.Instant
+
+@Serializable
+data class ProcessIdentity(
+    val pid: Int,
+    val startedAt: ULong,
+)
+
+@Serializable
+data class RawProcessSample(
+    val identity: ProcessIdentity,
+    val parentPid: Int,
+    val uid: UInt?,
+    val name: String,
+    val executablePath: String?,
+    val userTimeNs: ULong,
+    val systemTimeNs: ULong,
+    val packageIdleWakeups: ULong,
+    val interruptWakeups: ULong,
+    val pageIns: ULong,
+    val diskBytesRead: ULong,
+    val diskBytesWritten: ULong,
+    val logicalWritesBytes: ULong,
+    val instructions: ULong,
+    val cycles: ULong,
+    val energyNanojoules: ULong,
+    val wiredBytes: ULong,
+    val residentBytes: ULong,
+    val physicalFootprintBytes: ULong,
+    val lifetimeMaxPhysicalFootprintBytes: ULong,
+    val compressedOrPagedOutBytes: ULong?,
+    val virtualMemoryRegionCount: Int?,
+    val faults: ULong,
+    val copyOnWriteFaults: ULong,
+    val machSystemCalls: ULong,
+    val unixSystemCalls: ULong,
+    val contextSwitches: ULong,
+    val threadCount: Int,
+    val runningThreadCount: Int,
+    val billedEnergy: ULong,
+)
+
+@Serializable
+enum class ProcessCollectionIssueReason {
+    PERMISSION_DENIED,
+    EXITED_DURING_COLLECTION,
+    RESOURCE_USAGE_UNAVAILABLE,
+    CAPACITY_LIMIT,
+}
+
+@Serializable
+data class ProcessCollectionIssue(
+    val pid: Int,
+    val parentPid: Int?,
+    val uid: UInt?,
+    val name: String?,
+    val executablePath: String?,
+    val reason: ProcessCollectionIssueReason,
+    val errorCode: Int?,
+)
+
+@Serializable
+data class SwapUsage(
+    val totalBytes: ULong,
+    val availableBytes: ULong,
+    val usedBytes: ULong,
+    val encrypted: Boolean,
+)
+
+@Serializable
+data class PowerState(
+    val batteryAvailable: Boolean,
+    val onBattery: Boolean,
+    val charging: Boolean,
+    val percentage: Int?,
+    val minutesRemaining: Int?,
+)
+
+@Serializable
+data class ProcessorCounters(
+    val userTicks: ULong,
+    val systemTicks: ULong,
+    val idleTicks: ULong,
+    val niceTicks: ULong,
+)
+
+@Serializable
+data class LoadAverages(
+    val oneMinute: Double,
+    val fiveMinutes: Double,
+    val fifteenMinutes: Double,
+)
+
+@Serializable
+data class VirtualMemoryCounters(
+    val pageSizeBytes: ULong,
+    val freeBytes: ULong,
+    val activeBytes: ULong,
+    val inactiveBytes: ULong,
+    val wiredBytes: ULong,
+    val purgeableBytes: ULong,
+    val compressedBytes: ULong,
+    val uncompressedBytesInCompressor: ULong,
+    val swapBackedUncompressedBytes: ULong,
+    val pageIns: ULong,
+    val pageOuts: ULong,
+    val faults: ULong,
+    val copyOnWriteFaults: ULong,
+    val compressions: ULong,
+    val decompressions: ULong,
+    val swapIns: ULong,
+    val swapOuts: ULong,
+)
+
+@Serializable
+data class StorageCounters(
+    val available: Boolean,
+    val deviceCount: Int,
+    val bytesRead: ULong,
+    val bytesWritten: ULong,
+    val readOperations: ULong,
+    val writeOperations: ULong,
+    val readTimeNs: ULong,
+    val writeTimeNs: ULong,
+    val rootFileSystemTotalBytes: ULong,
+    val rootFileSystemAvailableBytes: ULong,
+)
+
+@Serializable
+data class RawSystemSnapshot(
+    @Serializable(with = InstantAsStringSerializer::class)
+    val capturedAt: Instant,
+    val monotonicTimeNs: ULong,
+    val physicalMemoryBytes: ULong,
+    val swap: SwapUsage,
+    val power: PowerState,
+    val processor: ProcessorCounters,
+    val loadAverages: LoadAverages,
+    val virtualMemory: VirtualMemoryCounters,
+    val storage: StorageCounters,
+    val totalProcessCount: Int,
+    val inaccessibleProcessCount: Int,
+    val compressedAttributionProcessCount: Int,
+    val compressedAttributionFailureCount: Int,
+    val processes: List<RawProcessSample>,
+    val processIssues: List<ProcessCollectionIssue>,
+)
+
+object InstantAsStringSerializer : KSerializer<Instant> {
+    override val descriptor: SerialDescriptor =
+        PrimitiveSerialDescriptor(
+            "io.heapy.harmon.model.InstantAsString",
+            PrimitiveKind.STRING,
+        )
+
+    override fun serialize(encoder: Encoder, value: Instant) {
+        encoder.encodeString(value.toString())
+    }
+
+    override fun deserialize(decoder: Decoder): Instant =
+        Instant.parse(decoder.decodeString())
+}
+
+/** launchd, which adopts Darwin processes whose parent exits. */
+const val INIT_PID = 1
+
+/** The previous parent; its name must come from the previous snapshot because it may now be gone. */
+data class ReparentedFrom(
+    val pid: Int,
+    val name: String?,
+)
+
+data class ProcessUsage(
+    val identity: ProcessIdentity,
+    val parentPid: Int,
+    val uid: UInt?,
+    val name: String,
+    val executablePath: String?,
+    val cpuPercent: Double,
+    val userCpuPercent: Double,
+    val systemCpuPercent: Double,
+    val physicalFootprintBytes: ULong,
+    val residentBytes: ULong,
+    val wiredBytes: ULong,
+    val lifetimeMaxPhysicalFootprintBytes: ULong,
+    val compressedOrPagedOutBytes: ULong?,
+    val virtualMemoryRegionCount: Int?,
+    val wakeupsPerSecond: Double,
+    val pageInsPerSecond: Double,
+    val diskReadBytesPerSecond: Double,
+    val diskWriteBytesPerSecond: Double,
+    val logicalWriteBytesPerSecond: Double,
+    val instructionsPerSecond: Double,
+    val cyclesPerSecond: Double,
+    val energyWatts: Double,
+    val faultsPerSecond: Double,
+    val copyOnWriteFaultsPerSecond: Double,
+    val systemCallsPerSecond: Double,
+    val contextSwitchesPerSecond: Double,
+    val threadCount: Int,
+    val runningThreadCount: Int,
+    val billedEnergyPerSecond: Double,
+    val batteryImpactScore: Double,
+    /**
+     * Previous parent when it changed between snapshots. Consumers decide whether a transition to
+     * pid 1 is orphaning; a process first seen under pid 1 has no transition.
+     */
+    val reparentedFrom: ReparentedFrom? = null,
+)
+
+data class ApplicationUsage(
+    val id: String,
+    val name: String,
+    val bundlePath: String?,
+    val rootPid: Int,
+    val processIds: List<Int>,
+    val cpuPercent: Double,
+    val userCpuPercent: Double,
+    val systemCpuPercent: Double,
+    val physicalFootprintBytes: ULong,
+    val residentBytes: ULong,
+    val wiredBytes: ULong,
+    val lifetimeMaxPhysicalFootprintBytes: ULong,
+    val compressedOrPagedOutBytes: ULong,
+    val compressedAttributionProcessCount: Int,
+    val wakeupsPerSecond: Double,
+    val pageInsPerSecond: Double,
+    val diskReadBytesPerSecond: Double,
+    val diskWriteBytesPerSecond: Double,
+    val logicalWriteBytesPerSecond: Double,
+    val instructionsPerSecond: Double,
+    val cyclesPerSecond: Double,
+    val energyWatts: Double,
+    val faultsPerSecond: Double,
+    val copyOnWriteFaultsPerSecond: Double,
+    val systemCallsPerSecond: Double,
+    val contextSwitchesPerSecond: Double,
+    val threadCount: Int,
+    val runningThreadCount: Int,
+    val billedEnergyPerSecond: Double,
+    val batteryImpactScore: Double,
+) {
+    val processCount: Int
+        get() = processIds.size
+}
+
+data class ProcessorUsage(
+    val totalPercent: Double,
+    val userPercent: Double,
+    val systemPercent: Double,
+    val nicePercent: Double,
+    val idlePercent: Double,
+)
+
+data class VirtualMemoryUsage(
+    val freeBytes: ULong,
+    val activeBytes: ULong,
+    val inactiveBytes: ULong,
+    val wiredBytes: ULong,
+    val purgeableBytes: ULong,
+    val compressedBytes: ULong,
+    val uncompressedBytesInCompressor: ULong,
+    val swapBackedUncompressedBytes: ULong,
+    val pageInBytesPerSecond: Double,
+    val pageOutBytesPerSecond: Double,
+    val faultRate: Double,
+    val copyOnWriteFaultRate: Double,
+    val compressionBytesPerSecond: Double,
+    val decompressionBytesPerSecond: Double,
+    val swapInBytesPerSecond: Double,
+    val swapOutBytesPerSecond: Double,
+)
+
+data class StorageUsage(
+    val available: Boolean,
+    val deviceCount: Int,
+    val readBytesPerSecond: Double,
+    val writeBytesPerSecond: Double,
+    val readOperationsPerSecond: Double,
+    val writeOperationsPerSecond: Double,
+    val readServiceTimePercent: Double,
+    val writeServiceTimePercent: Double,
+    val rootFileSystemTotalBytes: ULong,
+    val rootFileSystemAvailableBytes: ULong,
+)
+
+data class SystemUsage(
+    val capturedAt: Instant,
+    val elapsedSeconds: Double,
+    val physicalMemoryBytes: ULong,
+    val swap: SwapUsage,
+    val power: PowerState,
+    val processor: ProcessorUsage,
+    val loadAverages: LoadAverages,
+    val virtualMemory: VirtualMemoryUsage,
+    val storage: StorageUsage,
+    val totalProcessCount: Int,
+    val inaccessibleProcessCount: Int,
+    val compressedAttributionProcessCount: Int,
+    val compressedAttributionFailureCount: Int,
+    val processes: List<ProcessUsage>,
+    val applications: List<ApplicationUsage>,
+    val processIssues: List<ProcessCollectionIssue>,
+) {
+    /**
+     * True when any process produced kernel energy data. An all-zero sample is ambiguous because
+     * the V4 fallback and an idle/new process both report zero.
+     */
+    val energyAccounted: Boolean
+        get() = processes.any { it.energyWatts > 0.0 }
+}
+
+enum class Severity {
+    INFO,
+    WARNING,
+    CRITICAL,
+}
+
+/** Lets a consumer label an alert by resource without parsing [Alert.key]. */
+enum class AlertCategory {
+    CPU,
+    MEMORY,
+    DISK,
+    ENERGY,
+    SWAP,
+    BATTERY,
+    ORPHAN,
+}
+
+/** [pids] names the processes the alert is about, and is empty for machine-wide rules. */
+data class Alert(
+    val key: String,
+    val category: AlertCategory,
+    val severity: Severity,
+    val title: String,
+    val message: String,
+    val pids: List<Int> = emptyList(),
+)
+
+/** [suppressedAlertKeys] preserves capped matches that would otherwise look cleared to consumers. */
+data class MonitoringReport(
+    val usage: SystemUsage,
+    val alerts: List<Alert>,
+    val topProcessCount: Int,
+    val suppressedAlertKeys: List<String> = emptyList(),
+)
+
+data class NotificationPayload(
+    val identifier: String,
+    val title: String,
+    val subtitle: String,
+    val text: String,
+    val html: String,
+    val json: String,
+)
+
+data class DeliveryResult(
+    val channel: String,
+    val successful: Boolean,
+    val detail: String,
+)

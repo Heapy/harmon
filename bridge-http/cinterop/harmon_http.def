@@ -1,4 +1,4 @@
-package = dev.yoda.harmon.nativebridge.http
+package = io.heapy.harmon.nativebridge.http
 headerFilter = harmon_http.h
 linkerOpts = -lcurl
 

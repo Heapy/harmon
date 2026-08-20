@@ -1,7 +1,7 @@
-import dev.yoda.harmon.config.NotificationConfig
-import dev.yoda.harmon.notify.NotificationDispatcher
-import dev.yoda.harmon.notify.SYSTEM_CHANNEL_BEST_EFFORT
-import dev.yoda.harmon.notify.from
+import io.heapy.harmon.config.NotificationConfig
+import io.heapy.harmon.notify.NotificationDispatcher
+import io.heapy.harmon.notify.SYSTEM_CHANNEL_BEST_EFFORT
+import io.heapy.harmon.notify.from
 import kotlin.test.Test
 import kotlin.test.assertFalse
 import kotlin.test.assertTrue

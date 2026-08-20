@@ -1,4 +1,4 @@
-import dev.yoda.harmon.runtime.LiveSamplingLease
+import io.heapy.harmon.runtime.LiveSamplingLease
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFalse

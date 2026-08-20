@@ -1,6 +1,6 @@
-import dev.yoda.harmon.analysis.AlertState
-import dev.yoda.harmon.analysis.DELIVERY_RETRY_THRESHOLD
-import dev.yoda.harmon.model.MonitoringReport
+import io.heapy.harmon.analysis.AlertState
+import io.heapy.harmon.analysis.DELIVERY_RETRY_THRESHOLD
+import io.heapy.harmon.model.MonitoringReport
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertNotNull

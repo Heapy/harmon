@@ -15,7 +15,7 @@
     <string>Harmon</string>
 
     <key>CFBundleIdentifier</key>
-    <string>dev.yoda.harmon</string>
+    <string>io.heapy.harmon</string>
 
     <key>CFBundleInfoDictionaryVersion</key>
     <string>6.0</string>

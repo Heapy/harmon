@@ -1,8 +1,8 @@
-import dev.yoda.harmon.history.insertDeliveryResult
-import dev.yoda.harmon.history.insertReportedAlert
-import dev.yoda.harmon.history.insertSuppressedAlert
-import dev.yoda.harmon.model.DeliveryResult
-import dev.yoda.harmon.model.Severity
+import io.heapy.harmon.history.insertDeliveryResult
+import io.heapy.harmon.history.insertReportedAlert
+import io.heapy.harmon.history.insertSuppressedAlert
+import io.heapy.harmon.model.DeliveryResult
+import io.heapy.harmon.model.Severity
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertNotNull

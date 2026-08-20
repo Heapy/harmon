@@ -1,0 +1,521 @@
+package io.heapy.harmon.config
+
+import io.heapy.harmon.util.printError
+import kotlinx.cinterop.ByteVar
+import kotlinx.cinterop.ExperimentalForeignApi
+import kotlinx.cinterop.allocArray
+import kotlinx.cinterop.memScoped
+import kotlinx.cinterop.toKString
+import platform.posix.F_OK
+import platform.posix.access
+import platform.posix.fclose
+import platform.posix.fgets
+import platform.posix.fopen
+import platform.posix.getenv
+
+/** Bundles that stop unrelated descendant commands from being charged to their terminal. */
+val DEFAULT_TERMINAL_APPLICATIONS: Set<String> = setOf(
+    "terminal",
+    "iterm2",
+    "iterm",
+    "alacritty",
+    "wezterm",
+    "kitty",
+    "ghostty",
+    "warp",
+    "hyper",
+    "tabby",
+    "agterm",
+)
+
+/** Shared bound for configuration, CLI parsing, and one-shot sampling. */
+val SAMPLE_SECONDS_RANGE: LongRange = 1L..300L
+
+data class AlertThresholds(
+    val applicationCpuPercent: Double? = 150.0,
+    val applicationMemoryMiB: Long? = 2_048,
+    val applicationDiskWriteMiBPerSecond: Double? = 50.0,
+    val swapUsedMiB: Long? = 1_024,
+    val swapOutMiBPerSecond: Double? = 25.0,
+    val applicationBatteryImpactScore: Double? = 100.0,
+    /** Used only when the kernel energy counter is available; no fallback occurs when disabled. */
+    val applicationPowerWatts: Double? = 1.5,
+    val batteryLowPercent: Int? = 20,
+)
+
+data class NotificationConfig(
+    val systemEnabled: Boolean = true,
+    val webhookUrl: String? = null,
+    val webhookBearerToken: String? = null,
+    val telegramBotToken: String? = null,
+    val telegramChatId: String? = null,
+    val notifyEverySample: Boolean = false,
+    val timeoutSeconds: Long = 15,
+)
+
+val WEB_SAMPLE_SECONDS_RANGE: LongRange = 1L..10L
+
+data class HarmonConfig(
+    val collectorSocket: String = "/var/run/harmon.collector.sock",
+    val intervalSeconds: Long = 300,
+    val onceSampleSeconds: Long = 2,
+    val topProcessCount: Int = 8,
+    val maxAlertsPerCategory: Int = 3,
+    val orphanAlerts: Boolean = true,
+    /** Null disables the database; a non-null value opens it and applies retention. */
+    val historyRetentionDays: Long? = 7,
+    val terminalApplications: Set<String> = DEFAULT_TERMINAL_APPLICATIONS,
+    val thresholds: AlertThresholds = AlertThresholds(),
+    val notifications: NotificationConfig = NotificationConfig(),
+    val webUiEnabled: Boolean = true,
+    val webSampleSeconds: Long = 1,
+) {
+    fun redactedDescription(): String = buildString {
+        appendLine("collectorSocket=$collectorSocket")
+        appendLine("intervalSeconds=$intervalSeconds")
+        appendLine("onceSampleSeconds=$onceSampleSeconds")
+        appendLine("topProcessCount=$topProcessCount")
+        appendLine("maxAlertsPerCategory=$maxAlertsPerCategory")
+        appendLine("orphanAlerts=$orphanAlerts")
+        appendLine("historyRetentionDays=${historyRetentionDays ?: 0}")
+        appendLine("webUiEnabled=$webUiEnabled")
+        appendLine("webSampleSeconds=$webSampleSeconds")
+        appendLine("terminalApplications=${terminalApplications.joinToString(",")}")
+        appendLine("applicationCpuAlertPercent=${thresholds.applicationCpuPercent ?: 0}")
+        appendLine("applicationMemoryAlertMiB=${thresholds.applicationMemoryMiB ?: 0}")
+        appendLine(
+            "applicationDiskWriteAlertMiBPerSecond=" +
+                (thresholds.applicationDiskWriteMiBPerSecond ?: 0),
+        )
+        appendLine("swapAlertMiB=${thresholds.swapUsedMiB ?: 0}")
+        appendLine(
+            "swapOutAlertMiBPerSecond=${thresholds.swapOutMiBPerSecond ?: 0}",
+        )
+        appendLine(
+            "applicationBatteryImpactAlertScore=" +
+                (thresholds.applicationBatteryImpactScore ?: 0),
+        )
+        appendLine("applicationPowerAlertWatts=${thresholds.applicationPowerWatts ?: 0}")
+        appendLine("batteryLowAlertPercent=${thresholds.batteryLowPercent ?: 0}")
+        appendLine("systemNotifications=${notifications.systemEnabled}")
+        appendLine("notifyEverySample=${notifications.notifyEverySample}")
+        appendLine("httpTimeoutSeconds=${notifications.timeoutSeconds}")
+        appendLine(
+            "webhookUrl=" +
+                if (notifications.webhookUrl == null) "" else "<configured>",
+        )
+        appendLine(
+            "webhookBearerToken=" +
+                if (notifications.webhookBearerToken == null) "" else "<redacted>",
+        )
+        appendLine(
+            "telegramBotToken=" +
+                if (notifications.telegramBotToken == null) "" else "<redacted>",
+        )
+        append(
+            "telegramChatId=" +
+                if (notifications.telegramChatId == null) "" else "<configured>",
+        )
+    }
+}
+
+class ConfigException(message: String) : IllegalArgumentException(message)
+
+object ConfigLoader {
+    private const val LINE_BUFFER_SIZE = 8_192
+
+    /** 1 TiB keeps byte conversion inside realistic and unsigned bounds. */
+    private const val MAX_THRESHOLD_MIB = 1_048_576L
+
+    private val legacyKeyAliases = mapOf(
+        "processCpuAlertPercent" to "applicationCpuAlertPercent",
+        "processMemoryAlertMiB" to "applicationMemoryAlertMiB",
+        "batteryImpactAlertScore" to "applicationBatteryImpactAlertScore",
+    )
+
+    /** Accepted and ignored so legacy configuration does not prevent agent startup. */
+    private const val DEPRECATED_COOLDOWN_KEY = "alertCooldownSeconds"
+
+    /** Public so ExampleConfigTest can keep the shipped example exhaustive. */
+    val configurableKeys = setOf(
+        "intervalSeconds",
+        "collectorSocket",
+        "onceSampleSeconds",
+        "topProcessCount",
+        "maxAlertsPerCategory",
+        "orphanAlerts",
+        "historyRetentionDays",
+        "webUiEnabled",
+        "webSampleSeconds",
+        "terminalApplications",
+        "applicationCpuAlertPercent",
+        "applicationMemoryAlertMiB",
+        "applicationDiskWriteAlertMiBPerSecond",
+        "swapAlertMiB",
+        "swapOutAlertMiBPerSecond",
+        "applicationBatteryImpactAlertScore",
+        "applicationPowerAlertWatts",
+        "batteryLowAlertPercent",
+        "systemNotifications",
+        "notifyEverySample",
+        "httpTimeoutSeconds",
+        "webhookUrl",
+        "webhookBearerToken",
+        "telegramBotToken",
+        "telegramChatId",
+    )
+
+    private val knownKeys = configurableKeys + legacyKeyAliases.keys
+
+    @OptIn(ExperimentalForeignApi::class)
+    fun defaultPath(): String {
+        val home = getenv("HOME")?.toKString()
+            ?: throw ConfigException("HOME is not set; pass --config explicitly")
+        return "$home/.config/harmon/config"
+    }
+
+    @OptIn(ExperimentalForeignApi::class)
+    fun exists(path: String): Boolean = access(path, F_OK) == 0
+
+    fun parse(
+        lines: Sequence<String>,
+        environment: Map<String, String> = environment(),
+        warn: (String) -> Unit = ::printError,
+    ): HarmonConfig {
+        val values = linkedMapOf<String, String>()
+        lines.forEachIndexed { index, rawLine ->
+            val line = rawLine.trim()
+            if (line.isEmpty() || line.startsWith("#")) {
+                return@forEachIndexed
+            }
+
+            val separator = line.indexOf('=')
+            if (separator <= 0) {
+                throw ConfigException("Invalid config line ${index + 1}: expected key=value")
+            }
+
+            val key = line.substring(0, separator).trim()
+            val value = line.substring(separator + 1).trim()
+            if (key == DEPRECATED_COOLDOWN_KEY) {
+                warn(
+                    "Ignoring deprecated config key '$key' on line ${index + 1}: alerts now " +
+                        "fire when a threshold is crossed, so repeats are not timed",
+                )
+                return@forEachIndexed
+            }
+            if (key !in knownKeys) {
+                throw ConfigException("Unknown config key '$key' on line ${index + 1}")
+            }
+            values[legacyKeyAliases[key] ?: key] = value
+        }
+
+        environment["HARMON_WEBHOOK_URL"]?.let { values["webhookUrl"] = it }
+        environment["HARMON_WEBHOOK_BEARER_TOKEN"]?.let {
+            values["webhookBearerToken"] = it
+        }
+        environment["HARMON_TELEGRAM_BOT_TOKEN"]?.let {
+            values["telegramBotToken"] = it
+        }
+        environment["HARMON_TELEGRAM_CHAT_ID"]?.let {
+            values["telegramChatId"] = it
+        }
+        environment["HARMON_COLLECTOR_SOCKET"]?.let {
+            values["collectorSocket"] = it
+        }
+
+        val defaults = HarmonConfig()
+        val notificationDefaults = defaults.notifications
+        val thresholdDefaults = defaults.thresholds
+
+        val config = HarmonConfig(
+            collectorSocket = values["collectorSocket"] ?: defaults.collectorSocket,
+            intervalSeconds = values.positiveLong(
+                "intervalSeconds",
+                defaults.intervalSeconds,
+            ),
+            onceSampleSeconds = values.positiveLong(
+                "onceSampleSeconds",
+                defaults.onceSampleSeconds,
+            ),
+            topProcessCount = values.positiveInt(
+                "topProcessCount",
+                defaults.topProcessCount,
+            ),
+            maxAlertsPerCategory = values.positiveInt(
+                "maxAlertsPerCategory",
+                defaults.maxAlertsPerCategory,
+            ),
+            orphanAlerts = values.boolean(
+                "orphanAlerts",
+                defaults.orphanAlerts,
+            ),
+            historyRetentionDays = values.optionalPositiveLong(
+                "historyRetentionDays",
+                defaults.historyRetentionDays,
+            ),
+            terminalApplications = values.lowercaseNameSet(
+                "terminalApplications",
+                defaults.terminalApplications,
+            ),
+            thresholds = AlertThresholds(
+                applicationCpuPercent = values.optionalPositiveDouble(
+                    "applicationCpuAlertPercent",
+                    thresholdDefaults.applicationCpuPercent,
+                ),
+                applicationMemoryMiB = values.optionalPositiveLong(
+                    "applicationMemoryAlertMiB",
+                    thresholdDefaults.applicationMemoryMiB,
+                ),
+                applicationDiskWriteMiBPerSecond = values.optionalPositiveDouble(
+                    "applicationDiskWriteAlertMiBPerSecond",
+                    thresholdDefaults.applicationDiskWriteMiBPerSecond,
+                ),
+                swapUsedMiB = values.optionalPositiveLong(
+                    "swapAlertMiB",
+                    thresholdDefaults.swapUsedMiB,
+                ),
+                swapOutMiBPerSecond = values.optionalPositiveDouble(
+                    "swapOutAlertMiBPerSecond",
+                    thresholdDefaults.swapOutMiBPerSecond,
+                ),
+                applicationBatteryImpactScore = values.optionalPositiveDouble(
+                    "applicationBatteryImpactAlertScore",
+                    thresholdDefaults.applicationBatteryImpactScore,
+                ),
+                applicationPowerWatts = values.optionalPositiveDouble(
+                    "applicationPowerAlertWatts",
+                    thresholdDefaults.applicationPowerWatts,
+                ),
+                batteryLowPercent = values.optionalPercentage(
+                    "batteryLowAlertPercent",
+                    thresholdDefaults.batteryLowPercent,
+                ),
+            ),
+            notifications = NotificationConfig(
+                systemEnabled = values.boolean(
+                    "systemNotifications",
+                    notificationDefaults.systemEnabled,
+                ),
+                webhookUrl = values.nonBlankOrNull("webhookUrl"),
+                webhookBearerToken = values.nonBlankOrNull("webhookBearerToken"),
+                telegramBotToken = values.nonBlankOrNull("telegramBotToken"),
+                telegramChatId = values.nonBlankOrNull("telegramChatId"),
+                notifyEverySample = values.boolean(
+                    "notifyEverySample",
+                    notificationDefaults.notifyEverySample,
+                ),
+                timeoutSeconds = values.positiveLong(
+                    "httpTimeoutSeconds",
+                    notificationDefaults.timeoutSeconds,
+                ),
+            ),
+            webUiEnabled = values.boolean("webUiEnabled", defaults.webUiEnabled),
+            webSampleSeconds = values.positiveLong(
+                "webSampleSeconds",
+                defaults.webSampleSeconds,
+            ),
+        )
+        validate(config)
+        return config
+    }
+
+    @OptIn(ExperimentalForeignApi::class)
+    fun load(path: String): HarmonConfig {
+        val file = fopen(path, "r")
+            ?: throw ConfigException("Cannot open config file: $path")
+        return try {
+            memScoped {
+                val buffer = allocArray<ByteVar>(LINE_BUFFER_SIZE)
+                val lines = buildList {
+                    while (fgets(buffer, LINE_BUFFER_SIZE, file) != null) {
+                        add(buffer.toKString())
+                    }
+                }
+                parse(lines.asSequence())
+            }
+        } finally {
+            fclose(file)
+        }
+    }
+
+    fun loadOrDefaults(path: String): HarmonConfig =
+        if (exists(path)) load(path) else parse(emptySequence())
+
+    private fun validate(config: HarmonConfig) {
+        if (
+            !config.collectorSocket.startsWith('/') ||
+            config.collectorSocket.length > 100 ||
+            config.collectorSocket.any { it == '\u0000' }
+        ) {
+            throw ConfigException(
+                "collectorSocket must be an absolute Unix socket path up to 100 characters",
+            )
+        }
+        if (config.intervalSeconds !in 1..86_400) {
+            throw ConfigException("intervalSeconds must be between 1 and 86400")
+        }
+        if (config.onceSampleSeconds !in SAMPLE_SECONDS_RANGE) {
+            throw ConfigException(
+                "onceSampleSeconds must be between ${SAMPLE_SECONDS_RANGE.first} " +
+                    "and ${SAMPLE_SECONDS_RANGE.last}",
+            )
+        }
+        if (config.topProcessCount !in 1..100) {
+            throw ConfigException("topProcessCount must be between 1 and 100")
+        }
+        if (config.maxAlertsPerCategory !in 1..20) {
+            throw ConfigException("maxAlertsPerCategory must be between 1 and 20")
+        }
+        if (config.webSampleSeconds !in WEB_SAMPLE_SECONDS_RANGE) {
+            throw ConfigException(
+                "webSampleSeconds must be between ${WEB_SAMPLE_SECONDS_RANGE.first} " +
+                    "and ${WEB_SAMPLE_SECONDS_RANGE.last}",
+            )
+        }
+        // Bound typos that would silently turn pruning into unbounded retention.
+        config.historyRetentionDays?.let { days ->
+            if (days !in 1..3_650) {
+                throw ConfigException("historyRetentionDays must be between 0 and 3650")
+            }
+        }
+
+        val thresholds = config.thresholds
+        if ((thresholds.applicationMemoryMiB ?: 0) > MAX_THRESHOLD_MIB) {
+            throw ConfigException(
+                "applicationMemoryAlertMiB must not exceed $MAX_THRESHOLD_MIB",
+            )
+        }
+        if ((thresholds.swapUsedMiB ?: 0) > MAX_THRESHOLD_MIB) {
+            throw ConfigException("swapAlertMiB must not exceed $MAX_THRESHOLD_MIB")
+        }
+
+        val notifications = config.notifications
+        if (notifications.timeoutSeconds !in 1..300) {
+            throw ConfigException("httpTimeoutSeconds must be between 1 and 300")
+        }
+        if ((notifications.telegramBotToken == null) != (notifications.telegramChatId == null)) {
+            throw ConfigException(
+                "telegramBotToken and telegramChatId must be configured together",
+            )
+        }
+        notifications.webhookUrl?.let { url ->
+            if (!isAllowedWebhookUrl(url)) {
+                throw ConfigException(
+                    "webhookUrl must use HTTPS (HTTP is allowed only for 127.0.0.1)",
+                )
+            }
+        }
+        if (notifications.webhookBearerToken?.any { it == '\r' || it == '\n' } == true) {
+            throw ConfigException("webhookBearerToken must not contain newlines")
+        }
+    }
+
+    /**
+     * Bearer tokens may use plaintext only on 127.0.0.1. Host parsing starts after the last `@` so
+     * userinfo such as `127.0.0.1@evil.example` cannot masquerade as loopback.
+     */
+    private fun isAllowedWebhookUrl(url: String): Boolean {
+        if (url.any { it.isWhitespace() || it.code < 0x20 }) {
+            return false
+        }
+        val schemeSeparator = url.indexOf("://")
+        if (schemeSeparator <= 0) {
+            return false
+        }
+        val scheme = url.substring(0, schemeSeparator).lowercase()
+        val authority = url
+            .substring(schemeSeparator + 3)
+            .substringBefore('/')
+            .substringBefore('?')
+            .substringBefore('#')
+        if (authority.isBlank()) {
+            return false
+        }
+        if (scheme == "https") {
+            return true
+        }
+        val host = authority.substringAfterLast('@').substringBefore(':')
+        return scheme == "http" && host == "127.0.0.1"
+    }
+
+    @OptIn(ExperimentalForeignApi::class)
+    private fun environment(): Map<String, String> = listOf(
+        "HARMON_WEBHOOK_URL",
+        "HARMON_WEBHOOK_BEARER_TOKEN",
+        "HARMON_TELEGRAM_BOT_TOKEN",
+        "HARMON_TELEGRAM_CHAT_ID",
+        "HARMON_COLLECTOR_SOCKET",
+    ).mapNotNull { key ->
+        getenv(key)?.toKString()?.let { key to it }
+    }.toMap()
+}
+
+private fun Map<String, String>.positiveLong(key: String, default: Long): Long {
+    val raw = this[key] ?: return default
+    return raw.toLongOrNull()?.takeIf { it > 0 }
+        ?: throw ConfigException("$key must be a positive integer")
+}
+
+private fun Map<String, String>.positiveInt(key: String, default: Int): Int {
+    val raw = this[key] ?: return default
+    return raw.toIntOrNull()?.takeIf { it > 0 }
+        ?: throw ConfigException("$key must be a positive integer")
+}
+
+private fun Map<String, String>.optionalPositiveLong(key: String, default: Long?): Long? {
+    val raw = this[key] ?: return default
+    val value = raw.toLongOrNull()
+        ?: throw ConfigException("$key must be a non-negative integer")
+    return when {
+        value < 0 -> throw ConfigException("$key must be a non-negative integer")
+        value == 0L -> null
+        else -> value
+    }
+}
+
+private fun Map<String, String>.optionalPositiveDouble(
+    key: String,
+    default: Double?,
+): Double? {
+    val raw = this[key] ?: return default
+    val value = raw.toDoubleOrNull()?.takeIf { it.isFinite() }
+        ?: throw ConfigException("$key must be a non-negative number")
+    return when {
+        value < 0.0 -> throw ConfigException("$key must be a non-negative number")
+        value == 0.0 -> null
+        else -> value
+    }
+}
+
+private fun Map<String, String>.optionalPercentage(key: String, default: Int?): Int? {
+    val raw = this[key] ?: return default
+    val value = raw.toIntOrNull()
+        ?: throw ConfigException("$key must be an integer from 0 to 100")
+    return when (value) {
+        0 -> null
+        in 1..100 -> value
+        else -> throw ConfigException("$key must be an integer from 0 to 100")
+    }
+}
+
+private fun Map<String, String>.boolean(key: String, default: Boolean): Boolean =
+    when (val raw = this[key]?.lowercase()) {
+        null -> default
+        "true", "yes", "1", "on" -> true
+        "false", "no", "0", "off" -> false
+        else -> throw ConfigException("$key must be true or false, got '$raw'")
+    }
+
+/** An explicitly empty comma-separated value replaces the default with an empty set. */
+private fun Map<String, String>.lowercaseNameSet(
+    key: String,
+    default: Set<String>,
+): Set<String> {
+    val raw = this[key] ?: return default
+    return raw.split(',')
+        .map { it.trim().lowercase() }
+        .filterTo(mutableSetOf()) { it.isNotEmpty() }
+}
+
+private fun Map<String, String>.nonBlankOrNull(key: String): String? =
+    this[key]?.takeIf { it.isNotBlank() }

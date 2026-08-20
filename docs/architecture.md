@@ -80,25 +80,25 @@ unloaded, disabled, or non-running job produces exit 1 and the explicit action
 `Run 'harmon setup'`. Healthy versions, protocol, socket, and jobs produce exit
 0. Status never invokes sudo or mutates a service.
 
-`harmon stop` disables and unloads the user agent and root collector while
-leaving their plists, deployed binaries, configuration, logs, reports, and
-history in place. The login-user phase touches launchd only through one sudo
-re-exec as `stop --system --uid N`, because root can reach the user's GUI domain
-as well as the system one; a declined password therefore leaves both services
-exactly as they were rather than half stopped. The root phase writes every
-disable before the first bootout, so an unexpected failure aborts while all
-three labels are still loaded — the persistent override is the part a later run
-cannot undo, and it prevents a re-bootstrap at the next login or boot rather
-than a respawn mid-transition. A domain or job launchd does not know is
-tolerated: neither can be loaded, so neither needs an override. Only a label
-whose plist is present is named at all, for the same reason in reverse: launchd
-keeps a row for every label it is told about and cannot delete one, so
+`harmon stop` disables and unloads the current or compatibility user agent and
+root collector while leaving their plists, deployed binaries, configuration,
+logs, reports, and history in place. The login-user phase touches launchd only
+through one sudo re-exec as `stop --system --uid N`, because root can reach the
+user's GUI domain as well as the system one; a declined password therefore
+leaves every service exactly as it was rather than half stopped. The root phase
+writes every applicable disable before the first bootout, so an unexpected
+failure aborts while every loaded job is still running — the persistent override
+is the part a later run cannot undo, and it prevents a re-bootstrap at the next
+login or boot rather than a respawn mid-transition. A domain or job launchd does
+not know is tolerated: neither can be loaded, so neither needs an override. Only
+a label whose plist is present is named at all, for the same reason in reverse:
+launchd keeps a row for every label it is told about and cannot delete one, so
 disabling a job that does not exist would leave a permanent row behind. That is
 why the root phase resolves the target home through `AccountDirectory`.
-`harmon setup` explicitly re-enables and starts both current jobs, and is
-therefore the restart path. Once the privileged phase returns, the user phase
-removes the ephemeral live UI endpoint, so `harmon ui` does not have to discover
-and clean a stale endpoint.
+`harmon setup` retires compatibility jobs, explicitly re-enables and starts both
+current jobs, and is therefore the restart path. Once the privileged phase
+returns, the user phase removes the ephemeral live UI endpoint, so `harmon ui`
+does not have to discover and clean a stale endpoint.
 
 The Homebrew formula is a distribution layer, not a service manager. A release
 archive contains exactly `bin/harmon`, `libexec/harmon-collector`, and the three
@@ -111,11 +111,12 @@ is known, then transferred to the separate tap repository. See
 [`docs/releasing.md`](releasing.md).
 
 `harmon uninstall` mirrors the privilege boundary and by default deletes no user
-data. The login-user process unloads both current and legacy LaunchAgents,
-removes their plists and the managed legacy `~/.local/bin/harmon` symlink, then
-makes one sudo re-exec for the system LaunchDaemon, current and legacy helpers,
-and socket. Each phase also clears the persistent disable override a `harmon
-stop` may have written for the labels it owns, and only when one is set, since
+data. The login-user process unloads the current, pre-rename, and source-installer
+LaunchAgents, removes their plists and the managed legacy `~/.local/bin/harmon`
+symlink, then makes one sudo re-exec for the current and pre-rename system
+LaunchDaemons, current and legacy helpers, and socket. Each phase also clears the
+persistent disable overrides that `harmon stop` may have written for the labels
+it owns, and only when one is set, since
 launchd keeps a row for every label it is told about and offers no way to delete
 one. It keeps `Harmon.app` until that re-exec returns because the command can
 itself be running from the old bundle; only then is the app removed. Config,

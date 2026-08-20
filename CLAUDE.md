@@ -38,7 +38,7 @@ collection limits, metric calculations, grouping, or alert semantics.
 
 Keep process snapshots, payloads, page rendering, and sampling policy in
 `core`; keep the loopback HTTP server and app-specific wiring under
-`src/dev/yoda/harmon/web`. `webuicheck` is the deterministic native fixture for
+`src/io/heapy/harmon/web`. `webuicheck` is the deterministic native fixture for
 the JVM Playwright suite in `webuitest`; build before running
 `./kotlin test -m webuitest`.
 

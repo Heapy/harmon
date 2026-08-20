@@ -1,9 +1,9 @@
-import dev.yoda.harmon.web.LiveUiEndpoint
-import dev.yoda.harmon.web.LiveHttpSocketKind
-import dev.yoda.harmon.web.configureLiveHttpSocket
-import dev.yoda.harmon.web.generateLiveUiToken
-import dev.yoda.harmon.web.liveUiWatchRequested
-import dev.yoda.harmon.web.secureEquals
+import io.heapy.harmon.web.LiveUiEndpoint
+import io.heapy.harmon.web.LiveHttpSocketKind
+import io.heapy.harmon.web.configureLiveHttpSocket
+import io.heapy.harmon.web.generateLiveUiToken
+import io.heapy.harmon.web.liveUiWatchRequested
+import io.heapy.harmon.web.secureEquals
 import kotlinx.cinterop.ExperimentalForeignApi
 import kotlinx.cinterop.IntVar
 import kotlinx.cinterop.alloc

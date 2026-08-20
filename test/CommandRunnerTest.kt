@@ -1,9 +1,9 @@
-import dev.yoda.harmon.setup.CommandExecutionException
-import dev.yoda.harmon.setup.CommandInvocation
-import dev.yoda.harmon.setup.CommandResult
-import dev.yoda.harmon.setup.CommandRunner
-import dev.yoda.harmon.setup.requireSuccess
-import dev.yoda.harmon.setup.run
+import io.heapy.harmon.setup.CommandExecutionException
+import io.heapy.harmon.setup.CommandInvocation
+import io.heapy.harmon.setup.CommandResult
+import io.heapy.harmon.setup.CommandRunner
+import io.heapy.harmon.setup.requireSuccess
+import io.heapy.harmon.setup.run
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFailsWith

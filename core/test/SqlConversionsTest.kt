@@ -1,4 +1,4 @@
-import dev.yoda.harmon.history.toSqlLong
+import io.heapy.harmon.history.toSqlLong
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertTrue

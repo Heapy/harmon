@@ -1,4 +1,4 @@
-package dev.yoda.harmon.webuitest
+package io.heapy.harmon.webuitest
 
 import com.microsoft.playwright.Page
 import com.microsoft.playwright.assertions.PlaywrightAssertions.assertThat

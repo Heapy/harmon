@@ -1,6 +1,6 @@
-import dev.yoda.harmon.history.insertApplicationUsage
-import dev.yoda.harmon.history.upsertApplication
-import dev.yoda.harmon.model.ApplicationUsage
+import io.heapy.harmon.history.insertApplicationUsage
+import io.heapy.harmon.history.upsertApplication
+import io.heapy.harmon.model.ApplicationUsage
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertNotEquals

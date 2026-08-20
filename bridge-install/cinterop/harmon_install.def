@@ -1,6 +1,6 @@
 headers = mach-o/dyld.h spawn.h sys/wait.h
 headerFilter = mach-o/dyld.h spawn.h sys/wait.h
-package = dev.yoda.harmon.nativebridge.install
+package = io.heapy.harmon.nativebridge.install
 ---
 #include <spawn.h>
 #include <stdlib.h>

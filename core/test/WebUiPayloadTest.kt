@@ -1,10 +1,10 @@
-import dev.yoda.harmon.model.MonitoringReport
-import dev.yoda.harmon.model.SwapUsage
-import dev.yoda.harmon.monitor.CollectionProfile
-import dev.yoda.harmon.report.WEB_UI_SCHEMA_VERSION
-import dev.yoda.harmon.report.WebUiPayloadFactory
-import dev.yoda.harmon.report.WebUiPayloadJson
-import dev.yoda.harmon.report.WebUiStatus
+import io.heapy.harmon.model.MonitoringReport
+import io.heapy.harmon.model.SwapUsage
+import io.heapy.harmon.monitor.CollectionProfile
+import io.heapy.harmon.report.WEB_UI_SCHEMA_VERSION
+import io.heapy.harmon.report.WebUiPayloadFactory
+import io.heapy.harmon.report.WebUiPayloadJson
+import io.heapy.harmon.report.WebUiStatus
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.double
 import kotlinx.serialization.json.jsonArray

@@ -1,10 +1,10 @@
-import dev.yoda.harmon.BuildInfo
-import dev.yoda.harmon.collector.CollectorCliException
-import dev.yoda.harmon.collector.CollectorCliParser
-import dev.yoda.harmon.collector.CollectorCommand
-import dev.yoda.harmon.ipc.CollectorServer
-import dev.yoda.harmon.monitor.DarwinSystemCollector
-import dev.yoda.harmon.util.printError
+import io.heapy.harmon.BuildInfo
+import io.heapy.harmon.collector.CollectorCliException
+import io.heapy.harmon.collector.CollectorCliParser
+import io.heapy.harmon.collector.CollectorCommand
+import io.heapy.harmon.ipc.CollectorServer
+import io.heapy.harmon.monitor.DarwinSystemCollector
+import io.heapy.harmon.util.printError
 import kotlinx.cinterop.ExperimentalForeignApi
 import platform.posix.geteuid
 import kotlin.system.exitProcess

@@ -1,4 +1,4 @@
-import dev.yoda.harmon.config.ConfigLoader
+import io.heapy.harmon.config.ConfigLoader
 import kotlinx.cinterop.ExperimentalForeignApi
 import platform.Foundation.NSString
 import platform.Foundation.NSUTF8StringEncoding

@@ -1,6 +1,6 @@
-import dev.yoda.harmon.db.HarmonDatabase
-import dev.yoda.harmon.history.insertSample
-import dev.yoda.harmon.model.PowerState
+import io.heapy.harmon.db.HarmonDatabase
+import io.heapy.harmon.history.insertSample
+import io.heapy.harmon.model.PowerState
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertNull

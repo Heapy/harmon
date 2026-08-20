@@ -1,8 +1,8 @@
-import dev.yoda.harmon.monitor.CollectionProfile
-import dev.yoda.harmon.monitor.DarwinSystemCollector
-import dev.yoda.harmon.monitor.FULL_ATTRIBUTION_REGION_BUDGET
-import dev.yoda.harmon.monitor.FULL_COMPRESSED_ATTRIBUTION_PROCESS_LIMIT
-import dev.yoda.harmon.monitor.attributionLimitsFor
+import io.heapy.harmon.monitor.CollectionProfile
+import io.heapy.harmon.monitor.DarwinSystemCollector
+import io.heapy.harmon.monitor.FULL_ATTRIBUTION_REGION_BUDGET
+import io.heapy.harmon.monitor.FULL_COMPRESSED_ATTRIBUTION_PROCESS_LIMIT
+import io.heapy.harmon.monitor.attributionLimitsFor
 import kotlin.test.assertEquals
 import kotlin.test.Test
 import kotlin.test.assertFailsWith

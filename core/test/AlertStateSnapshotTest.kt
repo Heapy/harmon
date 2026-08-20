@@ -1,8 +1,8 @@
-import dev.yoda.harmon.analysis.AlertState
-import dev.yoda.harmon.analysis.DELIVERY_RETRY_THRESHOLD
-import dev.yoda.harmon.analysis.deliveryRetryDelaySamples
-import dev.yoda.harmon.analysis.isSnapshotFresh
-import dev.yoda.harmon.model.Alert
+import io.heapy.harmon.analysis.AlertState
+import io.heapy.harmon.analysis.DELIVERY_RETRY_THRESHOLD
+import io.heapy.harmon.analysis.deliveryRetryDelaySamples
+import io.heapy.harmon.analysis.isSnapshotFresh
+import io.heapy.harmon.model.Alert
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFalse

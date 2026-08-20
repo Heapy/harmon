@@ -1,7 +1,7 @@
-import dev.yoda.harmon.setup.InstallResourceOrigin
-import dev.yoda.harmon.setup.ResourceLocationException
-import dev.yoda.harmon.setup.ResourceLocator
-import dev.yoda.harmon.setup.ResourcePathProbe
+import io.heapy.harmon.setup.InstallResourceOrigin
+import io.heapy.harmon.setup.ResourceLocationException
+import io.heapy.harmon.setup.ResourceLocator
+import io.heapy.harmon.setup.ResourcePathProbe
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFailsWith

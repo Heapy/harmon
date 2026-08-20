@@ -1,6 +1,6 @@
 tasks:
   generate:
-    action: !dev.yoda.harmon.sqldelight.generateDatabase
+    action: !io.heapy.harmon.sqldelight.generateDatabase
       sqDir: ${module.rootDir}/sqldelight
       generatedSourceDir: ${taskOutputDir}
 

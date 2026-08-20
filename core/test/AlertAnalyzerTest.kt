@@ -1,9 +1,9 @@
-import dev.yoda.harmon.analysis.AlertAnalyzer
-import dev.yoda.harmon.config.AlertThresholds
-import dev.yoda.harmon.config.HarmonConfig
-import dev.yoda.harmon.model.AlertCategory
-import dev.yoda.harmon.model.ReparentedFrom
-import dev.yoda.harmon.model.Severity
+import io.heapy.harmon.analysis.AlertAnalyzer
+import io.heapy.harmon.config.AlertThresholds
+import io.heapy.harmon.config.HarmonConfig
+import io.heapy.harmon.model.AlertCategory
+import io.heapy.harmon.model.ReparentedFrom
+import io.heapy.harmon.model.Severity
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertTrue

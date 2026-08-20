@@ -1,4 +1,4 @@
-import dev.yoda.harmon.ipc.RejectionLog
+import io.heapy.harmon.ipc.RejectionLog
 import kotlin.test.Test
 import kotlin.test.assertContains
 import kotlin.test.assertEquals

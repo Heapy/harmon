@@ -1,5 +1,5 @@
-import dev.yoda.harmon.BuildInfo
-import dev.yoda.harmon.ipc.CollectorProtocol
+import io.heapy.harmon.BuildInfo
+import io.heapy.harmon.ipc.CollectorProtocol
 import kotlin.test.Test
 import kotlin.test.assertEquals
 

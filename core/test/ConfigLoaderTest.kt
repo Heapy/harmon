@@ -1,8 +1,8 @@
-import dev.yoda.harmon.config.ConfigException
-import dev.yoda.harmon.config.ConfigLoader
-import dev.yoda.harmon.config.DEFAULT_TERMINAL_APPLICATIONS
-import dev.yoda.harmon.config.HarmonConfig
-import dev.yoda.harmon.config.SAMPLE_SECONDS_RANGE
+import io.heapy.harmon.config.ConfigException
+import io.heapy.harmon.config.ConfigLoader
+import io.heapy.harmon.config.DEFAULT_TERMINAL_APPLICATIONS
+import io.heapy.harmon.config.HarmonConfig
+import io.heapy.harmon.config.SAMPLE_SECONDS_RANGE
 import kotlin.test.Test
 import kotlin.test.assertContains
 import kotlin.test.assertEquals

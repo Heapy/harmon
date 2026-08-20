@@ -1,6 +1,6 @@
-import dev.yoda.harmon.runtime.MAX_SLEEP_SLICE_MILLISECONDS
-import dev.yoda.harmon.runtime.sleepSliceMillis
-import dev.yoda.harmon.runtime.spendSleepSlice
+import io.heapy.harmon.runtime.MAX_SLEEP_SLICE_MILLISECONDS
+import io.heapy.harmon.runtime.sleepSliceMillis
+import io.heapy.harmon.runtime.spendSleepSlice
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertTrue

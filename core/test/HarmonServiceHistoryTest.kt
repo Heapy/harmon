@@ -1,15 +1,15 @@
-import dev.yoda.harmon.analysis.AlertState
-import dev.yoda.harmon.analysis.AlertStateSnapshot
-import dev.yoda.harmon.config.HarmonConfig
-import dev.yoda.harmon.config.NotificationConfig
-import dev.yoda.harmon.history.History
-import dev.yoda.harmon.model.DeliveryResult
-import dev.yoda.harmon.model.MonitoringReport
-import dev.yoda.harmon.model.RawSystemSnapshot
-import dev.yoda.harmon.monitor.SystemCollector
-import dev.yoda.harmon.notify.NotificationChannel
-import dev.yoda.harmon.notify.NotificationDispatcher
-import dev.yoda.harmon.runtime.HarmonService
+import io.heapy.harmon.analysis.AlertState
+import io.heapy.harmon.analysis.AlertStateSnapshot
+import io.heapy.harmon.config.HarmonConfig
+import io.heapy.harmon.config.NotificationConfig
+import io.heapy.harmon.history.History
+import io.heapy.harmon.model.DeliveryResult
+import io.heapy.harmon.model.MonitoringReport
+import io.heapy.harmon.model.RawSystemSnapshot
+import io.heapy.harmon.monitor.SystemCollector
+import io.heapy.harmon.notify.NotificationChannel
+import io.heapy.harmon.notify.NotificationDispatcher
+import io.heapy.harmon.runtime.HarmonService
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertNotNull
@@ -269,6 +269,6 @@ private fun historySnapshotAt(seconds: ULong, footprint: ULong): RawSystemSnapsh
 )
 
 private object NoHistoryCaptureCollector : SystemCollector {
-    override fun capture(profile: dev.yoda.harmon.monitor.CollectionProfile): RawSystemSnapshot =
+    override fun capture(profile: io.heapy.harmon.monitor.CollectionProfile): RawSystemSnapshot =
         error("handleSample must not capture")
 }

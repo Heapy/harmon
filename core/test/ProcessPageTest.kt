@@ -1,5 +1,5 @@
-import dev.yoda.harmon.report.PREACT_VERSION
-import dev.yoda.harmon.report.ProcessPage
+import io.heapy.harmon.report.PREACT_VERSION
+import io.heapy.harmon.report.ProcessPage
 import kotlin.test.Test
 import kotlin.test.assertContains
 import kotlin.test.assertFalse

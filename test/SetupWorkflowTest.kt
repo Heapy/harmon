@@ -1,26 +1,26 @@
-import dev.yoda.harmon.BuildInfo
-import dev.yoda.harmon.setup.CommandExecutionException
-import dev.yoda.harmon.setup.CommandInvocation
-import dev.yoda.harmon.setup.CommandResult
-import dev.yoda.harmon.setup.CommandRunner
-import dev.yoda.harmon.setup.FileOwnership
-import dev.yoda.harmon.setup.InstallResourceOrigin
-import dev.yoda.harmon.setup.InstallResources
-import dev.yoda.harmon.setup.InstalledFileAttributes
-import dev.yoda.harmon.setup.SetupException
-import dev.yoda.harmon.setup.SetupFileSystem
-import dev.yoda.harmon.setup.SystemSetup
-import dev.yoda.harmon.setup.SystemSetupPaths
-import dev.yoda.harmon.setup.SystemStop
-import dev.yoda.harmon.setup.SystemUninstall
-import dev.yoda.harmon.setup.UninstallPurge
-import dev.yoda.harmon.setup.UserSetup
-import dev.yoda.harmon.setup.UserSetupPaths
-import dev.yoda.harmon.setup.UserStop
-import dev.yoda.harmon.setup.UserUninstall
-import dev.yoda.harmon.setup.ValidatedInstallResources
-import dev.yoda.harmon.setup.renderApplicationInfoPlist
-import dev.yoda.harmon.setup.selectSigningIdentity
+import io.heapy.harmon.BuildInfo
+import io.heapy.harmon.setup.CommandExecutionException
+import io.heapy.harmon.setup.CommandInvocation
+import io.heapy.harmon.setup.CommandResult
+import io.heapy.harmon.setup.CommandRunner
+import io.heapy.harmon.setup.FileOwnership
+import io.heapy.harmon.setup.InstallResourceOrigin
+import io.heapy.harmon.setup.InstallResources
+import io.heapy.harmon.setup.InstalledFileAttributes
+import io.heapy.harmon.setup.SetupException
+import io.heapy.harmon.setup.SetupFileSystem
+import io.heapy.harmon.setup.SystemSetup
+import io.heapy.harmon.setup.SystemSetupPaths
+import io.heapy.harmon.setup.SystemStop
+import io.heapy.harmon.setup.SystemUninstall
+import io.heapy.harmon.setup.UninstallPurge
+import io.heapy.harmon.setup.UserSetup
+import io.heapy.harmon.setup.UserSetupPaths
+import io.heapy.harmon.setup.UserStop
+import io.heapy.harmon.setup.UserUninstall
+import io.heapy.harmon.setup.ValidatedInstallResources
+import io.heapy.harmon.setup.renderApplicationInfoPlist
+import io.heapy.harmon.setup.selectSigningIdentity
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFailsWith
@@ -34,6 +34,7 @@ class SetupWorkflowTest {
         val runner = WorkflowCommandRunner()
         val paths = UserSetupPaths.forHome(TEST_HOME)
         fileSystem.files[paths.config] = "custom=true\n"
+        fileSystem.files[paths.previousAgentPlist] = "pre-rename"
         fileSystem.files[paths.legacyAgentPlist] = "legacy"
         fileSystem.symlinks[paths.legacyCommandLink] = paths.installedAgent
         val setup = UserSetup(
@@ -50,6 +51,7 @@ class SetupWorkflowTest {
 
         assertEquals("custom=true\n", fileSystem.files[paths.config])
         assertEquals("0600".toUInt(8), fileSystem.attributes[paths.config]?.mode)
+        assertFalse(paths.previousAgentPlist in fileSystem.files)
         assertFalse(paths.legacyAgentPlist in fileSystem.files)
         assertFalse(paths.legacyCommandLink in fileSystem.symlinks)
         assertTrue(fileSystem.files.getValue(paths.installedInfoPlist).contains(BuildInfo.VERSION))
@@ -58,6 +60,12 @@ class SetupWorkflowTest {
             2,
             runner.invocations.count { it.arguments.first() == "/usr/bin/sudo" },
         )
+        runner.invocations.zip(runner.pathsPresentWhenInvoked)
+            .filter { (invocation) -> invocation.arguments.first() == "/usr/bin/sudo" }
+            .forEach { (_, snapshot) ->
+                assertFalse(paths.previousAgentPlist in snapshot.second)
+                assertFalse(paths.legacyAgentPlist in snapshot.second)
+            }
         assertEquals(
             listOf(
                 "/usr/bin/sudo",
@@ -104,6 +112,8 @@ class SetupWorkflowTest {
         val runner = WorkflowCommandRunner()
         val userPaths = UserSetupPaths.forHome(TEST_HOME)
         fileSystem.files[userPaths.agentPlist] = "agent"
+        fileSystem.files[SystemSetupPaths.previousCollectorPlist] = "pre-rename daemon"
+        fileSystem.files[SystemSetupPaths.legacyCollectorBinary] = "source-installer helper"
 
         SystemSetup(
             validated = validatedResources(),
@@ -135,6 +145,8 @@ class SetupWorkflowTest {
             fileSystem.writtenTargets.any { it.startsWith(TEST_HOME) },
             "the system phase wrote into the user home",
         )
+        assertFalse(SystemSetupPaths.previousCollectorPlist in fileSystem.files)
+        assertFalse(SystemSetupPaths.legacyCollectorBinary in fileSystem.files)
 
         val launchctl = runner.invocations
             .map(CommandInvocation::arguments)
@@ -144,7 +156,17 @@ class SetupWorkflowTest {
                 listOf(
                     "/bin/launchctl",
                     "bootout",
+                    "system/io.heapy.harmon.collector",
+                ),
+                listOf(
+                    "/bin/launchctl",
+                    "bootout",
                     "system/dev.yoda.harmon.collector",
+                ),
+                listOf(
+                    "/bin/launchctl",
+                    "bootout",
+                    "gui/501/io.heapy.harmon.agent",
                 ),
                 listOf(
                     "/bin/launchctl",
@@ -159,40 +181,50 @@ class SetupWorkflowTest {
                 listOf(
                     "/bin/launchctl",
                     "enable",
-                    "system/dev.yoda.harmon.collector",
+                    "system/io.heapy.harmon.collector",
                 ),
                 listOf(
                     "/bin/launchctl",
                     "bootstrap",
                     "system",
-                    "/Library/LaunchDaemons/dev.yoda.harmon.collector.plist",
+                    "/Library/LaunchDaemons/io.heapy.harmon.collector.plist",
                 ),
                 listOf(
                     "/bin/launchctl",
                     "kickstart",
                     "-k",
-                    "system/dev.yoda.harmon.collector",
+                    "system/io.heapy.harmon.collector",
                 ),
                 listOf(
                     "/bin/launchctl",
                     "enable",
-                    "gui/501/dev.yoda.harmon.agent",
+                    "gui/501/io.heapy.harmon.agent",
                 ),
                 listOf(
                     "/bin/launchctl",
                     "bootstrap",
                     "gui/501",
-                    "$TEST_HOME/Library/LaunchAgents/dev.yoda.harmon.agent.plist",
+                    "$TEST_HOME/Library/LaunchAgents/io.heapy.harmon.agent.plist",
                 ),
                 listOf(
                     "/bin/launchctl",
                     "kickstart",
                     "-k",
-                    "gui/501/dev.yoda.harmon.agent",
+                    "gui/501/io.heapy.harmon.agent",
                 ),
             ),
             launchctl,
         )
+
+        runner.invocations.zip(runner.pathsPresentWhenInvoked)
+            .filter { (invocation) ->
+                invocation.arguments.getOrNull(1) in
+                    setOf("enable", "bootstrap", "kickstart")
+            }
+            .forEach { (_, snapshot) ->
+                assertFalse(SystemSetupPaths.previousCollectorPlist in snapshot.second)
+                assertFalse(SystemSetupPaths.legacyCollectorBinary in snapshot.second)
+            }
     }
 
     @Test
@@ -243,6 +275,7 @@ class SetupWorkflowTest {
         val runner = WorkflowCommandRunner(fileSystem)
         val paths = UserSetupPaths.forHome(TEST_HOME)
         fileSystem.files[paths.agentPlist] = "agent plist"
+        fileSystem.files[paths.previousAgentPlist] = "pre-rename plist"
         fileSystem.files[paths.legacyAgentPlist] = "legacy plist"
         fileSystem.files[paths.liveUiEndpoint] = "stale endpoint"
         fileSystem.files[paths.config] = "custom=true"
@@ -262,6 +295,7 @@ class SetupWorkflowTest {
         ).run()
 
         assertFalse(paths.agentPlist in fileSystem.files)
+        assertFalse(paths.previousAgentPlist in fileSystem.files)
         assertFalse(paths.legacyAgentPlist in fileSystem.files)
         assertFalse(paths.liveUiEndpoint in fileSystem.files)
         assertFalse(paths.legacyCommandLink in fileSystem.symlinks)
@@ -275,6 +309,11 @@ class SetupWorkflowTest {
             .filterNot { it.getOrNull(1) == "print-disabled" }
         assertEquals(
             listOf(
+                listOf(
+                    "/bin/launchctl",
+                    "bootout",
+                    "gui/501/io.heapy.harmon.agent",
+                ),
                 listOf(
                     "/bin/launchctl",
                     "bootout",
@@ -327,6 +366,7 @@ class SetupWorkflowTest {
         val fileSystem = workflowFileSystem()
         val runner = WorkflowCommandRunner()
         fileSystem.files[SystemSetupPaths.collectorPlist] = "daemon"
+        fileSystem.files[SystemSetupPaths.previousCollectorPlist] = "pre-rename daemon"
         fileSystem.files[SystemSetupPaths.collectorBinary] = "collector"
         fileSystem.files[SystemSetupPaths.legacyCollectorBinary] = "legacy collector"
         fileSystem.files[SystemSetupPaths.socket] = "socket"
@@ -342,6 +382,7 @@ class SetupWorkflowTest {
         uninstall.run()
 
         assertFalse(SystemSetupPaths.collectorPlist in fileSystem.files)
+        assertFalse(SystemSetupPaths.previousCollectorPlist in fileSystem.files)
         assertFalse(SystemSetupPaths.collectorBinary in fileSystem.files)
         assertFalse(SystemSetupPaths.legacyCollectorBinary in fileSystem.files)
         assertFalse(SystemSetupPaths.socket in fileSystem.files)
@@ -349,25 +390,18 @@ class SetupWorkflowTest {
             "log",
             fileSystem.files["${SystemSetupPaths.logDirectory}/collector.log"],
         )
-        assertEquals(
-            2,
-            runner.invocations.count {
-                it.arguments == listOf(
-                    "/bin/launchctl",
-                    "bootout",
-                    "system/dev.yoda.harmon.collector",
-                )
-            },
+        val expectedBootouts = listOf(
+            listOf("/bin/launchctl", "bootout", "system/io.heapy.harmon.collector"),
+            listOf("/bin/launchctl", "bootout", "system/dev.yoda.harmon.collector"),
+            listOf("/bin/launchctl", "bootout", "gui/501/io.heapy.harmon.agent"),
+            listOf("/bin/launchctl", "bootout", "gui/501/dev.yoda.harmon.agent"),
+            listOf("/bin/launchctl", "bootout", "gui/501/dev.yoda.harmon"),
         )
         assertEquals(
-            2,
-            runner.invocations.count {
-                it.arguments == listOf(
-                    "/bin/launchctl",
-                    "bootout",
-                    "gui/501/dev.yoda.harmon.agent",
-                )
-            },
+            expectedBootouts + expectedBootouts,
+            runner.invocations
+                .map(CommandInvocation::arguments)
+                .filter { it.getOrNull(1) == "bootout" },
         )
     }
 
@@ -456,7 +490,7 @@ class SetupWorkflowTest {
                 it.arguments == listOf(
                     "/bin/launchctl",
                     "bootout",
-                    "system/dev.yoda.harmon.collector",
+                    "system/io.heapy.harmon.collector",
                 )
             },
         )
@@ -467,7 +501,11 @@ class SetupWorkflowTest {
         val fileSystem = workflowFileSystem()
         val runner = WorkflowCommandRunner(
             fileSystem,
-            disabledLabels = setOf("dev.yoda.harmon.agent", "dev.yoda.harmon"),
+            disabledLabels = setOf(
+                "io.heapy.harmon.agent",
+                "dev.yoda.harmon.agent",
+                "dev.yoda.harmon",
+            ),
         )
 
         UserUninstall(
@@ -484,6 +522,7 @@ class SetupWorkflowTest {
             .filter { it.getOrNull(1) == "enable" }
         assertEquals(
             listOf(
+                listOf("/bin/launchctl", "enable", "gui/501/io.heapy.harmon.agent"),
                 listOf("/bin/launchctl", "enable", "gui/501/dev.yoda.harmon.agent"),
                 listOf("/bin/launchctl", "enable", "gui/501/dev.yoda.harmon"),
             ),
@@ -492,7 +531,7 @@ class SetupWorkflowTest {
     }
 
     @Test
-    fun uninstallDoesNotEnableALabelThatWasNeverDisabled() {
+    fun uninstallDoesNotEnableAnyGenerationThatWasNeverDisabled() {
         val fileSystem = workflowFileSystem()
         val runner = WorkflowCommandRunner(fileSystem)
 
@@ -500,6 +539,12 @@ class SetupWorkflowTest {
             executablePath = UserSetupPaths.forHome(TEST_HOME).installedAgent,
             userId = 501u,
             home = TEST_HOME,
+            purge = false,
+            fileSystem = fileSystem,
+            commandRunner = runner,
+        ).run()
+        SystemUninstall(
+            targetUserId = 501u,
             purge = false,
             fileSystem = fileSystem,
             commandRunner = runner,
@@ -512,11 +557,14 @@ class SetupWorkflowTest {
     }
 
     @Test
-    fun systemUninstallClearsTheCollectorDisableOverride() {
+    fun systemUninstallClearsCurrentAndPreRenameCollectorDisableOverrides() {
         val fileSystem = workflowFileSystem()
         val runner = WorkflowCommandRunner(
             fileSystem,
-            disabledLabels = setOf("dev.yoda.harmon.collector"),
+            disabledLabels = setOf(
+                "io.heapy.harmon.collector",
+                "dev.yoda.harmon.collector",
+            ),
         )
 
         SystemUninstall(
@@ -528,6 +576,7 @@ class SetupWorkflowTest {
 
         assertEquals(
             listOf(
+                listOf("/bin/launchctl", "enable", "system/io.heapy.harmon.collector"),
                 listOf("/bin/launchctl", "enable", "system/dev.yoda.harmon.collector"),
             ),
             runner.invocations
@@ -542,7 +591,9 @@ class SetupWorkflowTest {
         val runner = WorkflowCommandRunner(
             fileSystem,
             disabledLabels = setOf(
+                "io.heapy.harmon.collector",
                 "dev.yoda.harmon.collector",
+                "io.heapy.harmon.agent",
                 "dev.yoda.harmon.agent",
                 "dev.yoda.harmon",
             ),
@@ -557,7 +608,9 @@ class SetupWorkflowTest {
 
         assertEquals(
             listOf(
+                listOf("/bin/launchctl", "enable", "system/io.heapy.harmon.collector"),
                 listOf("/bin/launchctl", "enable", "system/dev.yoda.harmon.collector"),
+                listOf("/bin/launchctl", "enable", "gui/501/io.heapy.harmon.agent"),
                 listOf("/bin/launchctl", "enable", "gui/501/dev.yoda.harmon.agent"),
                 listOf("/bin/launchctl", "enable", "gui/501/dev.yoda.harmon"),
             ),
@@ -651,11 +704,48 @@ class SetupWorkflowTest {
     }
 
     @Test
+    fun systemStopDisablesAndUnloadsAPreRenameInstallation() {
+        val fileSystem = workflowFileSystem()
+        val paths = UserSetupPaths.forHome(TEST_HOME)
+        fileSystem.files[SystemSetupPaths.previousCollectorPlist] = "pre-rename daemon"
+        fileSystem.files[paths.previousAgentPlist] = "pre-rename agent"
+        val runner = WorkflowCommandRunner(fileSystem)
+
+        SystemStop(
+            targetUserId = 501u,
+            targetHome = TEST_HOME,
+            fileSystem = fileSystem,
+            commandRunner = runner,
+        ).run()
+
+        assertEquals(
+            listOf(
+                listOf(
+                    "/bin/launchctl",
+                    "disable",
+                    "system/dev.yoda.harmon.collector",
+                ),
+                listOf(
+                    "/bin/launchctl",
+                    "disable",
+                    "gui/501/dev.yoda.harmon.agent",
+                ),
+                listOf("/bin/launchctl", "bootout", "system/io.heapy.harmon.collector"),
+                listOf("/bin/launchctl", "bootout", "system/dev.yoda.harmon.collector"),
+                listOf("/bin/launchctl", "bootout", "gui/501/io.heapy.harmon.agent"),
+                listOf("/bin/launchctl", "bootout", "gui/501/dev.yoda.harmon.agent"),
+                listOf("/bin/launchctl", "bootout", "gui/501/dev.yoda.harmon"),
+            ),
+            runner.invocations.map(CommandInvocation::arguments),
+        )
+    }
+
+    @Test
     fun systemStopBootsOutNothingWhenADisableFails() {
         val failedDisable = listOf(
             "/bin/launchctl",
             "disable",
-            "gui/501/dev.yoda.harmon.agent",
+            "gui/501/io.heapy.harmon.agent",
         )
         val fileSystem = installedStopFileSystem()
         val runner = WorkflowCommandRunner(fileSystem, failedArguments = failedDisable)
@@ -674,14 +764,14 @@ class SetupWorkflowTest {
                 listOf(
                     "/bin/launchctl",
                     "disable",
-                    "system/dev.yoda.harmon.collector",
+                    "system/io.heapy.harmon.collector",
                 ),
                 failedDisable,
             ),
             runner.invocations.map(CommandInvocation::arguments),
         )
         assertTrue(
-            "system/dev.yoda.harmon.collector is now disabled" in failure.message.orEmpty(),
+            "system/io.heapy.harmon.collector is now disabled" in failure.message.orEmpty(),
             "the partial state was not reported: ${failure.message}",
         )
     }
@@ -699,10 +789,12 @@ class SetupWorkflowTest {
 
         assertEquals(
             listOf(
-                listOf("/bin/launchctl", "disable", "system/dev.yoda.harmon.collector"),
-                listOf("/bin/launchctl", "disable", "gui/501/dev.yoda.harmon.agent"),
+                listOf("/bin/launchctl", "disable", "system/io.heapy.harmon.collector"),
+                listOf("/bin/launchctl", "disable", "gui/501/io.heapy.harmon.agent"),
                 listOf("/bin/launchctl", "disable", "gui/501/dev.yoda.harmon"),
+                listOf("/bin/launchctl", "bootout", "system/io.heapy.harmon.collector"),
                 listOf("/bin/launchctl", "bootout", "system/dev.yoda.harmon.collector"),
+                listOf("/bin/launchctl", "bootout", "gui/501/io.heapy.harmon.agent"),
                 listOf("/bin/launchctl", "bootout", "gui/501/dev.yoda.harmon.agent"),
                 listOf("/bin/launchctl", "bootout", "gui/501/dev.yoda.harmon"),
             ),
@@ -728,14 +820,14 @@ class SetupWorkflowTest {
         val arguments = runner.invocations.map(CommandInvocation::arguments)
         assertEquals(
             listOf(
-                listOf("/bin/launchctl", "disable", "system/dev.yoda.harmon.collector"),
-                listOf("/bin/launchctl", "disable", "gui/501/dev.yoda.harmon.agent"),
+                listOf("/bin/launchctl", "disable", "system/io.heapy.harmon.collector"),
+                listOf("/bin/launchctl", "disable", "gui/501/io.heapy.harmon.agent"),
             ),
             arguments.filter { it.getOrNull(1) == "disable" },
             "a label with no plist was named, which adds a launchd row nothing can remove",
         )
         assertEquals(
-            3,
+            5,
             arguments.count { it.getOrNull(1) == "bootout" },
             "an already loaded job must still be unloaded: $arguments",
         )
@@ -758,12 +850,12 @@ class SetupWorkflowTest {
                 listOf(
                     "/bin/launchctl",
                     "disable",
-                    "system/dev.yoda.harmon.collector",
+                    "system/io.heapy.harmon.collector",
                 ),
                 listOf(
                     "/bin/launchctl",
                     "disable",
-                    "gui/501/dev.yoda.harmon.agent",
+                    "gui/501/io.heapy.harmon.agent",
                 ),
                 listOf(
                     "/bin/launchctl",
@@ -773,7 +865,17 @@ class SetupWorkflowTest {
                 listOf(
                     "/bin/launchctl",
                     "bootout",
+                    "system/io.heapy.harmon.collector",
+                ),
+                listOf(
+                    "/bin/launchctl",
+                    "bootout",
                     "system/dev.yoda.harmon.collector",
+                ),
+                listOf(
+                    "/bin/launchctl",
+                    "bootout",
+                    "gui/501/io.heapy.harmon.agent",
                 ),
                 listOf(
                     "/bin/launchctl",
@@ -837,7 +939,7 @@ private class WorkflowCommandRunner(
     ): CommandResult = CommandResult(invocation, 0, output)
 }
 
-/** The plists a normal installation has, so a stop is allowed to disable all three labels. */
+/** Current and source-installer plists used by the stop sequencing tests. */
 private fun installedStopFileSystem(): WorkflowFileSystem {
     val fileSystem = workflowFileSystem()
     val paths = UserSetupPaths.forHome(TEST_HOME)
