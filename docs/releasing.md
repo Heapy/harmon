@@ -100,6 +100,11 @@ process owns the user half and requests sudo exactly once for the system half.
 Using the Homebrew path explicitly also migrates a machine where the former
 `~/.local/bin/harmon` symlink shadows the new command.
 
+For the migration variant, run the new CLI's `stop` command where marked below,
+after installing the formula but before setup. It recognizes the old labels and
+deliberately leaves them disabled so the compatibility checks exercise override
+cleanup even though the pre-rename release had no `stop` command.
+
 ```shell
 brew install Heapy/tap/harmon
 HARMON_ACCEPTANCE_CLI="$(brew --prefix)/bin/harmon"
@@ -113,6 +118,9 @@ if "$HARMON_ACCEPTANCE_CLI" status; then
   echo "expected status to require setup" >&2
   exit 1
 fi
+
+# Migration pass only: the old plists must still be present here.
+"$HARMON_ACCEPTANCE_CLI" stop
 
 sudo -k
 "$HARMON_ACCEPTANCE_CLI" setup
@@ -170,7 +178,8 @@ test "$HARMON_ACCEPTANCE_CONFIG_SHA" = "$(
 ```
 
 On a machine migrated from a pre-rename release or the old source installer,
-also verify that only their managed compatibility artifacts disappeared:
+also verify that their managed compatibility artifacts disappeared and none of
+their labels remain disabled:
 
 ```shell
 test ! -e "$HOME/Library/LaunchAgents/dev.yoda.harmon.agent.plist"
@@ -182,6 +191,19 @@ sudo test ! -e /Library/PrivilegedHelperTools/dev.yoda.harmon
 ! /bin/launchctl print "gui/$(id -u)/dev.yoda.harmon.agent"
 ! /bin/launchctl print "gui/$(id -u)/dev.yoda.harmon"
 ! sudo /bin/launchctl print system/dev.yoda.harmon.collector
+
+HARMON_ACCEPTANCE_GUI_DISABLED="$(
+  /bin/launchctl print-disabled "gui/$(id -u)"
+)"
+HARMON_ACCEPTANCE_SYSTEM_DISABLED="$(
+  sudo /bin/launchctl print-disabled system
+)"
+! /usr/bin/printf '%s\n' "$HARMON_ACCEPTANCE_GUI_DISABLED" |
+  /usr/bin/grep -Eq \
+    '"dev\.yoda\.harmon(\.agent)?"[[:space:]]*=>[[:space:]]*(disabled|true)'
+! /usr/bin/printf '%s\n' "$HARMON_ACCEPTANCE_SYSTEM_DISABLED" |
+  /usr/bin/grep -Eq \
+    '"dev\.yoda\.harmon\.collector"[[:space:]]*=>[[:space:]]*(disabled|true)'
 ```
 
 Finally publish a newer release into the same tap and exercise the upgrade gap:
@@ -261,6 +283,7 @@ The command prints each removed tree before deleting anything and never prompts,
 so the block stays non-interactive apart from sudo's own password prompt. This
 is the last step that needs `$HARMON_ACCEPTANCE_CONFIG`.
 
-The Homebrew Cellar copy remains until `brew uninstall harmon`. Legacy-path
-cleanup is transitional compatibility behavior; remove it only after the
-supported migration window from the source installer has closed.
+The Homebrew Cellar copy remains until `brew uninstall harmon`. Legacy path,
+label, and disable-override cleanup is transitional compatibility behavior;
+remove it only after the supported migration window from the source installer
+has closed.

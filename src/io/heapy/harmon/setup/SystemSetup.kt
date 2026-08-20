@@ -75,6 +75,7 @@ class SystemSetup(
         bootoutIfLoaded(legacyAgentService)
         fileSystem.removeFileIfExists(SystemSetupPaths.previousCollectorPlist)
         fileSystem.removeFileIfExists(SystemSetupPaths.legacyCollectorBinary)
+        commandRunner.enableDisabledServices(listOf(previousCollectorService))
 
         commandRunner.requireSuccess(
             listOf("/bin/launchctl", "enable", collectorService),

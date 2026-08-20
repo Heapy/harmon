@@ -26,6 +26,7 @@ class UserSetup(
         // Never leave compatibility and current labels simultaneously discoverable at login.
         removeCompatibilityAgentPlists(paths)
         publishAgentPlist(paths)
+        clearCompatibilityAgentOverrides()
         removeLegacyCommandLink(paths)
         return paths
     }
@@ -126,6 +127,16 @@ class UserSetup(
             },
         )
         fileSystem.removeFileIfExists(paths.stagedAgentPlist)
+    }
+
+    private fun clearCompatibilityAgentOverrides() {
+        val agentDomain = "gui/$userId"
+        commandRunner.enableDisabledServices(
+            listOf(
+                "$agentDomain/$PREVIOUS_AGENT_LABEL",
+                "$agentDomain/$LEGACY_AGENT_LABEL",
+            ),
+        )
     }
 
     private fun removeStagedAgentPlistBestEffort(paths: UserSetupPaths) {

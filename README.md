@@ -633,9 +633,11 @@ published LaunchAgent plist. It:
 
 An old `~/.local/bin/harmon` symlink managed by the former installer is removed
 so it cannot shadow an upgraded Homebrew binary. An unrelated file or symlink at
-that path is left alone. The former agent Label, plist, and helper path are
-cleaned up during the same migration. If sudo is declined, the staged plist is
-discarded and the previously published LaunchAgent definitions remain in place.
+that path is left alone. The former labels, plists, and helper path are cleaned
+up during the same migration. Their disable overrides are cleared only when
+launchd reports them disabled, and only after the corresponding definitions are
+no longer discoverable. If sudo is declined, the staged plist is discarded and
+the previously published LaunchAgent definitions and overrides remain in place.
 
 After setup, and after every source binary upgrade, run:
 
@@ -671,9 +673,9 @@ harmon stop
 The command requests sudo once; the privileged phase disables and unloads both
 services, and the returning user phase removes the live UI endpoint. A declined
 password therefore changes nothing. `harmon status` then reports that Harmon is
-intentionally stopped; run `harmon setup` to enable and start both services
-again. Automation that already holds root can call the privileged phase
-directly with `harmon stop --system --uid UID`.
+intentionally stopped; run `harmon setup` to clear retired-label overrides and
+enable and start both current services again. Automation that already holds root
+can call the privileged phase directly with `harmon stop --system --uid UID`.
 
 Remove both services and installed binaries while preserving configuration,
 logs, generated reports and the sample history:

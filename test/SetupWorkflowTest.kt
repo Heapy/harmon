@@ -87,6 +87,16 @@ class SetupWorkflowTest {
         assertFalse(paths.legacyAgentPlist in firstPublishPaths)
         assertFalse(paths.agentPlist in firstPublishPaths)
         assertTrue(paths.stagedAgentPlist in firstPublishPaths)
+        assertTrue(
+            runner.invocations.none {
+                it.arguments.getOrNull(1) == "enable" &&
+                    it.arguments.last() in setOf(
+                        "gui/501/dev.yoda.harmon.agent",
+                        "gui/501/dev.yoda.harmon",
+                    )
+            },
+            "setup created enable rows for absent compatibility overrides",
+        )
         assertEquals(
             listOf(
                 "/usr/bin/sudo",
@@ -123,7 +133,14 @@ class SetupWorkflowTest {
             "--gid",
             "20",
         )
-        val runner = WorkflowCommandRunner(fileSystem, failedArguments = setOf(sudo))
+        val runner = WorkflowCommandRunner(
+            fileSystem,
+            failedArguments = setOf(sudo),
+            disabledLabels = setOf(
+                "dev.yoda.harmon.agent",
+                "dev.yoda.harmon",
+            ),
+        )
 
         assertFailsWith<CommandExecutionException> {
             UserSetup(
@@ -148,6 +165,12 @@ class SetupWorkflowTest {
         assertEquals(paths.installedAgent, fileSystem.symlinks[paths.legacyCommandLink])
         assertFalse(paths.agentPlist in fileSystem.files)
         assertFalse(paths.stagedAgentPlist in fileSystem.files)
+        assertTrue(
+            runner.invocations.none {
+                it.arguments.getOrNull(1) in setOf("print-disabled", "enable")
+            },
+            "a failed system phase still cleared compatibility overrides",
+        )
     }
 
     @Test
@@ -277,6 +300,7 @@ class SetupWorkflowTest {
                     "bootout",
                     "gui/501/dev.yoda.harmon",
                 ),
+                listOf("/bin/launchctl", "print-disabled", "system"),
                 listOf(
                     "/bin/launchctl",
                     "enable",
@@ -324,6 +348,98 @@ class SetupWorkflowTest {
                 assertFalse(SystemSetupPaths.previousCollectorPlist in snapshot.second)
                 assertFalse(SystemSetupPaths.legacyCollectorBinary in snapshot.second)
             }
+    }
+
+    @Test
+    fun systemPhaseClearsThePreviousCollectorDisableOverride() {
+        val fileSystem = workflowFileSystem()
+        val userPaths = UserSetupPaths.forHome(TEST_HOME)
+        fileSystem.files[userPaths.agentPlist] = "agent"
+        fileSystem.files[SystemSetupPaths.previousCollectorPlist] = "pre-rename daemon"
+        fileSystem.files[SystemSetupPaths.legacyCollectorBinary] = "source-installer helper"
+        val runner = WorkflowCommandRunner(
+            fileSystem,
+            disabledLabels = setOf(
+                "dev.yoda.harmon.collector",
+            ),
+        )
+
+        SystemSetup(
+            validated = validatedResources(),
+            targetUserId = 501u,
+            targetGroupId = 20u,
+            targetHome = TEST_HOME,
+            wheelGroupId = 0u,
+            fileSystem = fileSystem,
+            commandRunner = runner,
+        ).run()
+
+        assertEquals(
+            listOf(
+                listOf("/bin/launchctl", "print-disabled", "system"),
+                listOf("/bin/launchctl", "enable", "system/dev.yoda.harmon.collector"),
+                listOf("/bin/launchctl", "enable", "system/io.heapy.harmon.collector"),
+                listOf("/bin/launchctl", "enable", "gui/501/io.heapy.harmon.agent"),
+            ),
+            runner.invocations
+                .map(CommandInvocation::arguments)
+                .filter { it.getOrNull(1) in setOf("print-disabled", "enable") },
+        )
+        val previousCollectorEnableSnapshot = runner.invocations
+            .zip(runner.pathsPresentWhenInvoked)
+            .single { (invocation) ->
+                invocation.arguments == listOf(
+                    "/bin/launchctl",
+                    "enable",
+                    "system/dev.yoda.harmon.collector",
+                )
+            }
+            .second.second
+        assertFalse(SystemSetupPaths.previousCollectorPlist in previousCollectorEnableSnapshot)
+        assertFalse(SystemSetupPaths.legacyCollectorBinary in previousCollectorEnableSnapshot)
+    }
+
+    @Test
+    fun userPhaseClearsCompatibilityOverridesAfterPublishingTheCurrentPlist() {
+        val fileSystem = workflowFileSystem()
+        val paths = UserSetupPaths.forHome(TEST_HOME)
+        fileSystem.files[paths.previousAgentPlist] = "pre-rename"
+        fileSystem.files[paths.legacyAgentPlist] = "legacy"
+        val runner = WorkflowCommandRunner(
+            fileSystem,
+            disabledLabels = setOf(
+                "dev.yoda.harmon.agent",
+                "dev.yoda.harmon",
+            ),
+        )
+
+        UserSetup(
+            validated = validatedResources(),
+            userId = 501u,
+            groupId = 20u,
+            home = TEST_HOME,
+            fileSystem = fileSystem,
+            commandRunner = runner,
+        ).run()
+
+        val cleanup = runner.invocations.zip(runner.pathsPresentWhenInvoked)
+            .filter { (invocation) ->
+                invocation.arguments.getOrNull(1) in setOf("print-disabled", "enable")
+            }
+        assertEquals(
+            listOf(
+                listOf("/bin/launchctl", "print-disabled", "gui/501"),
+                listOf("/bin/launchctl", "enable", "gui/501/dev.yoda.harmon.agent"),
+                listOf("/bin/launchctl", "enable", "gui/501/dev.yoda.harmon"),
+            ),
+            cleanup.map { it.first.arguments },
+        )
+        cleanup.forEach { (_, snapshot) ->
+            assertFalse(paths.previousAgentPlist in snapshot.second)
+            assertFalse(paths.legacyAgentPlist in snapshot.second)
+            assertTrue(paths.agentPlist in snapshot.second)
+            assertFalse(paths.stagedAgentPlist in snapshot.second)
+        }
     }
 
     @Test

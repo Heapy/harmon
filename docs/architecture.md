@@ -57,16 +57,19 @@ signature when none is installed.
 The ordinary process then performs one exact sudo re-exec of its resolved
 binary with `setup --system --uid N --gid M`. That root process writes only
 `/Library/PrivilegedHelperTools`, `/Library/LaunchDaemons`, and
-`/Library/Logs/Harmon`, then replaces both launchd jobs and bootstraps the agent
-from the staged definition. After that phase succeeds, the user process removes
-the pre-rename and source-installer plists before atomically publishing the
-current plist, then removes the managed symlink and staging file. A declined
-sudo password leaves every previously published LaunchAgent definition intact;
-setup also discards the non-discoverable stage on a best-effort basis. This
-ordering does not introduce an old-label and current-label pair that a later
-login could load together. The public `--system` form falls back to the
-published current plist, so automation that has already staged the user half
-remains supported.
+`/Library/Logs/Harmon`, then retires every compatibility job, removes their
+root-owned artifacts, and conditionally clears a previous-collector override
+reported disabled by launchd. It unconditionally enables and starts both current
+jobs, bootstrapping the agent from the staged definition. After that phase
+succeeds, the user process removes the pre-rename and source-installer plists,
+atomically publishes the current plist, and only then conditionally clears their
+reported disabled overrides before removing the managed symlink and staging
+file. A declined sudo password leaves every previously published LaunchAgent
+definition and override intact; setup also discards the non-discoverable stage
+on a best-effort basis. This ordering does not introduce an old-label and
+current-label pair that a later login could load together. The public `--system`
+form falls back to the published current plist, so automation that has already
+staged the user half remains supported.
 
 Both launchd plists are encoded from typed `LaunchdJob` values, linted by
 `plutil` while still temporary siblings of their targets, permissioned, and
@@ -109,10 +112,12 @@ cannot delete one, so disabling a job that does not exist would leave a
 permanent row behind. Every owned label is still passed to `launchctl bootout`:
 a loaded job can outlive a deleted plist and must remain stoppable. That is why
 the root phase resolves the target home through `AccountDirectory`.
-`harmon setup` retires compatibility jobs, explicitly re-enables and starts both
-current jobs, and is therefore the restart path. Once the privileged phase
-returns, the user phase removes the ephemeral live UI endpoint, so `harmon ui`
-does not have to discover and clean a stale endpoint.
+`harmon setup` retires compatibility jobs, clears overrides reported disabled
+after their definitions are no longer discoverable, and explicitly re-enables
+and starts both current jobs. It is therefore the restart path without leaving
+retired labels disabled indefinitely. Once the privileged phase returns, the
+user phase removes the ephemeral live UI endpoint, so `harmon ui` does not have
+to discover and clean a stale endpoint.
 
 The Homebrew formula is a distribution layer, not a service manager. A release
 archive contains exactly `bin/harmon`, `libexec/harmon-collector`, and the three
