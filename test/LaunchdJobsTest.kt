@@ -38,6 +38,11 @@ class LaunchdJobsTest {
             userPaths.agentPlist,
         )
         assertEquals(
+            "/Users/tester/Library/Application Support/Harmon/" +
+                "io.heapy.harmon.agent.pending.plist",
+            userPaths.stagedAgentPlist,
+        )
+        assertEquals(
             "/Users/tester/Library/LaunchAgents/dev.yoda.harmon.agent.plist",
             userPaths.previousAgentPlist,
         )

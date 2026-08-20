@@ -15,10 +15,18 @@ class UserSetup(
         createDirectories(paths)
         installApplication(paths)
         installConfiguration(paths)
-        installAgentPlist(paths)
-        removeLegacyUserFiles(paths)
-        refreshApplicationRegistration(paths)
-        runSystemPhase()
+        try {
+            stageAgentPlist(paths)
+            refreshApplicationRegistration(paths)
+            runSystemPhase()
+        } catch (failure: Throwable) {
+            removeStagedAgentPlistBestEffort(paths)
+            throw failure
+        }
+        // Never leave compatibility and current labels simultaneously discoverable at login.
+        removeCompatibilityAgentPlists(paths)
+        publishAgentPlist(paths)
+        removeLegacyCommandLink(paths)
         return paths
     }
 
@@ -87,9 +95,9 @@ class UserSetup(
         }
     }
 
-    private fun installAgentPlist(paths: UserSetupPaths) {
+    private fun stageAgentPlist(paths: UserSetupPaths) {
         AtomicPlistWriter(fileSystem, commandRunner).write(
-            target = paths.agentPlist,
+            target = paths.stagedAgentPlist,
             job = LaunchdJobs.agent(
                 AgentLaunchdPaths(
                     agentBinary = paths.installedAgent,
@@ -101,9 +109,34 @@ class UserSetup(
         )
     }
 
-    private fun removeLegacyUserFiles(paths: UserSetupPaths) {
+    private fun removeCompatibilityAgentPlists(paths: UserSetupPaths) {
         fileSystem.removeFileIfExists(paths.previousAgentPlist)
         fileSystem.removeFileIfExists(paths.legacyAgentPlist)
+    }
+
+    private fun publishAgentPlist(paths: UserSetupPaths) {
+        fileSystem.copyFileAtomically(
+            source = paths.stagedAgentPlist,
+            target = paths.agentPlist,
+            attributes = InstalledFileAttributes(InstallModes.USER_PLIST),
+            validateTemporaryFile = { temporary ->
+                commandRunner.requireSuccess(
+                    listOf("/usr/bin/plutil", "-lint", temporary),
+                )
+            },
+        )
+        fileSystem.removeFileIfExists(paths.stagedAgentPlist)
+    }
+
+    private fun removeStagedAgentPlistBestEffort(paths: UserSetupPaths) {
+        try {
+            fileSystem.removeFileIfExists(paths.stagedAgentPlist)
+        } catch (_: Throwable) {
+            // Preserve the failure that prevented setup from reaching its publish step.
+        }
+    }
+
+    private fun removeLegacyCommandLink(paths: UserSetupPaths) {
         if (fileSystem.isSymbolicLink(paths.legacyCommandLink)) {
             val target = fileSystem.readSymbolicLink(paths.legacyCommandLink)
             if (shouldRemoveLegacyCommandLink(target, paths)) {

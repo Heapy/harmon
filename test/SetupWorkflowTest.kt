@@ -31,7 +31,7 @@ class SetupWorkflowTest {
     @Test
     fun userPhaseIsIdempotentAndNeverOverwritesTheExistingConfig() {
         val fileSystem = workflowFileSystem()
-        val runner = WorkflowCommandRunner()
+        val runner = WorkflowCommandRunner(fileSystem)
         val paths = UserSetupPaths.forHome(TEST_HOME)
         fileSystem.files[paths.config] = "custom=true\n"
         fileSystem.files[paths.previousAgentPlist] = "pre-rename"
@@ -53,6 +53,7 @@ class SetupWorkflowTest {
         assertEquals("0600".toUInt(8), fileSystem.attributes[paths.config]?.mode)
         assertFalse(paths.previousAgentPlist in fileSystem.files)
         assertFalse(paths.legacyAgentPlist in fileSystem.files)
+        assertFalse(paths.stagedAgentPlist in fileSystem.files)
         assertFalse(paths.legacyCommandLink in fileSystem.symlinks)
         assertTrue(fileSystem.files.getValue(paths.installedInfoPlist).contains(BuildInfo.VERSION))
         assertFalse(fileSystem.files.getValue(paths.installedInfoPlist).contains("@HARMON_VERSION@"))
@@ -60,12 +61,31 @@ class SetupWorkflowTest {
             2,
             runner.invocations.count { it.arguments.first() == "/usr/bin/sudo" },
         )
-        runner.invocations.zip(runner.pathsPresentWhenInvoked)
-            .filter { (invocation) -> invocation.arguments.first() == "/usr/bin/sudo" }
-            .forEach { (_, snapshot) ->
-                assertFalse(paths.previousAgentPlist in snapshot.second)
-                assertFalse(paths.legacyAgentPlist in snapshot.second)
+        val sudoSnapshots = runner.pathsPresentWhenInvoked
+            .filter { it.first == "/usr/bin/sudo" }
+            .map { it.second }
+        assertEquals(2, sudoSnapshots.size)
+        assertTrue(paths.previousAgentPlist in sudoSnapshots.first())
+        assertTrue(paths.legacyAgentPlist in sudoSnapshots.first())
+        assertFalse(paths.agentPlist in sudoSnapshots.first())
+        assertTrue(paths.stagedAgentPlist in sudoSnapshots.first())
+        assertFalse(paths.previousAgentPlist in sudoSnapshots.last())
+        assertFalse(paths.legacyAgentPlist in sudoSnapshots.last())
+        assertTrue(paths.agentPlist in sudoSnapshots.last())
+        assertTrue(paths.stagedAgentPlist in sudoSnapshots.last())
+        val firstPublishPaths = runner.invocations.zip(runner.pathsPresentWhenInvoked)
+            .first { (invocation) ->
+                invocation.arguments == listOf(
+                    "/usr/bin/plutil",
+                    "-lint",
+                    "${paths.agentPlist}.fake.tmp",
+                )
             }
+            .second.second
+        assertFalse(paths.previousAgentPlist in firstPublishPaths)
+        assertFalse(paths.legacyAgentPlist in firstPublishPaths)
+        assertFalse(paths.agentPlist in firstPublishPaths)
+        assertTrue(paths.stagedAgentPlist in firstPublishPaths)
         assertEquals(
             listOf(
                 "/usr/bin/sudo",
@@ -83,6 +103,81 @@ class SetupWorkflowTest {
             fileSystem.writtenTargets.any { it.startsWith("/Library/") },
             "the user phase wrote a system path",
         )
+    }
+
+    @Test
+    fun userPhaseKeepsPublishedDefinitionsWhenTheSystemPhaseFails() {
+        val fileSystem = workflowFileSystem()
+        val paths = UserSetupPaths.forHome(TEST_HOME)
+        fileSystem.files[paths.previousAgentPlist] = "pre-rename"
+        fileSystem.files[paths.legacyAgentPlist] = "legacy"
+        fileSystem.symlinks[paths.legacyCommandLink] = paths.installedAgent
+        val sudo = listOf(
+            "/usr/bin/sudo",
+            TEST_AGENT_SOURCE,
+            "setup",
+            "--system",
+            "--uid",
+            "501",
+            "--gid",
+            "20",
+        )
+        val runner = WorkflowCommandRunner(fileSystem, failedArguments = sudo)
+
+        assertFailsWith<CommandExecutionException> {
+            UserSetup(
+                validated = validatedResources(),
+                userId = 501u,
+                groupId = 20u,
+                home = TEST_HOME,
+                fileSystem = fileSystem,
+                commandRunner = runner,
+            ).run()
+        }
+
+        val pathsAtSudo = runner.pathsPresentWhenInvoked
+            .single { it.first == "/usr/bin/sudo" }
+            .second
+        assertTrue(paths.previousAgentPlist in pathsAtSudo)
+        assertTrue(paths.legacyAgentPlist in pathsAtSudo)
+        assertTrue(paths.stagedAgentPlist in pathsAtSudo)
+        assertFalse(paths.agentPlist in pathsAtSudo)
+        assertEquals("pre-rename", fileSystem.files[paths.previousAgentPlist])
+        assertEquals("legacy", fileSystem.files[paths.legacyAgentPlist])
+        assertEquals(paths.installedAgent, fileSystem.symlinks[paths.legacyCommandLink])
+        assertFalse(paths.agentPlist in fileSystem.files)
+        assertFalse(paths.stagedAgentPlist in fileSystem.files)
+    }
+
+    @Test
+    fun userPhaseDoesNotReplaceTheCurrentDefinitionWhenTheSystemPhaseFails() {
+        val fileSystem = workflowFileSystem()
+        val paths = UserSetupPaths.forHome(TEST_HOME)
+        fileSystem.files[paths.agentPlist] = "installed definition"
+        val sudo = listOf(
+            "/usr/bin/sudo",
+            TEST_AGENT_SOURCE,
+            "setup",
+            "--system",
+            "--uid",
+            "501",
+            "--gid",
+            "20",
+        )
+
+        assertFailsWith<CommandExecutionException> {
+            UserSetup(
+                validated = validatedResources(),
+                userId = 501u,
+                groupId = 20u,
+                home = TEST_HOME,
+                fileSystem = fileSystem,
+                commandRunner = WorkflowCommandRunner(fileSystem, failedArguments = sudo),
+            ).run()
+        }
+
+        assertEquals("installed definition", fileSystem.files[paths.agentPlist])
+        assertFalse(paths.stagedAgentPlist in fileSystem.files)
     }
 
     @Test
@@ -247,6 +342,37 @@ class SetupWorkflowTest {
     }
 
     @Test
+    fun systemPhasePrefersTheStagedAgentDefinition() {
+        val fileSystem = workflowFileSystem()
+        val paths = UserSetupPaths.forHome(TEST_HOME)
+        fileSystem.files[paths.agentPlist] = "published agent"
+        fileSystem.files[paths.stagedAgentPlist] = "staged agent"
+        val runner = WorkflowCommandRunner()
+
+        SystemSetup(
+            validated = validatedResources(),
+            targetUserId = 501u,
+            targetGroupId = 20u,
+            targetHome = TEST_HOME,
+            wheelGroupId = 0u,
+            fileSystem = fileSystem,
+            commandRunner = runner,
+        ).run()
+
+        assertEquals(
+            listOf(
+                "/bin/launchctl",
+                "bootstrap",
+                "gui/501",
+                paths.stagedAgentPlist,
+            ),
+            runner.invocations
+                .map(CommandInvocation::arguments)
+                .single { it.take(3) == listOf("/bin/launchctl", "bootstrap", "gui/501") },
+        )
+    }
+
+    @Test
     fun signingIdentitySelectionUsesTheFirstTrustedShaAndFallsBackToNull() {
         assertEquals(
             "0123456789ABCDEF0123456789ABCDEF01234567",
@@ -274,6 +400,7 @@ class SetupWorkflowTest {
         val fileSystem = workflowFileSystem()
         val runner = WorkflowCommandRunner(fileSystem)
         val paths = UserSetupPaths.forHome(TEST_HOME)
+        fileSystem.files[paths.stagedAgentPlist] = "staged agent plist"
         fileSystem.files[paths.agentPlist] = "agent plist"
         fileSystem.files[paths.previousAgentPlist] = "pre-rename plist"
         fileSystem.files[paths.legacyAgentPlist] = "legacy plist"
@@ -294,6 +421,7 @@ class SetupWorkflowTest {
             commandRunner = runner,
         ).run()
 
+        assertFalse(paths.stagedAgentPlist in fileSystem.files)
         assertFalse(paths.agentPlist in fileSystem.files)
         assertFalse(paths.previousAgentPlist in fileSystem.files)
         assertFalse(paths.legacyAgentPlist in fileSystem.files)

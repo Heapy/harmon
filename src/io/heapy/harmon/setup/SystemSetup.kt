@@ -11,14 +11,7 @@ class SystemSetup(
 ) {
     fun run() {
         val userPaths = UserSetupPaths.forHome(targetHome)
-        if (!fileSystem.isRegularFile(userPaths.agentPlist) ||
-            !fileSystem.isReadable(userPaths.agentPlist)
-        ) {
-            throw SetupException(
-                "The user LaunchAgent plist is missing or unreadable at " +
-                    "'${userPaths.agentPlist}'. Run the user phase before --system.",
-            )
-        }
+        val agentPlist = selectAgentPlist(userPaths)
 
         val rootOwnership = FileOwnership(userId = 0u, groupId = wheelGroupId)
         val rootDirectory = InstalledFileAttributes(
@@ -53,10 +46,21 @@ class SystemSetup(
             ),
         )
 
-        replaceServices(userPaths)
+        replaceServices(agentPlist)
     }
 
-    private fun replaceServices(userPaths: UserSetupPaths) {
+    private fun selectAgentPlist(userPaths: UserSetupPaths): String {
+        val candidates = listOf(userPaths.stagedAgentPlist, userPaths.agentPlist)
+        return candidates.firstOrNull { candidate ->
+            fileSystem.isRegularFile(candidate) && fileSystem.isReadable(candidate)
+        } ?: throw SetupException(
+            "The staged and installed user LaunchAgent plists are missing or unreadable at " +
+                "'${userPaths.stagedAgentPlist}' and '${userPaths.agentPlist}'. " +
+                "Run the user phase before --system.",
+        )
+    }
+
+    private fun replaceServices(agentPlist: String) {
         val collectorService = "system/$COLLECTOR_LABEL"
         val previousCollectorService = "system/$PREVIOUS_COLLECTOR_LABEL"
         val agentDomain = "gui/$targetUserId"
@@ -85,7 +89,7 @@ class SystemSetup(
             listOf("/bin/launchctl", "enable", agentService),
         )
         commandRunner.requireSuccess(
-            listOf("/bin/launchctl", "bootstrap", agentDomain, userPaths.agentPlist),
+            listOf("/bin/launchctl", "bootstrap", agentDomain, agentPlist),
         )
         commandRunner.requireSuccess(
             listOf("/bin/launchctl", "kickstart", "-k", agentService),

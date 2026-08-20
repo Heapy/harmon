@@ -615,9 +615,11 @@ build/tasks/_harmon_linkMacosArm64Release/harmon.kexe setup
 those two commands. All installation behavior lives in `harmon setup`; the
 script does not generate plist files or call launchctl itself.
 
-Setup first creates the application bundle, config, logs, and LaunchAgent as the
-login user. It then re-executes the same resolved binary once through sudo for
-the root-owned helper, LaunchDaemon, and service bootstrap. It:
+Setup first creates the application bundle, config, and logs as the login user,
+and stages the new LaunchAgent outside launchd's scanned directory. It then
+re-executes the same resolved binary once through sudo for the root-owned helper,
+LaunchDaemon, and service bootstrap. After that succeeds it replaces the
+published LaunchAgent plist. It:
 
 - installs the background-only agent bundle under
   `~/Library/Application Support/Harmon/Harmon.app`;
@@ -632,7 +634,8 @@ the root-owned helper, LaunchDaemon, and service bootstrap. It:
 An old `~/.local/bin/harmon` symlink managed by the former installer is removed
 so it cannot shadow an upgraded Homebrew binary. An unrelated file or symlink at
 that path is left alone. The former agent Label, plist, and helper path are
-cleaned up during the same migration.
+cleaned up during the same migration. If sudo is declined, the staged plist is
+discarded and the previously published LaunchAgent definitions remain in place.
 
 After setup, and after every source binary upgrade, run:
 

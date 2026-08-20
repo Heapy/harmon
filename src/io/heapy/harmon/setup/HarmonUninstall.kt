@@ -139,6 +139,7 @@ class UserUninstall(
         // A stop leaves persistent overrides behind; an uninstall that kept them would keep
         // deciding how a future install behaves.
         services.forEach(commandRunner::enableIfDisabled)
+        fileSystem.removeFileIfExists(paths.stagedAgentPlist)
         fileSystem.removeFileIfExists(paths.agentPlist)
         fileSystem.removeFileIfExists(paths.previousAgentPlist)
         fileSystem.removeFileIfExists(paths.legacyAgentPlist)

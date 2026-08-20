@@ -47,14 +47,26 @@ matching Debug/Release collector and source resources when running from
 
 `harmon setup` has two privilege phases. The ordinary process creates every
 path under the login user's home, signs and registers `Harmon.app`, preserves
-the existing config while enforcing mode `0600`, and writes the LaunchAgent.
-It signs with the first trusted code-signing identity reported by the system and
-falls back to an ad-hoc signature when none is installed.
-It then performs one exact sudo re-exec of its resolved binary with
-`setup --system --uid N --gid M`. That root process writes only
+the existing config while enforcing mode `0600`, and renders the candidate
+LaunchAgent plist under the protected Harmon support directory. That staging
+path is outside `~/Library/LaunchAgents`, so launchd cannot discover a second
+label while setup is waiting for sudo. It signs with the first trusted
+code-signing identity reported by the system and falls back to an ad-hoc
+signature when none is installed.
+
+The ordinary process then performs one exact sudo re-exec of its resolved
+binary with `setup --system --uid N --gid M`. That root process writes only
 `/Library/PrivilegedHelperTools`, `/Library/LaunchDaemons`, and
-`/Library/Logs/Harmon`, then replaces both launchd jobs. The public `--system`
-form supports automation that has already staged the user half.
+`/Library/Logs/Harmon`, then replaces both launchd jobs and bootstraps the agent
+from the staged definition. After that phase succeeds, the user process removes
+the pre-rename and source-installer plists before atomically publishing the
+current plist, then removes the managed symlink and staging file. A declined
+sudo password leaves every previously published LaunchAgent definition intact;
+setup also discards the non-discoverable stage on a best-effort basis. This
+ordering does not introduce an old-label and current-label pair that a later
+login could load together. The public `--system` form falls back to the
+published current plist, so automation that has already staged the user half
+remains supported.
 
 Both launchd plists are encoded from typed `LaunchdJob` values, linted by
 `plutil` while still temporary siblings of their targets, permissioned, and
@@ -91,10 +103,12 @@ failure aborts while every loaded job is still running — the persistent overri
 is the part a later run cannot undo, and it prevents a re-bootstrap at the next
 login or boot rather than a respawn mid-transition. A domain or job launchd does
 not know is tolerated: neither can be loaded, so neither needs an override. Only
-a label whose plist is present is named at all, for the same reason in reverse:
-launchd keeps a row for every label it is told about and cannot delete one, so
-disabling a job that does not exist would leave a permanent row behind. That is
-why the root phase resolves the target home through `AccountDirectory`.
+a label whose plist is present is passed to `launchctl disable`, for the same
+reason in reverse: launchd keeps a row for every label it is told about and
+cannot delete one, so disabling a job that does not exist would leave a
+permanent row behind. Every owned label is still passed to `launchctl bootout`:
+a loaded job can outlive a deleted plist and must remain stoppable. That is why
+the root phase resolves the target home through `AccountDirectory`.
 `harmon setup` retires compatibility jobs, explicitly re-enables and starts both
 current jobs, and is therefore the restart path. Once the privileged phase
 returns, the user phase removes the ephemeral live UI endpoint, so `harmon ui`
@@ -112,11 +126,11 @@ is known, then transferred to the separate tap repository. See
 
 `harmon uninstall` mirrors the privilege boundary and by default deletes no user
 data. The login-user process unloads the current, pre-rename, and source-installer
-LaunchAgents, removes their plists and the managed legacy `~/.local/bin/harmon`
-symlink, then makes one sudo re-exec for the current and pre-rename system
-LaunchDaemons, current and legacy helpers, and socket. Each phase also clears the
-persistent disable overrides that `harmon stop` may have written for the labels
-it owns, and only when one is set, since
+LaunchAgents, removes their published and staged plists and the managed legacy
+`~/.local/bin/harmon` symlink, then makes one sudo re-exec for the current and
+pre-rename system LaunchDaemons, current and legacy helpers, and socket. Each
+phase also clears the persistent disable overrides that `harmon stop` may have
+written for the labels it owns, and only when one is set, since
 launchd keeps a row for every label it is told about and offers no way to delete
 one. It keeps `Harmon.app` until that re-exec returns because the command can
 itself be running from the old bundle; only then is the app removed. Config,

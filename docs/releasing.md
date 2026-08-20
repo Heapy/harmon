@@ -143,6 +143,8 @@ sudo /usr/libexec/PlistBuddy -c 'Print :ProgramArguments:0' \
 
 /usr/bin/codesign --verify --deep --strict \
   "$HOME/Library/Application Support/Harmon/Harmon.app"
+test ! -e \
+  "$HOME/Library/Application Support/Harmon/io.heapy.harmon.agent.pending.plist"
 /bin/launchctl print "gui/$(id -u)/io.heapy.harmon.agent"
 sudo /bin/launchctl print system/io.heapy.harmon.collector
 ```
@@ -216,6 +218,8 @@ and binaries while preserving user data:
 test ! -e "$HOME/Library/LaunchAgents/io.heapy.harmon.agent.plist"
 test ! -e "$HOME/Library/LaunchAgents/dev.yoda.harmon.agent.plist"
 test ! -e "$HOME/Library/LaunchAgents/dev.yoda.harmon.plist"
+test ! -e \
+  "$HOME/Library/Application Support/Harmon/io.heapy.harmon.agent.pending.plist"
 test ! -e "$HOME/Library/Application Support/Harmon/Harmon.app"
 sudo test ! -e /Library/LaunchDaemons/io.heapy.harmon.collector.plist
 sudo test ! -e /Library/LaunchDaemons/dev.yoda.harmon.collector.plist
