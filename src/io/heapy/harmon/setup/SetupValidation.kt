@@ -38,6 +38,7 @@ data class SetupRequest(
     val system: Boolean,
     val userId: UInt? = null,
     val groupId: UInt? = null,
+    val useStagedAgentPlist: Boolean = false,
 )
 
 data class ValidatedInstallResources(

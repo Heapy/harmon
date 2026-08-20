@@ -25,7 +25,7 @@ fun isMissingLaunchdDomain(result: CommandResult): Boolean {
     return "could not find domain" in result.output.lowercase()
 }
 
-/** Neither the job nor the domain that would hold it exists, so it cannot be loaded either. */
+/** No target exists in the current launchd domain instance for an idempotent bootout. */
 fun isMissingLaunchdTarget(result: CommandResult): Boolean =
     isMissingLaunchdJob(result) || isMissingLaunchdDomain(result)
 
@@ -40,20 +40,55 @@ fun CommandRunner.bootoutIfLoaded(service: String) {
  * Clears persistent disable overrides, but only when they are actually set: launchd keeps a row
  * for every label it has been told about, so an unconditional enable would add rows uninstall
  * cannot remove afterwards. `print-disabled` returns the whole domain dictionary, so each domain
- * is queried once and that snapshot is reused for all of its labels. An unreadable snapshot leaves
- * its domain untouched rather than creating rows for labels whose state is unknown.
+ * is queried once and that snapshot is reused for all of its labels. Every snapshot is read and
+ * validated before the first `enable`, so an unreadable strict snapshot cannot leave a partially
+ * cleared set of overrides. Best-effort compatibility cleanup can instead skip unreadable domains
+ * and targets that disappear before `enable`; strict uninstall cleanup reports either failure.
  */
-fun CommandRunner.enableDisabledServices(services: List<String>) {
-    services.groupBy { it.substringBeforeLast('/') }.forEach { (domain, domainServices) ->
-        val disabledResult = run(listOf("/bin/launchctl", "print-disabled", domain))
-        domainServices.forEach { service ->
-            val label = service.substringAfterLast('/')
-            val enablement = parseLaunchctlPrintDisabled(label, disabledResult)
-            if (enablement.state == LaunchdEnablement.DISABLED) {
-                val result = run(listOf("/bin/launchctl", "enable", service))
-                if (!result.successful && !isMissingLaunchdTarget(result)) {
-                    throw CommandExecutionException(result)
+fun CommandRunner.enableDisabledServices(
+    services: List<String>,
+    ignoreUnreadableSnapshots: Boolean = false,
+) {
+    val enablements = services
+        .groupBy { it.substringBeforeLast('/') }
+        .mapNotNull { (domain, domainServices) ->
+            val disabledResult = run(listOf("/bin/launchctl", "print-disabled", domain))
+            if (!disabledResult.successful) {
+                if (ignoreUnreadableSnapshots) {
+                    return@mapNotNull null
                 }
+                throw CommandExecutionException(disabledResult)
+            }
+
+            val domainEnablements = domainServices.map { service ->
+                service to parseLaunchctlPrintDisabled(
+                    service.substringAfterLast('/'),
+                    disabledResult,
+                )
+            }
+            val unreadable = domainEnablements.firstOrNull { (_, observation) ->
+                observation.state == LaunchdEnablement.UNKNOWN
+            }
+            if (unreadable != null) {
+                if (ignoreUnreadableSnapshots) {
+                    return@mapNotNull null
+                }
+                throw SetupException(
+                    "Unable to read launchd disable overrides for domain '$domain': " +
+                        unreadable.second.error.orEmpty().ifBlank { "unknown error" },
+                )
+            }
+            domainEnablements
+        }.flatten()
+
+    enablements.forEach { (service, enablement) ->
+        if (enablement.state == LaunchdEnablement.DISABLED) {
+            val result = run(listOf("/bin/launchctl", "enable", service))
+            if (
+                !result.successful &&
+                !(ignoreUnreadableSnapshots && isMissingLaunchdTarget(result))
+            ) {
+                throw CommandExecutionException(result)
             }
         }
     }

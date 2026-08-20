@@ -50,9 +50,11 @@ class HarmonStop(
             effectiveUserId = effectiveUserId(),
             requestedUserId = request.userId,
         )
+        val targetHome = accountDirectory.homeDirectory(targetUserId)
+            ?: throw SetupException("No local account exists for uid $targetUserId")
         SystemStop(
             targetUserId = targetUserId,
-            targetHome = accountDirectory.homeDirectory(targetUserId),
+            targetHome = targetHome,
             fileSystem = fileSystem,
             commandRunner = commandRunner,
         ).run()
@@ -86,26 +88,26 @@ class UserStop(
 
 class SystemStop(
     private val targetUserId: UInt,
-    private val targetHome: String?,
+    private val targetHome: String,
     private val fileSystem: SetupFileSystem,
     private val commandRunner: CommandRunner,
 ) {
     fun run() {
         val userDomain = "gui/$targetUserId"
-        val userPaths = targetHome?.let(UserSetupPaths::forHome)
+        val userPaths = UserSetupPaths.forHome(targetHome)
         commandRunner.disableAndBootout(
             listOf(
+                StoppedService("$userDomain/$AGENT_LABEL", userPaths.agentPlist),
+                StoppedService(
+                    "$userDomain/$PREVIOUS_AGENT_LABEL",
+                    userPaths.previousAgentPlist,
+                ),
+                StoppedService("$userDomain/$LEGACY_AGENT_LABEL", userPaths.legacyAgentPlist),
                 StoppedService("system/$COLLECTOR_LABEL", SystemSetupPaths.collectorPlist),
                 StoppedService(
                     "system/$PREVIOUS_COLLECTOR_LABEL",
                     SystemSetupPaths.previousCollectorPlist,
                 ),
-                StoppedService("$userDomain/$AGENT_LABEL", userPaths?.agentPlist),
-                StoppedService(
-                    "$userDomain/$PREVIOUS_AGENT_LABEL",
-                    userPaths?.previousAgentPlist,
-                ),
-                StoppedService("$userDomain/$LEGACY_AGENT_LABEL", userPaths?.legacyAgentPlist),
             ),
             fileSystem,
         )
@@ -113,12 +115,12 @@ class SystemStop(
 }
 
 /** A launchd target and the job definition that would make launchd load it again. */
-private data class StoppedService(val target: String, val plist: String?)
+private data class StoppedService(val target: String, val plist: String)
 
 /**
  * Every disable is written before the first bootout, so an unexpected failure aborts while all
- * services are still loaded and running. A domain or job launchd does not know needs no
- * override to stay unloadable, so those failures are tolerated rather than fatal.
+ * services are still loaded and running. A failed disable is fatal when its job definition is
+ * present; bootout alone remains tolerant of a job launchd does not know.
  */
 private fun CommandRunner.disableAndBootout(
     services: List<StoppedService>,
@@ -128,15 +130,14 @@ private fun CommandRunner.disableAndBootout(
     services.forEach { service ->
         // launchd keeps a row for every label it is told about and cannot delete one, so a label
         // with no job definition is left unnamed instead of being disabled against nothing.
-        if (service.plist == null || !fileSystem.isRegularFile(service.plist)) {
+        if (!fileSystem.isRegularFile(service.plist)) {
             return@forEach
         }
         val result = run(listOf("/bin/launchctl", "disable", service.target))
-        when {
-            result.successful -> disabled += service.target
-            isMissingLaunchdTarget(result) -> Unit
-            else -> throw SetupException(partialStopMessage(service.target, result, disabled))
+        if (!result.successful) {
+            throw SetupException(partialStopMessage(service.target, result, disabled))
         }
+        disabled += service.target
     }
     services.forEach { service -> bootoutIfLoaded(service.target) }
 }

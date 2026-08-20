@@ -62,6 +62,7 @@ interface SetupFileSystem {
         target: String,
         attributes: InstalledFileAttributes,
         validateTemporaryFile: ((String) -> Unit)? = null,
+        beforePublish: (() -> Unit)? = null,
     )
 
     fun writeTextAtomically(
@@ -115,10 +116,15 @@ object PosixSetupFileSystem : SetupFileSystem {
         target: String,
         attributes: InstalledFileAttributes,
         validateTemporaryFile: ((String) -> Unit)?,
+        beforePublish: (() -> Unit)?,
     ) {
-        publishAtomically(target, attributes, validateTemporaryFile) { temporary ->
-            copyFile(source, temporary)
-        }
+        publishAtomically(
+            target = target,
+            attributes = attributes,
+            validateTemporaryFile = validateTemporaryFile,
+            beforePublish = beforePublish,
+            writeTemporaryFile = { temporary -> copyFile(source, temporary) },
+        )
     }
 
     override fun writeTextAtomically(
@@ -127,9 +133,13 @@ object PosixSetupFileSystem : SetupFileSystem {
         attributes: InstalledFileAttributes,
         validateTemporaryFile: ((String) -> Unit)?,
     ) {
-        publishAtomically(target, attributes, validateTemporaryFile) { temporary ->
-            writeText(temporary, content)
-        }
+        publishAtomically(
+            target = target,
+            attributes = attributes,
+            validateTemporaryFile = validateTemporaryFile,
+            beforePublish = null,
+            writeTemporaryFile = { temporary -> writeText(temporary, content) },
+        )
     }
 
     @OptIn(ExperimentalForeignApi::class)
@@ -220,6 +230,7 @@ object PosixSetupFileSystem : SetupFileSystem {
         target: String,
         attributes: InstalledFileAttributes,
         validateTemporaryFile: ((String) -> Unit)?,
+        beforePublish: (() -> Unit)?,
         writeTemporaryFile: (String) -> Unit,
     ) {
         temporarySequence += 1u
@@ -229,6 +240,7 @@ object PosixSetupFileSystem : SetupFileSystem {
             writeTemporaryFile(temporary)
             applyAttributes(temporary, attributes)
             validateTemporaryFile?.invoke(temporary)
+            beforePublish?.invoke()
             if (rename(temporary, target) != 0) {
                 throw IllegalStateException(
                     "Unable to publish '$target': ${systemErrorText()}",

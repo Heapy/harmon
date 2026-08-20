@@ -619,7 +619,8 @@ Setup first creates the application bundle, config, and logs as the login user,
 and stages the new LaunchAgent outside launchd's scanned directory. It then
 re-executes the same resolved binary once through sudo for the root-owned helper,
 LaunchDaemon, and service bootstrap. After that succeeds it replaces the
-published LaunchAgent plist. It:
+published LaunchAgent plist; the replacement is fully prepared and linted before
+any compatibility plist is removed. It:
 
 - installs the background-only agent bundle under
   `~/Library/Application Support/Harmon/Harmon.app`;
@@ -676,6 +677,10 @@ password therefore changes nothing. `harmon status` then reports that Harmon is
 intentionally stopped; run `harmon setup` to clear retired-label overrides and
 enable and start both current services again. Automation that already holds root
 can call the privileged phase directly with `harmon stop --system --uid UID`.
+The UID must name a local account. If any managed LaunchAgent plist exists, that
+account's GUI launchd domain must also be active; otherwise the command fails
+before changing the collector and the still-enabled agent can load at the next
+login.
 
 Remove both services and installed binaries while preserving configuration,
 logs, generated reports and the sample history:
@@ -684,10 +689,14 @@ logs, generated reports and the sample history:
 harmon uninstall
 ```
 
-The command runs as the login user, removes the LaunchAgents and app bundle,
-then requests sudo once to remove the LaunchDaemon, root helper, legacy helper,
-and socket. A Homebrew install itself remains in the Cellar; run
-`brew uninstall harmon` afterwards if the CLI should be removed too.
+The command runs as the login user, unloads the LaunchAgents and removes their
+plists, then requests sudo once to remove the LaunchDaemon, root helper, legacy
+helper, and socket. The app bundle is retained through that re-exec and removed
+immediately after it succeeds. A Homebrew install itself remains in the Cellar;
+run `brew uninstall harmon` afterwards if the CLI should be removed too.
+Direct automation through `harmon uninstall --system --uid UID` requires that
+user's active GUI launchd domain so every disable override can be verified and
+cleared; an unavailable domain is reported instead of silently leaving state.
 `scripts/uninstall.sh` is retained only as a source-checkout compatibility
 shortcut: like `scripts/install.sh`, it builds the release binary and delegates
 all behavior to the typed CLI command. It passes no flags, so `--purge` is
@@ -705,12 +714,15 @@ It removes `~/.config/harmon`, `~/Library/Logs/Harmon`, `/Library/Logs/Harmon`,
 and the whole `~/Library/Application Support/Harmon` tree. The tree is removed
 whole rather than file by file because the WAL and SHM sidecars of `history.db`
 and the report temporaries carry pid and sequence suffixes that no explicit list
-could enumerate. Each removed tree is printed before anything is deleted, and
-that data is deleted only after the privileged phase returns, so a declined sudo
-password leaves it intact — the services and deployed binaries are already gone
-by then, and `harmon setup` restores them. Both forms also clear the launchd
-disable overrides a `harmon stop` wrote. The `--system` form purges only the
-root-owned log directory. Purging is idempotent and can be run after a plain
+could enumerate. Each removed tree is printed before anything is deleted. The
+privileged phase removes the root-owned log; only after it returns does the user
+phase touch the three user-owned trees, so a declined sudo password leaves those
+intact. The recoverable app bundle is removed first; if that fails, the user
+config, logs, reports, and history are not touched. The services and other
+deployed binaries are already gone by then, and `harmon setup` restores them.
+Both forms also clear the launchd disable overrides a `harmon stop` wrote. The
+`--system` form purges only the root-owned log directory. Purging is idempotent
+and can be run after a plain
 `harmon uninstall`.
 
 If both `harmon uninstall` and `brew uninstall harmon` already ran, there is no

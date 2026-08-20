@@ -1,4 +1,5 @@
 import io.heapy.harmon.BuildInfo
+import io.heapy.harmon.setup.AccountDirectory
 import io.heapy.harmon.setup.CommandExecutionException
 import io.heapy.harmon.setup.CommandInvocation
 import io.heapy.harmon.setup.CommandResult
@@ -7,12 +8,14 @@ import io.heapy.harmon.setup.FileOwnership
 import io.heapy.harmon.setup.InstallResourceOrigin
 import io.heapy.harmon.setup.InstallResources
 import io.heapy.harmon.setup.InstalledFileAttributes
+import io.heapy.harmon.setup.HarmonStop
 import io.heapy.harmon.setup.SetupException
 import io.heapy.harmon.setup.SetupFileSystem
 import io.heapy.harmon.setup.SystemSetup
 import io.heapy.harmon.setup.SystemSetupPaths
 import io.heapy.harmon.setup.SystemStop
 import io.heapy.harmon.setup.SystemUninstall
+import io.heapy.harmon.setup.StopRequest
 import io.heapy.harmon.setup.UninstallPurge
 import io.heapy.harmon.setup.UserSetup
 import io.heapy.harmon.setup.UserSetupPaths
@@ -83,8 +86,8 @@ class SetupWorkflowTest {
                 )
             }
             .second.second
-        assertFalse(paths.previousAgentPlist in firstPublishPaths)
-        assertFalse(paths.legacyAgentPlist in firstPublishPaths)
+        assertTrue(paths.previousAgentPlist in firstPublishPaths)
+        assertTrue(paths.legacyAgentPlist in firstPublishPaths)
         assertFalse(paths.agentPlist in firstPublishPaths)
         assertTrue(paths.stagedAgentPlist in firstPublishPaths)
         assertTrue(
@@ -103,6 +106,7 @@ class SetupWorkflowTest {
                 TEST_AGENT_SOURCE,
                 "setup",
                 "--system",
+                "--staged-agent",
                 "--uid",
                 "501",
                 "--gid",
@@ -128,6 +132,7 @@ class SetupWorkflowTest {
             TEST_AGENT_SOURCE,
             "setup",
             "--system",
+            "--staged-agent",
             "--uid",
             "501",
             "--gid",
@@ -183,6 +188,7 @@ class SetupWorkflowTest {
             TEST_AGENT_SOURCE,
             "setup",
             "--system",
+            "--staged-agent",
             "--uid",
             "501",
             "--gid",
@@ -205,6 +211,38 @@ class SetupWorkflowTest {
 
         assertEquals("installed definition", fileSystem.files[paths.agentPlist])
         assertFalse(paths.stagedAgentPlist in fileSystem.files)
+    }
+
+    @Test
+    fun userPhaseKeepsCompatibilityDefinitionsWhenFinalPublicationCannotBePrepared() {
+        val fileSystem = workflowFileSystem()
+        val paths = UserSetupPaths.forHome(TEST_HOME)
+        fileSystem.files[paths.previousAgentPlist] = "pre-rename"
+        fileSystem.files[paths.legacyAgentPlist] = "legacy"
+        val failedLint = listOf(
+            "/usr/bin/plutil",
+            "-lint",
+            "${paths.agentPlist}.fake.tmp",
+        )
+
+        assertFailsWith<CommandExecutionException> {
+            UserSetup(
+                validated = validatedResources(),
+                userId = 501u,
+                groupId = 20u,
+                home = TEST_HOME,
+                fileSystem = fileSystem,
+                commandRunner = WorkflowCommandRunner(
+                    fileSystem,
+                    failedArguments = setOf(failedLint),
+                ),
+            ).run()
+        }
+
+        assertEquals("pre-rename", fileSystem.files[paths.previousAgentPlist])
+        assertEquals("legacy", fileSystem.files[paths.legacyAgentPlist])
+        assertFalse(paths.agentPlist in fileSystem.files)
+        assertTrue(paths.stagedAgentPlist in fileSystem.files)
     }
 
     @Test
@@ -443,8 +481,68 @@ class SetupWorkflowTest {
     }
 
     @Test
+    fun userPhaseTreatsCompatibilityOverrideInspectionAsBestEffort() {
+        val fileSystem = workflowFileSystem()
+        val paths = UserSetupPaths.forHome(TEST_HOME)
+        val snapshot = listOf("/bin/launchctl", "print-disabled", "gui/501")
+        val runner = WorkflowCommandRunner(
+            fileSystem,
+            failedArguments = setOf(snapshot),
+        )
+
+        UserSetup(
+            validated = validatedResources(),
+            userId = 501u,
+            groupId = 20u,
+            home = TEST_HOME,
+            fileSystem = fileSystem,
+            commandRunner = runner,
+        ).run()
+
+        assertTrue(paths.agentPlist in fileSystem.files)
+        assertFalse(paths.stagedAgentPlist in fileSystem.files)
+        assertTrue(runner.invocations.any { it.arguments == snapshot })
+    }
+
+    @Test
+    fun systemPhaseTreatsCompatibilityOverrideInspectionAsBestEffort() {
+        val fileSystem = workflowFileSystem()
+        val paths = UserSetupPaths.forHome(TEST_HOME)
+        fileSystem.files[paths.agentPlist] = "published agent"
+        val snapshot = listOf("/bin/launchctl", "print-disabled", "system")
+        val runner = WorkflowCommandRunner(
+            fileSystem,
+            failedArguments = setOf(snapshot),
+        )
+
+        SystemSetup(
+            validated = validatedResources(),
+            targetUserId = 501u,
+            targetGroupId = 20u,
+            targetHome = TEST_HOME,
+            wheelGroupId = 0u,
+            fileSystem = fileSystem,
+            commandRunner = runner,
+        ).run()
+
+        assertTrue(runner.invocations.any { it.arguments == snapshot })
+        assertTrue(
+            runner.invocations.any {
+                it.arguments == listOf(
+                    "/bin/launchctl",
+                    "bootstrap",
+                    "system",
+                    SystemSetupPaths.collectorPlist,
+                )
+            },
+        )
+    }
+
+    @Test
     fun systemPhaseRequiresTheUserOwnedPlistBeforeItsFirstWrite() {
         val fileSystem = workflowFileSystem()
+        val paths = UserSetupPaths.forHome(TEST_HOME)
+        fileSystem.files[paths.stagedAgentPlist] = "abandoned staged definition"
 
         assertFailsWith<SetupException> {
             SystemSetup(
@@ -462,11 +560,43 @@ class SetupWorkflowTest {
     }
 
     @Test
-    fun systemPhasePrefersTheStagedAgentDefinition() {
+    fun systemPhaseUsesTheExplicitStagedAgentDefinition() {
         val fileSystem = workflowFileSystem()
         val paths = UserSetupPaths.forHome(TEST_HOME)
         fileSystem.files[paths.agentPlist] = "published agent"
         fileSystem.files[paths.stagedAgentPlist] = "staged agent"
+        val runner = WorkflowCommandRunner()
+
+        SystemSetup(
+            validated = validatedResources(),
+            targetUserId = 501u,
+            targetGroupId = 20u,
+            targetHome = TEST_HOME,
+            useStagedAgentPlist = true,
+            wheelGroupId = 0u,
+            fileSystem = fileSystem,
+            commandRunner = runner,
+        ).run()
+
+        assertEquals(
+            listOf(
+                "/bin/launchctl",
+                "bootstrap",
+                "gui/501",
+                paths.stagedAgentPlist,
+            ),
+            runner.invocations
+                .map(CommandInvocation::arguments)
+                .single { it.take(3) == listOf("/bin/launchctl", "bootstrap", "gui/501") },
+        )
+    }
+
+    @Test
+    fun publicSystemPhaseIgnoresAnAbandonedStagedAgentDefinition() {
+        val fileSystem = workflowFileSystem()
+        val paths = UserSetupPaths.forHome(TEST_HOME)
+        fileSystem.files[paths.agentPlist] = "published agent"
+        fileSystem.files[paths.stagedAgentPlist] = "abandoned staged agent"
         val runner = WorkflowCommandRunner()
 
         SystemSetup(
@@ -484,12 +614,34 @@ class SetupWorkflowTest {
                 "/bin/launchctl",
                 "bootstrap",
                 "gui/501",
-                paths.stagedAgentPlist,
+                paths.agentPlist,
             ),
             runner.invocations
                 .map(CommandInvocation::arguments)
                 .single { it.take(3) == listOf("/bin/launchctl", "bootstrap", "gui/501") },
         )
+    }
+
+    @Test
+    fun stagedSystemPhaseDoesNotFallBackToThePublishedDefinition() {
+        val fileSystem = workflowFileSystem()
+        val paths = UserSetupPaths.forHome(TEST_HOME)
+        fileSystem.files[paths.agentPlist] = "published agent"
+
+        assertFailsWith<SetupException> {
+            SystemSetup(
+                validated = validatedResources(),
+                targetUserId = 501u,
+                targetGroupId = 20u,
+                targetHome = TEST_HOME,
+                useStagedAgentPlist = true,
+                wheelGroupId = 0u,
+                fileSystem = fileSystem,
+                commandRunner = WorkflowCommandRunner(),
+            ).run()
+        }
+
+        assertTrue(fileSystem.writtenTargets.isEmpty())
     }
 
     @Test
@@ -608,6 +760,58 @@ class SetupWorkflowTest {
     }
 
     @Test
+    fun userUninstallPreservesDefinitionsAndOverridesWhenBootoutFails() {
+        val fileSystem = workflowFileSystem()
+        val paths = UserSetupPaths.forHome(TEST_HOME)
+        fileSystem.files[paths.agentPlist] = "current"
+        fileSystem.files[paths.previousAgentPlist] = "pre-rename"
+        fileSystem.files[paths.legacyAgentPlist] = "legacy"
+        val failedBootout = listOf(
+            "/bin/launchctl",
+            "bootout",
+            "gui/501/dev.yoda.harmon.agent",
+        )
+        val runner = WorkflowCommandRunner(
+            fileSystem,
+            failedArguments = setOf(failedBootout),
+            disabledLabels = setOf(
+                "io.heapy.harmon.agent",
+                "dev.yoda.harmon.agent",
+                "dev.yoda.harmon",
+            ),
+        )
+
+        val failure = assertFailsWith<CommandExecutionException> {
+            UserUninstall(
+                executablePath = TEST_AGENT_SOURCE,
+                userId = 501u,
+                home = TEST_HOME,
+                purge = false,
+                fileSystem = fileSystem,
+                commandRunner = runner,
+            ).run()
+        }
+
+        assertEquals(failedBootout, failure.result.invocation.arguments)
+        assertEquals("current", fileSystem.files[paths.agentPlist])
+        assertEquals("pre-rename", fileSystem.files[paths.previousAgentPlist])
+        assertEquals("legacy", fileSystem.files[paths.legacyAgentPlist])
+        assertEquals(
+            listOf(
+                listOf("/bin/launchctl", "bootout", "gui/501/io.heapy.harmon.agent"),
+                failedBootout,
+            ),
+            runner.invocations.map(CommandInvocation::arguments),
+        )
+        assertTrue(
+            runner.invocations.none {
+                it.arguments.getOrNull(1) in setOf("print-disabled", "enable")
+            },
+            "an aborted unload cleared overrides while published definitions remained",
+        )
+    }
+
+    @Test
     fun systemUninstallIsIdempotentAndPreservesCollectorLogs() {
         val fileSystem = workflowFileSystem()
         val runner = WorkflowCommandRunner()
@@ -707,6 +911,44 @@ class SetupWorkflowTest {
                 "${paths.supportDirectory}/history.db" in presentAtSudo,
             "user data was destroyed before the privileged phase could fail",
         )
+        assertEquals(
+            listOf(
+                paths.appBundle,
+                paths.configDirectory,
+                paths.logDirectory,
+                paths.supportDirectory,
+            ),
+            fileSystem.treeRemovalAttempts,
+        )
+    }
+
+    @Test
+    fun userUninstallPurgeKeepsUserDataWhenTheAppBundleCannotBeRemoved() {
+        val fileSystem = workflowFileSystem()
+        val paths = UserSetupPaths.forHome(TEST_HOME)
+        fileSystem.directories += paths.appBundle
+        fileSystem.files[paths.installedAgent] = "installed agent"
+        fileSystem.files[paths.config] = "custom=true"
+        fileSystem.files["${paths.supportDirectory}/history.db"] = "history"
+        fileSystem.files["${paths.logDirectory}/agent.log"] = "log"
+        fileSystem.failedTreeRemovals += paths.appBundle
+
+        val failure = assertFailsWith<IllegalStateException> {
+            UserUninstall(
+                executablePath = paths.installedAgent,
+                userId = 501u,
+                home = TEST_HOME,
+                purge = true,
+                fileSystem = fileSystem,
+                commandRunner = WorkflowCommandRunner(fileSystem),
+            ).run()
+        }
+
+        assertTrue(paths.appBundle in failure.message.orEmpty())
+        assertEquals(listOf(paths.appBundle), fileSystem.treeRemovalAttempts)
+        assertEquals("custom=true", fileSystem.files[paths.config])
+        assertEquals("history", fileSystem.files["${paths.supportDirectory}/history.db"])
+        assertEquals("log", fileSystem.files["${paths.logDirectory}/agent.log"])
     }
 
     @Test
@@ -836,6 +1078,42 @@ class SetupWorkflowTest {
     }
 
     @Test
+    fun userUninstallPreservesTheSystemFailureWhenOverrideInspectionAlsoFails() {
+        val fileSystem = workflowFileSystem()
+        val paths = UserSetupPaths.forHome(TEST_HOME)
+        val sudo = listOf(
+            "/usr/bin/sudo",
+            paths.installedAgent,
+            "uninstall",
+            "--system",
+            "--uid",
+            "501",
+        )
+        val snapshot = listOf("/bin/launchctl", "print-disabled", "gui/501")
+        val runner = WorkflowCommandRunner(
+            fileSystem,
+            failedArguments = setOf(sudo, snapshot),
+        )
+
+        val failure = assertFailsWith<CommandExecutionException> {
+            UserUninstall(
+                executablePath = paths.installedAgent,
+                userId = 501u,
+                home = TEST_HOME,
+                purge = false,
+                fileSystem = fileSystem,
+                commandRunner = runner,
+            ).run()
+        }
+
+        assertEquals(sudo, failure.result.invocation.arguments)
+        val cleanupFailure = assertIs<CommandExecutionException>(
+            failure.suppressedExceptions.single(),
+        )
+        assertEquals(snapshot, cleanupFailure.result.invocation.arguments)
+    }
+
+    @Test
     fun uninstallDoesNotEnableAnyGenerationThatWasNeverDisabled() {
         val fileSystem = workflowFileSystem()
         val runner = WorkflowCommandRunner(fileSystem)
@@ -871,27 +1149,125 @@ class SetupWorkflowTest {
     }
 
     @Test
-    fun systemUninstallLeavesOverridesAloneWhenDomainSnapshotsCannotBeRead() {
+    fun systemUninstallFailsBeforeDeletingFilesWhenADomainSnapshotCannotBeRead() {
         val systemSnapshot = listOf("/bin/launchctl", "print-disabled", "system")
-        val userSnapshot = listOf("/bin/launchctl", "print-disabled", "gui/501")
+        val fileSystem = workflowFileSystem()
+        fileSystem.files[SystemSetupPaths.collectorPlist] = "daemon"
+        fileSystem.files[SystemSetupPaths.collectorBinary] = "collector"
         val runner = WorkflowCommandRunner(
-            failedArguments = setOf(systemSnapshot, userSnapshot),
+            fileSystem,
+            failedArguments = setOf(systemSnapshot),
         )
 
-        SystemUninstall(
-            targetUserId = 501u,
-            purge = false,
-            fileSystem = workflowFileSystem(),
-            commandRunner = runner,
-        ).run()
+        val failure = assertFailsWith<CommandExecutionException> {
+            SystemUninstall(
+                targetUserId = 501u,
+                purge = false,
+                fileSystem = fileSystem,
+                commandRunner = runner,
+            ).run()
+        }
 
+        assertEquals(systemSnapshot, failure.result.invocation.arguments)
         assertEquals(
-            listOf(systemSnapshot, userSnapshot),
-            runner.invocations
-                .map(CommandInvocation::arguments)
+            listOf(systemSnapshot),
+            runner.invocations.map(CommandInvocation::arguments)
                 .filter { it.getOrNull(1) == "print-disabled" },
         )
         assertTrue(runner.invocations.none { it.arguments.getOrNull(1) == "enable" })
+        assertEquals("daemon", fileSystem.files[SystemSetupPaths.collectorPlist])
+        assertEquals("collector", fileSystem.files[SystemSetupPaths.collectorBinary])
+    }
+
+    @Test
+    fun systemUninstallReadsEveryDomainBeforeClearingAnyOverride() {
+        val userSnapshot = listOf("/bin/launchctl", "print-disabled", "gui/501")
+        val fileSystem = workflowFileSystem()
+        fileSystem.files[SystemSetupPaths.collectorPlist] = "daemon"
+        fileSystem.files[SystemSetupPaths.collectorBinary] = "collector"
+        val runner = WorkflowCommandRunner(
+            fileSystem,
+            failedArguments = setOf(userSnapshot),
+            disabledLabels = setOf("io.heapy.harmon.collector"),
+        )
+
+        val failure = assertFailsWith<CommandExecutionException> {
+            SystemUninstall(
+                targetUserId = 501u,
+                purge = false,
+                fileSystem = fileSystem,
+                commandRunner = runner,
+            ).run()
+        }
+
+        assertEquals(userSnapshot, failure.result.invocation.arguments)
+        assertEquals(
+            listOf(
+                listOf("/bin/launchctl", "print-disabled", "system"),
+                userSnapshot,
+            ),
+            runner.invocations.map(CommandInvocation::arguments)
+                .filter { it.getOrNull(1) == "print-disabled" },
+        )
+        assertTrue(runner.invocations.none { it.arguments.getOrNull(1) == "enable" })
+        assertEquals("daemon", fileSystem.files[SystemSetupPaths.collectorPlist])
+        assertEquals("collector", fileSystem.files[SystemSetupPaths.collectorBinary])
+    }
+
+    @Test
+    fun systemUninstallRejectsMalformedDisableSnapshotsBeforeDeletingFiles() {
+        val fileSystem = workflowFileSystem()
+        fileSystem.files[SystemSetupPaths.collectorPlist] = "daemon"
+        fileSystem.files[SystemSetupPaths.collectorBinary] = "collector"
+        val runner = WorkflowCommandRunner(
+            fileSystem,
+            printDisabledOutputs = mapOf(
+                "system" to "disabled services = {\n",
+            ),
+        )
+
+        val failure = assertFailsWith<SetupException> {
+            SystemUninstall(
+                targetUserId = 501u,
+                purge = false,
+                fileSystem = fileSystem,
+                commandRunner = runner,
+            ).run()
+        }
+
+        assertTrue("domain 'system'" in failure.message.orEmpty())
+        assertTrue("unexpected 'launchctl print-disabled' output" in failure.message.orEmpty())
+        assertTrue(runner.invocations.none { it.arguments.getOrNull(1) == "enable" })
+        assertEquals("daemon", fileSystem.files[SystemSetupPaths.collectorPlist])
+        assertEquals("collector", fileSystem.files[SystemSetupPaths.collectorBinary])
+    }
+
+    @Test
+    fun systemUninstallReportsAnOverrideThatCannotBeCleared() {
+        val fileSystem = workflowFileSystem()
+        fileSystem.files[SystemSetupPaths.collectorPlist] = "daemon"
+        val failedEnable = listOf(
+            "/bin/launchctl",
+            "enable",
+            "gui/501/dev.yoda.harmon.agent",
+        )
+        val runner = WorkflowCommandRunner(
+            fileSystem,
+            missingArguments = setOf(failedEnable),
+            disabledLabels = setOf("dev.yoda.harmon.agent"),
+        )
+
+        val failure = assertFailsWith<CommandExecutionException> {
+            SystemUninstall(
+                targetUserId = 501u,
+                purge = false,
+                fileSystem = fileSystem,
+                commandRunner = runner,
+            ).run()
+        }
+
+        assertEquals(failedEnable, failure.result.invocation.arguments)
+        assertEquals("daemon", fileSystem.files[SystemSetupPaths.collectorPlist])
     }
 
     @Test
@@ -1070,21 +1446,42 @@ class SetupWorkflowTest {
                 listOf(
                     "/bin/launchctl",
                     "disable",
-                    "system/dev.yoda.harmon.collector",
+                    "gui/501/dev.yoda.harmon.agent",
                 ),
                 listOf(
                     "/bin/launchctl",
                     "disable",
-                    "gui/501/dev.yoda.harmon.agent",
+                    "system/dev.yoda.harmon.collector",
                 ),
-                listOf("/bin/launchctl", "bootout", "system/io.heapy.harmon.collector"),
-                listOf("/bin/launchctl", "bootout", "system/dev.yoda.harmon.collector"),
                 listOf("/bin/launchctl", "bootout", "gui/501/io.heapy.harmon.agent"),
                 listOf("/bin/launchctl", "bootout", "gui/501/dev.yoda.harmon.agent"),
                 listOf("/bin/launchctl", "bootout", "gui/501/dev.yoda.harmon"),
+                listOf("/bin/launchctl", "bootout", "system/io.heapy.harmon.collector"),
+                listOf("/bin/launchctl", "bootout", "system/dev.yoda.harmon.collector"),
             ),
             runner.invocations.map(CommandInvocation::arguments),
         )
+    }
+
+    @Test
+    fun harmonStopRejectsAnUnknownTargetAccountBeforeTouchingLaunchd() {
+        val runner = WorkflowCommandRunner()
+
+        val failure = assertFailsWith<SetupException> {
+            HarmonStop(
+                commandRunner = runner,
+                fileSystem = workflowFileSystem(),
+                accountDirectory = object : AccountDirectory {
+                    override fun homeDirectory(userId: UInt): String? = null
+
+                    override fun groupId(groupName: String): UInt? = null
+                },
+                effectiveUserId = { 0u },
+            ).run(StopRequest(system = true, userId = 501u))
+        }
+
+        assertEquals("No local account exists for uid 501", failure.message)
+        assertTrue(runner.invocations.isEmpty())
     }
 
     @Test
@@ -1092,7 +1489,7 @@ class SetupWorkflowTest {
         val failedDisable = listOf(
             "/bin/launchctl",
             "disable",
-            "gui/501/io.heapy.harmon.agent",
+            "gui/501/dev.yoda.harmon",
         )
         val fileSystem = installedStopFileSystem()
         val runner = WorkflowCommandRunner(
@@ -1111,45 +1508,37 @@ class SetupWorkflowTest {
 
         assertEquals(
             listOf(
-                listOf(
-                    "/bin/launchctl",
-                    "disable",
-                    "system/io.heapy.harmon.collector",
-                ),
+                listOf("/bin/launchctl", "disable", "gui/501/io.heapy.harmon.agent"),
                 failedDisable,
             ),
             runner.invocations.map(CommandInvocation::arguments),
         )
         assertTrue(
-            "system/io.heapy.harmon.collector is now disabled" in failure.message.orEmpty(),
-            "the partial state was not reported: ${failure.message}",
+            "gui/501/io.heapy.harmon.agent is now disabled" in failure.message.orEmpty(),
+            "the partial disable was not reported: ${failure.message}",
         )
     }
 
     @Test
-    fun systemStopToleratesADomainThatDoesNotResolve() {
+    fun systemStopFailsBeforeChangingTheCollectorWhenTheGuiDomainDoesNotResolve() {
         val runner = WorkflowMissingDomainRunner("gui/501")
 
-        SystemStop(
-            targetUserId = 501u,
-            targetHome = TEST_HOME,
-            fileSystem = installedStopFileSystem(),
-            commandRunner = runner,
-        ).run()
+        val failure = assertFailsWith<SetupException> {
+            SystemStop(
+                targetUserId = 501u,
+                targetHome = TEST_HOME,
+                fileSystem = installedStopFileSystem(),
+                commandRunner = runner,
+            ).run()
+        }
 
         assertEquals(
             listOf(
-                listOf("/bin/launchctl", "disable", "system/io.heapy.harmon.collector"),
                 listOf("/bin/launchctl", "disable", "gui/501/io.heapy.harmon.agent"),
-                listOf("/bin/launchctl", "disable", "gui/501/dev.yoda.harmon"),
-                listOf("/bin/launchctl", "bootout", "system/io.heapy.harmon.collector"),
-                listOf("/bin/launchctl", "bootout", "system/dev.yoda.harmon.collector"),
-                listOf("/bin/launchctl", "bootout", "gui/501/io.heapy.harmon.agent"),
-                listOf("/bin/launchctl", "bootout", "gui/501/dev.yoda.harmon.agent"),
-                listOf("/bin/launchctl", "bootout", "gui/501/dev.yoda.harmon"),
             ),
             runner.invocations.map(CommandInvocation::arguments),
         )
+        assertTrue("Could not find domain" in failure.message.orEmpty())
     }
 
     @Test
@@ -1170,8 +1559,8 @@ class SetupWorkflowTest {
         val arguments = runner.invocations.map(CommandInvocation::arguments)
         assertEquals(
             listOf(
-                listOf("/bin/launchctl", "disable", "system/io.heapy.harmon.collector"),
                 listOf("/bin/launchctl", "disable", "gui/501/io.heapy.harmon.agent"),
+                listOf("/bin/launchctl", "disable", "system/io.heapy.harmon.collector"),
             ),
             arguments.filter { it.getOrNull(1) == "disable" },
             "a label with no plist was named, which adds a launchd row nothing can remove",
@@ -1203,16 +1592,6 @@ class SetupWorkflowTest {
                 listOf(
                     "/bin/launchctl",
                     "disable",
-                    "system/io.heapy.harmon.collector",
-                ),
-                listOf(
-                    "/bin/launchctl",
-                    "disable",
-                    "system/dev.yoda.harmon.collector",
-                ),
-                listOf(
-                    "/bin/launchctl",
-                    "disable",
                     "gui/501/io.heapy.harmon.agent",
                 ),
                 listOf(
@@ -1227,12 +1606,12 @@ class SetupWorkflowTest {
                 ),
                 listOf(
                     "/bin/launchctl",
-                    "bootout",
+                    "disable",
                     "system/io.heapy.harmon.collector",
                 ),
                 listOf(
                     "/bin/launchctl",
-                    "bootout",
+                    "disable",
                     "system/dev.yoda.harmon.collector",
                 ),
                 listOf(
@@ -1249,6 +1628,16 @@ class SetupWorkflowTest {
                     "/bin/launchctl",
                     "bootout",
                     "gui/501/dev.yoda.harmon",
+                ),
+                listOf(
+                    "/bin/launchctl",
+                    "bootout",
+                    "system/io.heapy.harmon.collector",
+                ),
+                listOf(
+                    "/bin/launchctl",
+                    "bootout",
+                    "system/dev.yoda.harmon.collector",
                 ),
             ),
             runner.invocations.map(CommandInvocation::arguments),
@@ -1259,7 +1648,9 @@ class SetupWorkflowTest {
 private class WorkflowCommandRunner(
     private val fileSystem: WorkflowFileSystem? = null,
     private val failedArguments: Set<List<String>> = emptySet(),
+    private val missingArguments: Set<List<String>> = emptySet(),
     private val disabledLabels: Set<String> = emptySet(),
+    private val printDisabledOutputs: Map<String, String> = emptyMap(),
 ) : CommandRunner {
     val invocations = mutableListOf<CommandInvocation>()
     val pathsPresentWhenInvoked = mutableListOf<Pair<String, Set<String>>>()
@@ -1272,10 +1663,12 @@ private class WorkflowCommandRunner(
         return when {
             arguments in failedArguments ->
                 CommandResult(invocation, 77, "Operation not permitted")
+            arguments in missingArguments ->
+                CommandResult(invocation, 112, "Could not find domain for user gui: 501")
             arguments.take(2) == listOf("/bin/launchctl", "print-disabled") ->
                 success(
                     invocation,
-                    buildString {
+                    printDisabledOutputs[arguments.last()] ?: buildString {
                         appendLine("\tdisabled services = {")
                         disabledLabels.forEach { appendLine("\t\t\"$it\" => disabled") }
                         append("\t}")
@@ -1339,6 +1732,8 @@ private class WorkflowFileSystem : SetupFileSystem {
     val symlinks = mutableMapOf<String, String>()
     val attributes = mutableMapOf<String, InstalledFileAttributes>()
     val writtenTargets = mutableListOf<String>()
+    val treeRemovalAttempts = mutableListOf<String>()
+    val failedTreeRemovals = mutableSetOf<String>()
 
     override fun ensureDirectory(path: String, attributes: InstalledFileAttributes) {
         directories += path
@@ -1350,9 +1745,11 @@ private class WorkflowFileSystem : SetupFileSystem {
         target: String,
         attributes: InstalledFileAttributes,
         validateTemporaryFile: ((String) -> Unit)?,
+        beforePublish: (() -> Unit)?,
     ) {
         val temporary = "$target.fake.tmp"
         validateTemporaryFile?.invoke(temporary)
+        beforePublish?.invoke()
         files[target] = files[source] ?: "<binary:$source>"
         this.attributes[target] = attributes
         writtenTargets += target
@@ -1395,6 +1792,10 @@ private class WorkflowFileSystem : SetupFileSystem {
     }
 
     override fun removeTreeIfExists(path: String) {
+        treeRemovalAttempts += path
+        if (path in failedTreeRemovals) {
+            throw IllegalStateException("Unable to remove '$path': injected failure")
+        }
         files.keys.filter { it == path || it.startsWith("$path/") }.forEach(files::remove)
         directories.removeAll { it == path || it.startsWith("$path/") }
         symlinks.keys.filter { it == path || it.startsWith("$path/") }.forEach(symlinks::remove)

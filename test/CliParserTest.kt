@@ -5,6 +5,7 @@ import io.heapy.harmon.config.SAMPLE_SECONDS_RANGE
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFailsWith
+import kotlin.test.assertFalse
 import kotlin.test.assertIs
 import kotlin.test.assertTrue
 
@@ -80,6 +81,7 @@ class CliParserTest {
         assertEquals(false, user.system)
         assertEquals(null, user.userId)
         assertEquals(null, user.groupId)
+        assertFalse(user.useStagedAgentPlist)
 
         val system = assertIs<Command.Setup>(
             CliParser.parse(
@@ -96,6 +98,27 @@ class CliParserTest {
         assertTrue(system.system)
         assertEquals(501u, system.userId)
         assertEquals(20u, system.groupId)
+        assertFalse(system.useStagedAgentPlist)
+
+        assertEquals(
+            Command.Setup(
+                system = true,
+                userId = 501u,
+                groupId = 20u,
+                useStagedAgentPlist = true,
+            ),
+            CliParser.parse(
+                arrayOf(
+                    "setup",
+                    "--system",
+                    "--staged-agent",
+                    "--uid",
+                    "501",
+                    "--gid",
+                    "20",
+                ),
+            ),
+        )
     }
 
     @Test
@@ -111,6 +134,29 @@ class CliParserTest {
                 arrayOf("setup", "--system", "--uid", "0", "--gid", "invalid"),
             )
         }
+        assertEquals(
+            "--staged-agent requires --system",
+            assertFailsWith<CliException> {
+                CliParser.parse(arrayOf("setup", "--staged-agent"))
+            }.message,
+        )
+        assertEquals(
+            "--staged-agent may be specified only once",
+            assertFailsWith<CliException> {
+                CliParser.parse(
+                    arrayOf(
+                        "setup",
+                        "--system",
+                        "--uid",
+                        "501",
+                        "--gid",
+                        "20",
+                        "--staged-agent",
+                        "--staged-agent",
+                    ),
+                )
+            }.message,
+        )
     }
 
     @Test

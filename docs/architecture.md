@@ -55,21 +55,27 @@ code-signing identity reported by the system and falls back to an ad-hoc
 signature when none is installed.
 
 The ordinary process then performs one exact sudo re-exec of its resolved
-binary with `setup --system --uid N --gid M`. That root process writes only
-`/Library/PrivilegedHelperTools`, `/Library/LaunchDaemons`, and
+binary with `setup --system --staged-agent --uid N --gid M`. That root process
+writes only `/Library/PrivilegedHelperTools`, `/Library/LaunchDaemons`, and
 `/Library/Logs/Harmon`, then retires every compatibility job, removes their
 root-owned artifacts, and conditionally clears a previous-collector override
 reported disabled by launchd. It unconditionally enables and starts both current
 jobs, bootstrapping the agent from the staged definition. After that phase
-succeeds, the user process removes the pre-rename and source-installer plists,
-atomically publishes the current plist, and only then conditionally clears their
-reported disabled overrides before removing the managed symlink and staging
-file. A declined sudo password leaves every previously published LaunchAgent
-definition and override intact; setup also discards the non-discoverable stage
-on a best-effort basis. This ordering does not introduce an old-label and
-current-label pair that a later login could load together. The public `--system`
-form falls back to the published current plist, so automation that has already
-staged the user half remains supported.
+succeeds, the user process prepares and lints a temporary sibling of the current
+plist while the compatibility definitions still exist. Only after every
+fallible preparation step succeeds does it remove the old plists and rename the
+prepared current plist into place. It removes the staging file, conditionally
+clears the old labels' reported disabled overrides, and then removes the managed
+symlink. A declined sudo password or failed final-plist preparation leaves
+every previously published LaunchAgent definition and override intact; setup
+also discards the non-discoverable stage after a failed privileged phase on a
+best-effort basis.
+An unreadable compatibility-override snapshot is skipped rather than preventing
+the current jobs from starting. This ordering does not introduce an old-label
+and current-label pair that a later login could load together. The public
+`--system` form without the internal staging marker reads only the published
+current plist, so an abandoned stage from an earlier run cannot silently replace
+it.
 
 Both launchd plists are encoded from typed `LaunchdJob` values, linted by
 `plutil` while still temporary siblings of their targets, permissioned, and
@@ -101,17 +107,18 @@ logs, reports, and history in place. The login-user phase touches launchd only
 through one sudo re-exec as `stop --system --uid N`, because root can reach the
 user's GUI domain as well as the system one; a declined password therefore
 leaves every service exactly as it was rather than half stopped. The root phase
-writes every applicable disable before the first bootout, so an unexpected
-failure aborts while every loaded job is still running — the persistent override
+writes every applicable disable before the first bootout, with GUI definitions
+before system definitions, so an unexpected failure aborts while every loaded
+job is still running and before the collector changes. The persistent override
 is the part a later run cannot undo, and it prevents a re-bootstrap at the next
-login or boot rather than a respawn mid-transition. A domain or job launchd does
-not know is tolerated: neither can be loaded, so neither needs an override. Only
-a label whose plist is present is passed to `launchctl disable`, for the same
-reason in reverse: launchd keeps a row for every label it is told about and
-cannot delete one, so disabling a job that does not exist would leave a
-permanent row behind. Every owned label is still passed to `launchctl bootout`:
-a loaded job can outlive a deleted plist and must remain stoppable. That is why
-the root phase resolves the target home through `AccountDirectory`.
+login or boot rather than a respawn mid-transition. Only a label whose plist is
+present is passed to `launchctl disable`: launchd keeps a row for every label it
+is told about and cannot delete one. When a plist is present, every disable
+failure is fatal, including an unavailable GUI domain, because the definition
+can otherwise load at the next login. A missing target is tolerated only during
+the later `bootout` pass; a loaded job can outlive a deleted plist and must remain
+stoppable. The root phase therefore resolves the target home through
+`AccountDirectory` and rejects an unknown local account before touching launchd.
 `harmon setup` retires compatibility jobs, clears overrides reported disabled
 after their definitions are no longer discoverable, and explicitly re-enables
 and starts both current jobs. It is therefore the restart path without leaving
@@ -135,29 +142,37 @@ LaunchAgents, removes their published and staged plists and the managed legacy
 `~/.local/bin/harmon` symlink, then makes one sudo re-exec for the current and
 pre-rename system LaunchDaemons, current and legacy helpers, and socket. The
 privileged phase reads each launchd domain's disabled-services dictionary once
-and clears each owned label reported disabled in those snapshots. If the sudo
-re-exec fails, the login-user phase performs the same one-snapshot cleanup for
-its GUI domain before reporting the original failure. Overrides are cleared only
-when reported as set, since launchd keeps a row for every label it is told about
-and offers no way to delete one. The user process keeps `Harmon.app` until the
-re-exec returns because the command can itself be running from the old bundle;
-only then is the app removed. Config, logs, reports, and `history.db` are
-preserved. The old install and uninstall scripts are thin source-build
-compatibility entry points and contain no installation or removal policy.
+and clears each owned label reported disabled in those snapshots. An unreadable
+snapshot or failed override clear aborts that phase before system artifacts are
+deleted. If the sudo re-exec fails, the login-user phase performs the same strict
+one-snapshot cleanup for its GUI domain before reporting the original failure.
+Consequently the public `uninstall --system --uid N` form requires the target
+user's active GUI domain; an SSH or MDM caller must arrange that session rather
+than silently leave persistent state.
+Overrides are cleared only when reported as set, since launchd keeps a row for
+every label it is told about and offers no way to delete one. Unexpected user
+bootout failures happen before artifact cleanup and deliberately do not enter
+that fallback: the still-published definitions must retain their stop overrides.
+The user process keeps `Harmon.app` until the re-exec returns because the command
+can itself be running from the old bundle; only then is the app removed. Config,
+logs, reports, and `history.db` are preserved. The old install and uninstall
+scripts are thin source-build compatibility entry points and contain no
+installation or removal policy.
 
 `--purge` keeps that same boundary and adds the user data. The login-user phase
 prints every data tree it is about to remove, including the root-owned one,
 before sudo can prompt; the root phase repeats its own path and removes
-`/Library/Logs/Harmon`. The user phase then removes `~/.config/harmon`,
-`~/Library/Logs/Harmon`, and the whole `~/Library/Application Support/Harmon`
-tree — but only after the re-exec returns. Everything removed before that
-point is recoverable with `harmon setup`; a purge is not, so a declined sudo
-password must leave the data intact. Within the purge the support tree goes
-last, because it is the one that can contain the running executable. It is
-removed as a whole tree rather than as named files: `SetupFileSystem` cannot
-enumerate a directory, and the WAL and SHM sidecars of `history.db` and the
-report temporaries carry pid and sequence suffixes, so any explicit list would
-be incomplete by construction. Both phases are idempotent.
+`/Library/Logs/Harmon`. After the re-exec returns, the user phase removes
+`Harmon.app` first, followed by `~/.config/harmon`, `~/Library/Logs/Harmon`, and
+the whole `~/Library/Application Support/Harmon` tree. App removal is the
+recoverable gate before user data: if it fails, none of those three user data
+trees is touched. A purge is not recoverable, so a declined sudo password must
+leave that data intact. Within the purge the support tree goes last so history
+and reports survive an earlier data-tree removal failure. It is removed as a
+whole tree rather than as named files:
+`SetupFileSystem` cannot enumerate a directory, and the WAL and SHM sidecars of
+`history.db` and the report temporaries carry pid and sequence suffixes, so any
+explicit list would be incomplete by construction. Both phases are idempotent.
 
 The icon shown next to a notification is the bundle's own icon: `Info.plist`
 names `Harmon.icns` through `CFBundleIconFile`, and the installer copies that

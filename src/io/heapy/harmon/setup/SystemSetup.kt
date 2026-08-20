@@ -8,6 +8,7 @@ class SystemSetup(
     private val wheelGroupId: UInt,
     private val fileSystem: SetupFileSystem,
     private val commandRunner: CommandRunner,
+    private val useStagedAgentPlist: Boolean = false,
 ) {
     fun run() {
         val userPaths = UserSetupPaths.forHome(targetHome)
@@ -50,14 +51,19 @@ class SystemSetup(
     }
 
     private fun selectAgentPlist(userPaths: UserSetupPaths): String {
-        val candidates = listOf(userPaths.stagedAgentPlist, userPaths.agentPlist)
-        return candidates.firstOrNull { candidate ->
-            fileSystem.isRegularFile(candidate) && fileSystem.isReadable(candidate)
-        } ?: throw SetupException(
-            "The staged and installed user LaunchAgent plists are missing or unreadable at " +
-                "'${userPaths.stagedAgentPlist}' and '${userPaths.agentPlist}'. " +
-                "Run the user phase before --system.",
-        )
+        val agentPlist = if (useStagedAgentPlist) {
+            userPaths.stagedAgentPlist
+        } else {
+            userPaths.agentPlist
+        }
+        if (!fileSystem.isRegularFile(agentPlist) || !fileSystem.isReadable(agentPlist)) {
+            val kind = if (useStagedAgentPlist) "staged" else "installed"
+            throw SetupException(
+                "The $kind user LaunchAgent plist is missing or unreadable at '$agentPlist'. " +
+                    "Run the user phase before --system.",
+            )
+        }
+        return agentPlist
     }
 
     private fun replaceServices(agentPlist: String) {
@@ -75,7 +81,10 @@ class SystemSetup(
         bootoutIfLoaded(legacyAgentService)
         fileSystem.removeFileIfExists(SystemSetupPaths.previousCollectorPlist)
         fileSystem.removeFileIfExists(SystemSetupPaths.legacyCollectorBinary)
-        commandRunner.enableDisabledServices(listOf(previousCollectorService))
+        commandRunner.enableDisabledServices(
+            listOf(previousCollectorService),
+            ignoreUnreadableSnapshots = true,
+        )
 
         commandRunner.requireSuccess(
             listOf("/bin/launchctl", "enable", collectorService),

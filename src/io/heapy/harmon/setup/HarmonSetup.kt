@@ -47,6 +47,9 @@ class HarmonSetup(
         if (request.userId != null || request.groupId != null) {
             throw SetupException("--uid and --gid are valid only with --system")
         }
+        if (request.useStagedAgentPlist) {
+            throw SetupException("--staged-agent is valid only with --system")
+        }
         val userId = effectiveUserId()
         SetupValidation.validateUserPhase(userId)
         val groupId = effectiveGroupId()
@@ -84,6 +87,7 @@ class HarmonSetup(
             wheelGroupId = wheelGroupId,
             fileSystem = fileSystem,
             commandRunner = commandRunner,
+            useStagedAgentPlist = request.useStagedAgentPlist,
         ).run()
     }
 }

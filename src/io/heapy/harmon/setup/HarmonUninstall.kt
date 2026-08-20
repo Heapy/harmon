@@ -17,7 +17,7 @@ data class UninstallRequest(
  * cannot enumerate a directory, so any explicit file list would be incomplete by construction.
  */
 object UninstallPurge {
-    /** The support tree hosts the running executable, so it is removed last. */
+    /** The support tree stays last so its history and reports survive an earlier removal failure. */
     fun userTrees(paths: UserSetupPaths): List<String> = listOf(
         paths.configDirectory,
         paths.logDirectory,
@@ -112,9 +112,11 @@ class UserUninstall(
             "$agentDomain/$PREVIOUS_AGENT_LABEL",
             "$agentDomain/$LEGACY_AGENT_LABEL",
         )
+        // Bootout deliberately precedes the fallback boundary: until every unload succeeds,
+        // published definitions remain intact and an aborted uninstall must preserve their stop
+        // overrides. Once artifact cleanup starts, failures use the user-domain fallback below.
         services.forEach(commandRunner::bootoutIfLoaded)
         // The root phase owns override cleanup on success, avoiding a duplicate GUI-domain query.
-        // If local cleanup or the re-exec fails, the catch preserves the user-phase guarantee.
         try {
             fileSystem.removeFileIfExists(paths.stagedAgentPlist)
             fileSystem.removeFileIfExists(paths.agentPlist)
@@ -147,12 +149,15 @@ class UserUninstall(
             throw failure
         }
 
-        // Everything above is recoverable with 'harmon setup'; a purge is not. Deleting only after
-        // the privileged phase returns means a declined password leaves user data intact.
+        // The app is recoverable with 'harmon setup' and can itself prevent removal of the support
+        // tree, so use its deletion as a gate before destroying user data. Keeping it until the
+        // privileged phase returns still lets a legacy install re-exec from inside the app.
+        fileSystem.removeTreeIfExists(paths.appBundle)
+
+        // A purge is not recoverable. Deleting only after the privileged phase returns means a
+        // declined password leaves user data intact.
         if (purge) {
             UninstallPurge.userTrees(paths).forEach(fileSystem::removeTreeIfExists)
-        } else {
-            fileSystem.removeTreeIfExists(paths.appBundle)
         }
     }
 

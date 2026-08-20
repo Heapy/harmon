@@ -255,6 +255,19 @@ sudo test ! -e /var/run/harmon.collector.sock
 ! sudo /bin/launchctl print system/io.heapy.harmon.collector
 ! sudo /bin/launchctl print system/dev.yoda.harmon.collector
 
+HARMON_UNINSTALL_GUI_DISABLED="$(
+  /bin/launchctl print-disabled "gui/$(id -u)"
+)"
+HARMON_UNINSTALL_SYSTEM_DISABLED="$(
+  sudo /bin/launchctl print-disabled system
+)"
+! /usr/bin/printf '%s\n' "$HARMON_UNINSTALL_GUI_DISABLED" |
+  /usr/bin/grep -Eq \
+    '"(io\.heapy\.harmon\.agent|dev\.yoda\.harmon(\.agent)?)"[[:space:]]*=>[[:space:]]*(disabled|true)'
+! /usr/bin/printf '%s\n' "$HARMON_UNINSTALL_SYSTEM_DISABLED" |
+  /usr/bin/grep -Eq \
+    '"(io\.heapy\.harmon\.collector|dev\.yoda\.harmon\.collector)"[[:space:]]*=>[[:space:]]*(disabled|true)'
+
 test -f "$HARMON_ACCEPTANCE_CONFIG"
 test -d "$HOME/Library/Logs/Harmon"
 ```
@@ -264,7 +277,9 @@ again first:
 
 ```shell
 "$HARMON_ACCEPTANCE_CLI" setup
-"$HARMON_ACCEPTANCE_CLI" uninstall --purge
+HARMON_ACCEPTANCE_APP_CLI=\
+"$HOME/Library/Application Support/Harmon/Harmon.app/Contents/MacOS/harmon"
+"$HARMON_ACCEPTANCE_APP_CLI" uninstall --purge
 
 test ! -e "$HOME/Library/Application Support/Harmon"
 test ! -e "$HOME/.config/harmon"
@@ -279,9 +294,10 @@ sudo test ! -e /Library/PrivilegedHelperTools/harmon-collector
 sudo test ! -e /Library/PrivilegedHelperTools/dev.yoda.harmon
 ```
 
-The command prints each removed tree before deleting anything and never prompts,
-so the block stays non-interactive apart from sudo's own password prompt. This
-is the last step that needs `$HARMON_ACCEPTANCE_CONFIG`.
+The command prints each removed tree before deleting anything and proves that a
+process launched from `Harmon.app` can remove its own bundle before purging user
+data. It never prompts, so the block stays non-interactive apart from sudo's own
+password prompt. This is the last step that needs `$HARMON_ACCEPTANCE_CONFIG`.
 
 The Homebrew Cellar copy remains until `brew uninstall harmon`. Legacy path,
 label, and disable-override cleanup is transitional compatibility behavior;

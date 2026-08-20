@@ -83,6 +83,7 @@ object HarmonApplication {
                             system = command.system,
                             userId = command.userId,
                             groupId = command.groupId,
+                            useStagedAgentPlist = command.useStagedAgentPlist,
                         ),
                     )
                 } catch (failure: Throwable) {
@@ -199,6 +200,7 @@ sealed interface Command {
         val system: Boolean,
         val userId: UInt?,
         val groupId: UInt?,
+        val useStagedAgentPlist: Boolean = false,
     ) : Command
 
     data object Status : Command
@@ -340,20 +342,23 @@ object CliParser {
 
         setup creates the user-owned application, config, and LaunchAgent, then
         requests sudo once for the root-owned collector and LaunchDaemon.
-        The --system form is public for MDM and other automation.
+        The --system form is public for MDM and other automation and uses the
+        already published LaunchAgent plist.
 
         status is read-only and exits non-zero when the installed copies,
         collector protocol, socket, or launchd jobs need setup.
 
         stop stops and disables both launchd services without removing the
-        installation or user data. Run setup to enable and start them again.
+        installation or user data. Its --system form requires the target user's
+        active GUI domain. Run setup to enable and start the services again.
 
         ui opens the authenticated loopback process tree published by the
         running user agent.
 
         uninstall removes both services and deployed binaries while preserving
         configuration, logs, reports, and sample history. Its --system form is
-        public for automation.
+        public for automation and requires the target user's active GUI domain
+        so every disable override can be inspected and cleared.
 
         uninstall --purge additionally removes the configuration, logs, reports,
         and history database, printing each removed tree first. It never
@@ -368,6 +373,7 @@ object CliParser {
         var system = false
         var userId: UInt? = null
         var groupId: UInt? = null
+        var useStagedAgentPlist = false
         var index = 0
         while (index < arguments.size) {
             when (val option = arguments[index]) {
@@ -392,6 +398,13 @@ object CliParser {
                     groupId = arguments.unsignedValueAfter(index, option)
                     index += 2
                 }
+                "--staged-agent" -> {
+                    if (useStagedAgentPlist) {
+                        throw CliException("--staged-agent may be specified only once")
+                    }
+                    useStagedAgentPlist = true
+                    index += 1
+                }
                 else -> throw CliException("unknown setup option '$option'")
             }
         }
@@ -401,7 +414,10 @@ object CliParser {
         if (system && (userId == null || groupId == null)) {
             throw CliException("--system requires both --uid and --gid")
         }
-        return Command.Setup(system, userId, groupId)
+        if (useStagedAgentPlist && !system) {
+            throw CliException("--staged-agent requires --system")
+        }
+        return Command.Setup(system, userId, groupId, useStagedAgentPlist)
     }
 
     private fun parseUninstall(arguments: List<String>): Command.Uninstall {

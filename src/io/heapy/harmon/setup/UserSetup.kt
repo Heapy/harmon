@@ -23,8 +23,6 @@ class UserSetup(
             removeStagedAgentPlistBestEffort(paths)
             throw failure
         }
-        // Never leave compatibility and current labels simultaneously discoverable at login.
-        removeCompatibilityAgentPlists(paths)
         publishAgentPlist(paths)
         clearCompatibilityAgentOverrides()
         removeLegacyCommandLink(paths)
@@ -125,6 +123,8 @@ class UserSetup(
                     listOf("/usr/bin/plutil", "-lint", temporary),
                 )
             },
+            // Never leave compatibility and current labels simultaneously discoverable at login.
+            beforePublish = { removeCompatibilityAgentPlists(paths) },
         )
         fileSystem.removeFileIfExists(paths.stagedAgentPlist)
     }
@@ -136,6 +136,7 @@ class UserSetup(
                 "$agentDomain/$PREVIOUS_AGENT_LABEL",
                 "$agentDomain/$LEGACY_AGENT_LABEL",
             ),
+            ignoreUnreadableSnapshots = true,
         )
     }
 
@@ -180,6 +181,7 @@ class UserSetup(
                 validated.executablePath,
                 "setup",
                 "--system",
+                "--staged-agent",
                 "--uid",
                 userId.toString(),
                 "--gid",
