@@ -405,6 +405,34 @@ object CliParser {
     }
 
     private fun parseUninstall(arguments: List<String>): Command.Uninstall {
+        val options = parseTwoPhaseOptions(
+            commandName = "uninstall",
+            arguments = arguments,
+            allowPurge = true,
+        )
+        return Command.Uninstall(options.system, options.userId, options.purge)
+    }
+
+    private fun parseStop(arguments: List<String>): Command.Stop {
+        val options = parseTwoPhaseOptions(
+            commandName = "stop",
+            arguments = arguments,
+            allowPurge = false,
+        )
+        return Command.Stop(options.system, options.userId)
+    }
+
+    private data class TwoPhaseOptions(
+        val system: Boolean,
+        val userId: UInt?,
+        val purge: Boolean,
+    )
+
+    private fun parseTwoPhaseOptions(
+        commandName: String,
+        arguments: List<String>,
+        allowPurge: Boolean,
+    ): TwoPhaseOptions {
         var system = false
         var userId: UInt? = null
         var purge = false
@@ -426,13 +454,16 @@ object CliParser {
                     index += 2
                 }
                 "--purge" -> {
+                    if (!allowPurge) {
+                        throw CliException("unknown $commandName option '$option'")
+                    }
                     if (purge) {
                         throw CliException("--purge may be specified only once")
                     }
                     purge = true
                     index += 1
                 }
-                else -> throw CliException("unknown uninstall option '$option'")
+                else -> throw CliException("unknown $commandName option '$option'")
             }
         }
         if (!system && userId != null) {
@@ -441,39 +472,7 @@ object CliParser {
         if (system && userId == null) {
             throw CliException("--system requires --uid")
         }
-        return Command.Uninstall(system, userId, purge)
-    }
-
-    private fun parseStop(arguments: List<String>): Command.Stop {
-        var system = false
-        var userId: UInt? = null
-        var index = 0
-        while (index < arguments.size) {
-            when (val option = arguments[index]) {
-                "--system" -> {
-                    if (system) {
-                        throw CliException("--system may be specified only once")
-                    }
-                    system = true
-                    index += 1
-                }
-                "--uid" -> {
-                    if (userId != null) {
-                        throw CliException("--uid may be specified only once")
-                    }
-                    userId = arguments.unsignedValueAfter(index, option)
-                    index += 2
-                }
-                else -> throw CliException("unknown stop option '$option'")
-            }
-        }
-        if (!system && userId != null) {
-            throw CliException("--uid requires --system")
-        }
-        if (system && userId == null) {
-            throw CliException("--system requires --uid")
-        }
-        return Command.Stop(system, userId)
+        return TwoPhaseOptions(system, userId, purge)
     }
 
     private fun Array<String>.valueAfter(index: Int, option: String): String =

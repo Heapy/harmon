@@ -144,6 +144,12 @@ class CliParserTest {
         assertFailsWith<CliException> {
             CliParser.parse(arrayOf("stop", "--config", "/tmp/config"))
         }
+        assertEquals(
+            "unknown stop option '--purge'",
+            assertFailsWith<CliException> {
+                CliParser.parse(arrayOf("stop", "--purge"))
+            }.message,
+        )
     }
 
     @Test
@@ -185,6 +191,53 @@ class CliParserTest {
 
         assertFailsWith<CliException> {
             CliParser.parse(arrayOf("uninstall", "--purge", "--purge"))
+        }
+    }
+
+    @Test
+    fun appliesTheSharedSystemIdentityOptionRulesToStopAndUninstall() {
+        listOf("stop", "uninstall").forEach { commandName ->
+            val expected: Command = if (commandName == "stop") {
+                Command.Stop(system = true, userId = 501u)
+            } else {
+                Command.Uninstall(system = true, userId = 501u, purge = false)
+            }
+            assertEquals(
+                expected,
+                CliParser.parse(arrayOf(commandName, "--uid", "501", "--system")),
+            )
+            assertEquals(
+                "--system may be specified only once",
+                assertFailsWith<CliException> {
+                    CliParser.parse(arrayOf(commandName, "--system", "--system", "--uid", "501"))
+                }.message,
+            )
+            assertEquals(
+                "--uid may be specified only once",
+                assertFailsWith<CliException> {
+                    CliParser.parse(
+                        arrayOf(commandName, "--system", "--uid", "501", "--uid", "502"),
+                    )
+                }.message,
+            )
+            assertEquals(
+                "--uid requires --system",
+                assertFailsWith<CliException> {
+                    CliParser.parse(arrayOf(commandName, "--uid", "501"))
+                }.message,
+            )
+            assertEquals(
+                "--system requires --uid",
+                assertFailsWith<CliException> {
+                    CliParser.parse(arrayOf(commandName, "--system"))
+                }.message,
+            )
+            assertEquals(
+                "unknown $commandName option '--bogus'",
+                assertFailsWith<CliException> {
+                    CliParser.parse(arrayOf(commandName, "--bogus"))
+                }.message,
+            )
         }
     }
 }

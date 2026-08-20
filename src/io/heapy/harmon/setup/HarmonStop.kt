@@ -10,34 +10,6 @@ data class StopRequest(
     val userId: UInt? = null,
 )
 
-object StopValidation {
-    fun validateUserPhase(effectiveUserId: UInt, requestedUserId: UInt?) {
-        if (requestedUserId != null) {
-            throw SetupException("--uid is valid only with --system")
-        }
-        if (effectiveUserId == 0u) {
-            throw SetupException(
-                "Run 'harmon stop' as the login user; it requests sudo once.",
-            )
-        }
-    }
-
-    fun validateSystemPhase(
-        effectiveUserId: UInt,
-        requestedUserId: UInt?,
-    ): UInt {
-        if (effectiveUserId != 0u) {
-            throw SetupException("'harmon stop --system' must run as root")
-        }
-        val userId = requestedUserId
-            ?: throw SetupException("--uid is required with --system")
-        if (userId == 0u) {
-            throw SetupException("--uid must identify a non-root login user")
-        }
-        return userId
-    }
-}
-
 class HarmonStop(
     private val commandRunner: CommandRunner = PosixCommandRunner,
     private val fileSystem: SetupFileSystem = PosixSetupFileSystem,
@@ -56,7 +28,11 @@ class HarmonStop(
 
     private fun runUser(request: StopRequest) {
         val userId = effectiveUserId()
-        StopValidation.validateUserPhase(userId, request.userId)
+        TwoPhaseCommandValidation.validateUserPhase(
+            commandName = "stop",
+            effectiveUserId = userId,
+            requestedUserId = request.userId,
+        )
         UserStop(
             executablePath = executablePath(),
             userId = userId,
@@ -69,7 +45,8 @@ class HarmonStop(
     }
 
     private fun runSystem(request: StopRequest) {
-        val targetUserId = StopValidation.validateSystemPhase(
+        val targetUserId = TwoPhaseCommandValidation.validateSystemPhase(
+            commandName = "stop",
             effectiveUserId = effectiveUserId(),
             requestedUserId = request.userId,
         )

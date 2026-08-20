@@ -27,34 +27,6 @@ object UninstallPurge {
     val systemTrees: List<String> = listOf(SystemSetupPaths.logDirectory)
 }
 
-object UninstallValidation {
-    fun validateUserPhase(effectiveUserId: UInt, requestedUserId: UInt?) {
-        if (requestedUserId != null) {
-            throw SetupException("--uid is valid only with --system")
-        }
-        if (effectiveUserId == 0u) {
-            throw SetupException(
-                "Run 'harmon uninstall' as the login user; it requests sudo once.",
-            )
-        }
-    }
-
-    fun validateSystemPhase(
-        effectiveUserId: UInt,
-        requestedUserId: UInt?,
-    ): UInt {
-        if (effectiveUserId != 0u) {
-            throw SetupException("'harmon uninstall --system' must run as root")
-        }
-        val userId = requestedUserId
-            ?: throw SetupException("--uid is required with --system")
-        if (userId == 0u) {
-            throw SetupException("--uid must identify a non-root login user")
-        }
-        return userId
-    }
-}
-
 class HarmonUninstall(
     private val commandRunner: CommandRunner = PosixCommandRunner,
     private val fileSystem: SetupFileSystem = PosixSetupFileSystem,
@@ -72,7 +44,11 @@ class HarmonUninstall(
 
     private fun runUser(request: UninstallRequest) {
         val userId = effectiveUserId()
-        UninstallValidation.validateUserPhase(userId, request.userId)
+        TwoPhaseCommandValidation.validateUserPhase(
+            commandName = "uninstall",
+            effectiveUserId = userId,
+            requestedUserId = request.userId,
+        )
         val home = homeDirectory()
         if (request.purge) {
             // The full blast radius, root paths included, before sudo can prompt for a password.
@@ -101,7 +77,8 @@ class HarmonUninstall(
     }
 
     private fun runSystem(request: UninstallRequest) {
-        val targetUserId = UninstallValidation.validateSystemPhase(
+        val targetUserId = TwoPhaseCommandValidation.validateSystemPhase(
+            commandName = "uninstall",
             effectiveUserId = effectiveUserId(),
             requestedUserId = request.userId,
         )

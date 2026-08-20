@@ -108,6 +108,39 @@ object SetupValidation {
     }
 }
 
+object TwoPhaseCommandValidation {
+    fun validateUserPhase(
+        commandName: String,
+        effectiveUserId: UInt,
+        requestedUserId: UInt?,
+    ) {
+        if (requestedUserId != null) {
+            throw SetupException("--uid is valid only with --system")
+        }
+        if (effectiveUserId == 0u) {
+            throw SetupException(
+                "Run 'harmon $commandName' as the login user; it requests sudo once.",
+            )
+        }
+    }
+
+    fun validateSystemPhase(
+        commandName: String,
+        effectiveUserId: UInt,
+        requestedUserId: UInt?,
+    ): UInt {
+        if (effectiveUserId != 0u) {
+            throw SetupException("'harmon $commandName --system' must run as root")
+        }
+        val userId = requestedUserId
+            ?: throw SetupException("--uid is required with --system")
+        if (userId == 0u) {
+            throw SetupException("--uid must identify a non-root login user")
+        }
+        return userId
+    }
+}
+
 class SetupPrerequisiteChecker(
     private val commandRunner: CommandRunner,
     private val resourcePathProbe: ResourcePathProbe = PosixResourcePathProbe,
