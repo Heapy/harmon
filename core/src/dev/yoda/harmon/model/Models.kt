@@ -325,11 +325,25 @@ enum class Severity {
     CRITICAL,
 }
 
+/** Lets a consumer label an alert by resource without parsing [Alert.key]. */
+enum class AlertCategory {
+    CPU,
+    MEMORY,
+    DISK,
+    ENERGY,
+    SWAP,
+    BATTERY,
+    ORPHAN,
+}
+
+/** [pids] names the processes the alert is about, and is empty for machine-wide rules. */
 data class Alert(
     val key: String,
+    val category: AlertCategory,
     val severity: Severity,
     val title: String,
     val message: String,
+    val pids: List<Int> = emptyList(),
 )
 
 /** [suppressedAlertKeys] preserves capped matches that would otherwise look cleared to consumers. */

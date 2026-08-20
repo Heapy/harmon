@@ -7,6 +7,7 @@ import dev.yoda.harmon.db.HarmonDatabase
 import dev.yoda.harmon.history.HistoryStore
 import dev.yoda.harmon.history.insertSample
 import dev.yoda.harmon.model.Alert
+import dev.yoda.harmon.model.AlertCategory
 import dev.yoda.harmon.model.DeliveryResult
 import dev.yoda.harmon.model.INIT_PID
 import dev.yoda.harmon.model.LoadAverages
@@ -339,11 +340,15 @@ fun alert(
     severity: Severity = Severity.WARNING,
     title: String = "title of $key",
     message: String = "message of $key",
+    category: AlertCategory = AlertCategory.CPU,
+    pids: List<Int> = emptyList(),
 ): Alert = Alert(
     key = key,
+    category = category,
     severity = severity,
     title = title,
     message = message,
+    pids = pids,
 )
 
 const val ORPHANED_PID = 11

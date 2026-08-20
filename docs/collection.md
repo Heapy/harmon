@@ -694,6 +694,32 @@ there is not the same as being in the alert state: a key that was never reported
 is not firing, gets no lowered clear threshold on the next sample, and is pushed
 as new if it later reaches the top slice.
 
+### Alerts in the live UI
+
+The live process page evaluates the same rules against every live sample, at the
+live cadence rather than the agent's sampling interval. It reads the same
+thresholds, the same `maxAlertsPerCategory` cap, and the same 90% clear
+threshold, so a live badge and a push agree on what is firing. The clear
+threshold matters more here than in a push: without it a value resting on its
+threshold would blink a badge on and off every second.
+
+An alert carries the pids of the processes it is about, so the page marks those
+rows directly instead of parsing the alert key. An application rule marks every
+process in the group; the orphan rule marks the one process that lost its
+parent. `swap`, `swap-out` and `battery-low` describe the machine rather than a
+process, carry no pids, and are listed without marking any row.
+
+Losing a parent is visible in exactly one sample, which at a one-second cadence
+would flash a mark and drop it before it could be read. The live view therefore
+keeps an orphan mark on its row for as long as the process stays measurable. A
+process that stops being readable loses the mark with its metrics. The mark
+lasts as long as the page session that observed it: a restarted agent has no
+sample to compare against and cannot recover a transition it did not see.
+
+This is a second surface for the same alerts, not a replacement for the report.
+The full text report stays on the page, and a push still carries the complete
+sample.
+
 ## Access failures
 
 Process inspection can fail because:

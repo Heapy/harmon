@@ -40,8 +40,7 @@ fun main(arguments: Array<String>) {
                     val liveUiEndpointStore = LiveUiEndpointStore()
                     LiveUiRuntime.production(
                         collector = CollectorClient(config.collectorSocket),
-                        terminalApplications = config.terminalApplications,
-                        sampleSeconds = config.webSampleSeconds,
+                        config = config,
                         endpointStore = liveUiEndpointStore,
                         token = generateLiveUiToken(),
                         logError = ::printError,

@@ -40,7 +40,7 @@ class WebUiPayloadTest {
         )
 
         assertEquals(WEB_UI_SCHEMA_VERSION, payload.schemaVersion)
-        assertEquals(2, payload.schemaVersion)
+        assertEquals(3, payload.schemaVersion)
         assertEquals("0", payload.sequence)
         assertEquals(WebUiStatus.READY, payload.status)
         assertEquals("1970-01-01T00:03:20Z", payload.generatedAt)

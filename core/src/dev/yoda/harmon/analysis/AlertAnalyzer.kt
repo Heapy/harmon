@@ -2,12 +2,18 @@ package dev.yoda.harmon.analysis
 
 import dev.yoda.harmon.config.HarmonConfig
 import dev.yoda.harmon.model.Alert
+import dev.yoda.harmon.model.AlertCategory
 import dev.yoda.harmon.model.ApplicationUsage
 import dev.yoda.harmon.model.INIT_PID
+import dev.yoda.harmon.model.ProcessIdentity
 import dev.yoda.harmon.model.ProcessUsage
 import dev.yoda.harmon.model.Severity
 import dev.yoda.harmon.model.SystemUsage
 import dev.yoda.harmon.util.Format
+
+/** Shared so a consumer can rebuild the key rather than parse one apart. */
+fun orphanAlertKey(identity: ProcessIdentity): String =
+    "orphan:process:${identity.pid}:${identity.startedAt}"
 
 /**
  * [firingKeys] retains capped-out active alerts but excludes newly suppressed alerts. This
@@ -58,6 +64,8 @@ class AlertAnalyzer {
                     add(
                         Alert(
                             key = key,
+                            category = AlertCategory.CPU,
+                            pids = application.processIds,
                             severity = if (application.cpuPercent >= threshold * 2) {
                                 Severity.CRITICAL
                             } else {
@@ -87,6 +95,8 @@ class AlertAnalyzer {
                     add(
                         Alert(
                             key = key,
+                            category = AlertCategory.MEMORY,
+                            pids = application.processIds,
                             severity = if (
                                 application.physicalFootprintBytes >= thresholdBytes.doubled()
                             ) {
@@ -118,6 +128,8 @@ class AlertAnalyzer {
                     add(
                         Alert(
                             key = key,
+                            category = AlertCategory.DISK,
+                            pids = application.processIds,
                             severity = if (
                                 application.diskWriteBytesPerSecond >=
                                 thresholdBytesPerSecond * 2.0
@@ -148,6 +160,7 @@ class AlertAnalyzer {
                 add(
                     Alert(
                         key = key,
+                        category = AlertCategory.SWAP,
                         severity = if (usage.swap.usedBytes >= thresholdBytes.doubled()) {
                             Severity.CRITICAL
                         } else {
@@ -172,6 +185,7 @@ class AlertAnalyzer {
                 add(
                     Alert(
                         key = key,
+                        category = AlertCategory.SWAP,
                         severity = if (
                             usage.virtualMemory.swapOutBytesPerSecond >=
                             thresholdBytesPerSecond * 2.0
@@ -208,6 +222,8 @@ class AlertAnalyzer {
                             add(
                                 Alert(
                                     key = key,
+                                    category = AlertCategory.ENERGY,
+                                    pids = application.processIds,
                                     severity = if (application.energyWatts >= threshold * 2) {
                                         Severity.CRITICAL
                                     } else {
@@ -236,6 +252,8 @@ class AlertAnalyzer {
                             add(
                                 Alert(
                                     key = key,
+                                    category = AlertCategory.ENERGY,
+                                    pids = application.processIds,
                                     severity = if (
                                         application.batteryImpactScore >= threshold * 2
                                     ) {
@@ -264,6 +282,7 @@ class AlertAnalyzer {
                 add(
                     Alert(
                         key = "battery-low",
+                        category = AlertCategory.BATTERY,
                         severity = if (percentage <= 10) {
                             Severity.CRITICAL
                         } else {
@@ -305,11 +324,13 @@ class AlertAnalyzer {
             .sortedBy { (process, _) -> process.identity.pid }
         orphaned.asSequence()
             .drop(maxPerCategory)
-            .mapTo(suppressed) { (process, _) -> process.orphanKey() }
+            .mapTo(suppressed) { (process, _) -> orphanAlertKey(process.identity) }
         return orphaned.take(maxPerCategory).map { (process, parent) ->
             val parentLabel = parent.name?.let { "$it " }.orEmpty()
             Alert(
-                key = process.orphanKey(),
+                key = orphanAlertKey(process.identity),
+                category = AlertCategory.ORPHAN,
+                pids = listOf(process.identity.pid),
                 severity = Severity.WARNING,
                 title = "Orphaned process",
                 message = "${process.name} (pid ${process.identity.pid}) lost its parent " +
@@ -318,8 +339,6 @@ class AlertAnalyzer {
         }
     }
 
-    private fun ProcessUsage.orphanKey(): String =
-        "orphan:process:${identity.pid}:${identity.startedAt}"
 
     /** Returns the highest matching values and records capped-out keys for report/state reconciliation. */
     private fun <R : Comparable<R>> List<ApplicationUsage>.selectAlerting(

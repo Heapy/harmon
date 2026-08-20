@@ -1,7 +1,13 @@
 package dev.yoda.harmon.runtime
 
+import dev.yoda.harmon.analysis.AlertAnalyzer
+import dev.yoda.harmon.analysis.orphanAlertKey
+import dev.yoda.harmon.config.HarmonConfig
+import dev.yoda.harmon.model.Alert
+import dev.yoda.harmon.model.AlertCategory
 import dev.yoda.harmon.model.ProcessIdentity
 import dev.yoda.harmon.model.RawSystemSnapshot
+import dev.yoda.harmon.model.SystemUsage
 import dev.yoda.harmon.monitor.CollectionProfile
 import dev.yoda.harmon.monitor.SystemCollector
 import dev.yoda.harmon.monitor.UsageCalculator
@@ -11,6 +17,7 @@ import dev.yoda.harmon.util.failureDescription
 import kotlin.time.Clock
 import kotlin.time.Instant
 
+/** [config] supplies the notifier's thresholds; a null one leaves the view without alerts. */
 class LiveSamplingSession(
     private val collector: SystemCollector,
     private val calculator: UsageCalculator,
@@ -18,6 +25,8 @@ class LiveSamplingSession(
     private val now: () -> Instant = Clock.System::now,
     private val monotonicNowNanoseconds: () -> ULong,
     previousPayload: WebUiPayload? = null,
+    private val config: HarmonConfig? = null,
+    private val analyzer: AlertAnalyzer = AlertAnalyzer(),
 ) {
     private var previous: RawSystemSnapshot? = null
     private var sequence = 0uL
@@ -29,6 +38,8 @@ class LiveSamplingSession(
     private var nextFullDeadlineNanoseconds: ULong? = null
     private var attributionState: AttributionState? = null
     private var attributionWarning: String? = null
+    private var activeAlertKeys: Set<String> = emptySet()
+    private var stickyOrphans: Map<String, Alert> = emptyMap()
 
     init {
         require(sampleSeconds > 0) { "sampleSeconds must be positive" }
@@ -101,12 +112,15 @@ class LiveSamplingSession(
             val usage = calculator.calculate(baseline, current)
             previous = current
             sequence = sequence.saturatingIncrement()
+            val alerting = alertsFor(usage)
             WebUiPayloadFactory.live(
                 usage = usage,
                 sequence = sequence,
                 attributionCapturedAt = attributionState?.capturedAt,
                 attributionWarning = attributionWarning,
                 appliedProfile = appliedProfile,
+                alerts = alerting.alerts,
+                suppressedAlertKeys = alerting.suppressedKeys,
                 sampleIntervalSeconds = sampleSeconds.toDouble(),
                 generatedAt = now(),
             ).also {
@@ -117,6 +131,35 @@ class LiveSamplingSession(
             staleFailure(failure)
         }
     }
+
+    /** Replaying the previous firing keys applies the clear thresholds, so a badge cannot blink. */
+    private fun alertsFor(usage: SystemUsage): LiveAlerts {
+        val settings = config ?: return LiveAlerts(emptyList(), emptyList())
+        val outcome = analyzer.analyze(usage, settings, activeAlertKeys)
+        activeAlertKeys = outcome.firingKeys
+        val orphans = carriedOrphans(usage, outcome.alerts)
+        val fresh = outcome.alerts.filter { it.category != AlertCategory.ORPHAN }
+        return LiveAlerts(
+            alerts = fresh + orphans,
+            suppressedKeys = outcome.suppressedKeys.toList().sorted(),
+        )
+    }
+
+    /** Losing a parent lasts one sample, so the mark is carried while the process stays measured. */
+    private fun carriedOrphans(usage: SystemUsage, alerts: List<Alert>): List<Alert> {
+        val live = usage.processes.mapTo(mutableSetOf()) { orphanAlertKey(it.identity) }
+        val carried = stickyOrphans.filterKeys { it in live }.toMutableMap()
+        for (alert in alerts) {
+            if (alert.category == AlertCategory.ORPHAN) carried[alert.key] = alert
+        }
+        stickyOrphans = carried
+        return carried.entries.sortedBy { it.key }.map { it.value }
+    }
+
+    private data class LiveAlerts(
+        val alerts: List<Alert>,
+        val suppressedKeys: List<String>,
+    )
 
     private fun warmingFailure(failure: Throwable): WebUiPayload =
         WebUiPayloadFactory.warming(

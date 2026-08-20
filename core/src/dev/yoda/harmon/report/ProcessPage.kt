@@ -121,6 +121,32 @@ object ProcessPage {
         }
         .notice.error { border-color: #713547; background: #25131a; color: #ffb0bf; }
 
+        .alert-panel {
+          margin: 0 0 10px; border: 1px solid #6f5125; border-radius: 7px;
+          padding: 8px 10px; background: #1b1610;
+        }
+        .alert-panel h2 {
+          margin: 0 0 7px; color: #ffd897;
+          font: 700 10px/1.2 ui-monospace, SFMono-Regular, Menlo, monospace;
+          letter-spacing: .08em; text-transform: uppercase;
+        }
+        .alert-list { display: flex; flex-direction: column; gap: 4px; margin: 0; padding: 0; list-style: none; }
+        .alert-item { display: flex; align-items: baseline; gap: 8px; color: #e7dcc9; font-size: 12px; }
+        .alert-message { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+        .alert-capped { margin: 7px 0 0; color: var(--muted); font-size: 11px; }
+
+        .alert-chip {
+          flex: none; border: 1px solid #6f5125; border-radius: 4px; padding: 1px 5px;
+          color: #ffd897; background: #2a2013;
+          font: 700 9px/1.4 ui-monospace, SFMono-Regular, Menlo, monospace;
+          letter-spacing: .06em; text-transform: uppercase;
+        }
+        .alert-chip.critical { border-color: #8d3a4c; color: #ffb0bf; background: #2c141b; }
+        .row-alerts { display: inline-flex; flex: none; gap: 4px; margin-left: 7px; }
+        .alert-descendants {
+          flex: none; margin-left: 7px; color: #b79c6e; font-size: 10px; white-space: nowrap;
+        }
+
         .toolbar {
           display: flex; flex-wrap: wrap; align-items: center; gap: 8px;
           border: 1px solid var(--line); border-bottom: 0; border-radius: 9px 9px 0 0;
@@ -498,7 +524,50 @@ object ProcessPage {
           return rows;
         }
 
-        function ProcessRows({ roots, metricColumns }) {
+        const CRITICAL = "critical";
+
+        function alertsByPid(payload) {
+          const byPid = new Map();
+          for (const alert of (payload && payload.alerts) || []) {
+            for (const pid of alert.pids || []) {
+              const existing = byPid.get(pid);
+              if (existing) existing.push(alert); else byPid.set(pid, [alert]);
+            }
+          }
+          return byPid;
+        }
+
+        /**
+         * Counts distinct alerts below each row once per draw, so a collapsed row can report what
+         * it hides. One application alert covering a whole subtree counts once, not once per PID.
+         */
+        function descendantAlertCounts(roots, byPid) {
+          const counts = new Map();
+          function walk(node) {
+            const keys = new Set();
+            for (const child of node.children || []) {
+              for (const key of walk(child)) keys.add(key);
+              for (const alert of byPid.get(child.pid) || []) keys.add(alert.key);
+            }
+            counts.set(node.key, keys.size);
+            return keys;
+          }
+          for (const node of roots) walk(node);
+          return counts;
+        }
+
+        function rowAlertBadges(alerts) {
+          if (!alerts || !alerts.length) return null;
+          return e("span", { class: "row-alerts" }, ...alerts.map(alert =>
+            e("span", {
+              key: alert.key,
+              class: "alert-chip" + (alert.severity === CRITICAL ? " critical" : ""),
+              title: alert.message
+            }, alert.category)
+          ));
+        }
+
+        function ProcessRows({ roots, metricColumns, byPid, descendants }) {
           const forceOpen = state.search.trim().length > 0;
           const rows = flatten(roots, 0, forceOpen, []);
           return rows.map(({ node, depth }) => {
@@ -528,12 +597,34 @@ object ProcessPage {
                   }, open ? "▾" : "▸") : e("span", { class: "twisty-space" }),
                   e("span", { class: "process-name", title: node.executablePath || node.name }, node.name),
                   !node.measured ? e("span", { class: "issue" },
-                    String(node.issueReason || "unavailable").replaceAll("_", " ")) : null
+                    String(node.issueReason || "unavailable").replaceAll("_", " ")) : null,
+                  rowAlertBadges(byPid.get(node.pid)),
+                  hasChildren && !open && descendants.get(node.key)
+                    ? e("span", { class: "alert-descendants" },
+                        descendants.get(node.key) + " alert" + (descendants.get(node.key) === 1 ? "" : "s") + " inside")
+                    : null
                 )
               ),
               ...metricColumns.map(({ column, scope }) => metricCell(node, column, scope))
             );
           });
+        }
+
+        function AlertPanel({ payload }) {
+          const alerts = (payload && payload.alerts) || [];
+          const capped = (payload && payload.suppressedAlertKeys) || [];
+          if (!alerts.length && !capped.length) return null;
+          return e("section", { class: "alert-panel", "aria-label": "Current alerts" },
+            e("h2", null, "Current alerts (" + alerts.length + ")"),
+            alerts.length ? e("ul", { class: "alert-list" }, ...alerts.map(alert =>
+              e("li", { key: alert.key, class: "alert-item", "data-alert-key": alert.key },
+                e("span", { class: "alert-chip" + (alert.severity === CRITICAL ? " critical" : "") }, alert.category),
+                e("span", { class: "alert-message" }, alert.message)
+              )
+            )) : null,
+            capped.length ? e("p", { class: "alert-capped" },
+              capped.length + " more matching the same rules, past the per-category cap.") : null
+          );
         }
 
         function summaryCard(label, value, detail) {
@@ -672,6 +763,8 @@ object ProcessPage {
           const isLive = pageMode === "live" && !state.frozen && document.visibilityState === "visible";
           const metricColumns = selectedMetricColumns();
           const attribution = attributionSummary(payload);
+          const byPid = alertsByPid(payload);
+          const descendants = descendantAlertCounts(roots, byPid);
 
           return e("div", { class: "shell" },
             e("header", { class: "topbar" },
@@ -702,7 +795,7 @@ object ProcessPage {
             }, status + (payload && payload.error ? ": " + payload.error : "")) : null,
             payload && payload.attributionWarning ? e("p", { class: "notice", role: "status" }, "Attribution warning: " + payload.attributionWarning) : null,
             state.requestError ? e("p", { class: "notice error", role: "alert" }, "Live update failed: " + state.requestError) : null,
-            payload && payload.alerts && payload.alerts.length ? e("p", { class: "notice" }, payload.alerts.map(alert => alert.title).join(" · ")) : null,
+            e(AlertPanel, { payload }),
             e("section", { "aria-label": "Process table" },
               e("div", { class: "toolbar" },
                 e("input", {
@@ -740,7 +833,7 @@ object ProcessPage {
                     )
                   )),
                   e("tbody", null,
-                    tree && roots.length ? e(ProcessRows, { roots, metricColumns }) :
+                    tree && roots.length ? e(ProcessRows, { roots, metricColumns, byPid, descendants }) :
                       e("tr", null, e("td", { class: "empty", colSpan: 2 + metricColumns.length },
                         tree ? "No processes match this search." : "Waiting for process metrics…"
                       ))
@@ -783,7 +876,7 @@ object ProcessPage {
             }
             if (!response.ok) throw new Error("HTTP " + response.status);
             const payload = await response.json();
-            if (payload.schemaVersion !== 2) throw new Error("unsupported schema " + payload.schemaVersion);
+            if (payload.schemaVersion !== 3) throw new Error("unsupported schema " + payload.schemaVersion);
             if (generation !== state.pollGeneration || !canPoll()) return;
             state.payload = payload;
             state.requestError = null;

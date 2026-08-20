@@ -310,19 +310,64 @@ private fun payload(
         ),
         energyAccounted = true,
     ),
-    alerts = listOf(
-        WebUiAlertSummary(
-            key = "memory:firefox",
-            severity = "warning",
-            title = "Firefox subtree uses 10.0 GiB",
-            message = "The total includes readable descendants.",
-        ),
-    ),
-    suppressedAlertKeys = emptyList(),
+    alerts = FIXTURE_ALERTS,
+    suppressedAlertKeys = listOf("cpu:com.example.capped"),
     reportText = "Fake Harmon report for browser tests.",
     error = null,
     staleSince = null,
     retrySeconds = null,
+)
+
+/** Root, nested and doubly nested pids, so a test sees badges and the collapsed-parent counter. */
+private val FIXTURE_ALERTS = listOf(
+    WebUiAlertSummary(
+        key = "memory:firefox",
+        category = "memory",
+        severity = "warning",
+        title = "High application memory",
+        message = "Firefox uses 10.0 GiB memory",
+        pids = listOf(100, 101, 102, 103),
+    ),
+    WebUiAlertSummary(
+        key = "cpu:code",
+        category = "cpu",
+        severity = "critical",
+        title = "High application CPU",
+        message = "Code Helper uses 80.0% CPU",
+        pids = listOf(200),
+    ),
+    WebUiAlertSummary(
+        key = "disk-write:firefox-gpu",
+        category = "disk",
+        severity = "warning",
+        title = "High application storage writes",
+        message = "Firefox GPU writes 10.0 MiB/s to physical storage",
+        pids = listOf(102),
+    ),
+    WebUiAlertSummary(
+        key = "power:firefox-extension",
+        category = "energy",
+        severity = "warning",
+        title = "Likely battery drain",
+        message = "Firefox WebExtension draws 4.20 W",
+        pids = listOf(103),
+    ),
+    WebUiAlertSummary(
+        key = "orphan:process:301:301000",
+        category = "orphan",
+        severity = "warning",
+        title = "Orphaned process",
+        message = "Readable Worker (pid 301) lost its parent Protected Supervisor (pid 300)",
+        pids = listOf(301),
+    ),
+    WebUiAlertSummary(
+        key = "swap",
+        category = "swap",
+        severity = "warning",
+        title = "High swap usage",
+        message = "2.0 GiB of swap is in use",
+        pids = emptyList(),
+    ),
 )
 
 private fun firefoxSampleOne(): ProcessTreeNode {

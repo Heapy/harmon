@@ -1,5 +1,6 @@
 package dev.yoda.harmon.report
 
+import dev.yoda.harmon.model.Alert
 import dev.yoda.harmon.model.MonitoringReport
 import dev.yoda.harmon.model.ProcessTreeSnapshot
 import dev.yoda.harmon.model.ProcessTreeSnapshotBuilder
@@ -12,7 +13,7 @@ import kotlin.time.Clock
 import kotlin.time.Duration
 import kotlin.time.Instant
 
-const val WEB_UI_SCHEMA_VERSION = 2
+const val WEB_UI_SCHEMA_VERSION = 3
 
 @Serializable
 enum class WebUiStatus {
@@ -109,12 +110,15 @@ data class WebUiSystemSummary(
     val energyAccounted: Boolean,
 )
 
+/** [pids] is empty for machine-wide alerts, which are listed but never mark a row. */
 @Serializable
 data class WebUiAlertSummary(
     val key: String,
+    val category: String,
     val severity: String,
     val title: String,
     val message: String,
+    val pids: List<Int>,
 )
 
 @Serializable
@@ -153,14 +157,7 @@ object WebUiPayloadFactory {
         attributionCapturedAt = report.usage.capturedAt,
         attributionWarning = null,
         appliedProfile = CollectionProfile.FULL,
-        alerts = report.alerts.map {
-            WebUiAlertSummary(
-                key = it.key,
-                severity = it.severity.name.lowercase(),
-                title = it.title,
-                message = it.message,
-            )
-        },
+        alerts = report.alerts.map(Alert::toWebUiSummary),
         suppressedAlertKeys = report.suppressedAlertKeys,
         reportText = reportText,
     )
@@ -171,13 +168,16 @@ object WebUiPayloadFactory {
         attributionCapturedAt: Instant?,
         attributionWarning: String?,
         appliedProfile: CollectionProfile,
+        alerts: List<Alert> = emptyList(),
+        suppressedAlertKeys: List<String> = emptyList(),
         sampleIntervalSeconds: Double = usage.elapsedSeconds,
         generatedAt: Instant = Clock.System.now(),
     ): WebUiPayload {
         val report = MonitoringReport(
             usage = usage,
-            alerts = emptyList(),
+            alerts = alerts,
             topProcessCount = DEFAULT_LIVE_REPORT_PROCESS_COUNT,
+            suppressedAlertKeys = suppressedAlertKeys,
         )
         return ready(
             usage = usage,
@@ -187,8 +187,8 @@ object WebUiPayloadFactory {
             attributionCapturedAt = attributionCapturedAt,
             attributionWarning = attributionWarning,
             appliedProfile = appliedProfile,
-            alerts = emptyList(),
-            suppressedAlertKeys = emptyList(),
+            alerts = alerts.map(Alert::toWebUiSummary),
+            suppressedAlertKeys = suppressedAlertKeys,
             reportText = attributionReport(
                 capturedAt = attributionCapturedAt,
                 generatedAt = generatedAt,
@@ -284,6 +284,15 @@ object WebUiPayloadFactory {
         retrySeconds = null,
     )
 }
+
+private fun Alert.toWebUiSummary(): WebUiAlertSummary = WebUiAlertSummary(
+    key = key,
+    category = category.name.lowercase(),
+    severity = severity.name.lowercase(),
+    title = title,
+    message = message,
+    pids = pids,
+)
 
 object WebUiPayloadJson {
     private val json = Json {

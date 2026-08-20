@@ -61,7 +61,7 @@ class ProcessPageTest {
         assertContains(html, "Known partial totals remain sortable")
         assertContains(html, "position: sticky; left: 0")
         assertContains(html, "position: sticky; left: var(--pid-width)")
-        assertContains(html, "payload.schemaVersion !== 2")
+        assertContains(html, "payload.schemaVersion !== 3")
     }
 
     @Test

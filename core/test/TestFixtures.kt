@@ -1,5 +1,6 @@
 import dev.yoda.harmon.analysis.ApplicationGrouper
 import dev.yoda.harmon.model.Alert
+import dev.yoda.harmon.model.AlertCategory
 import dev.yoda.harmon.model.DeliveryResult
 import dev.yoda.harmon.model.LoadAverages
 import dev.yoda.harmon.model.MonitoringReport
@@ -348,11 +349,15 @@ fun alert(
     severity: Severity = Severity.WARNING,
     title: String = "title of $key",
     message: String = "message of $key",
+    category: AlertCategory = AlertCategory.CPU,
+    pids: List<Int> = emptyList(),
 ): Alert = Alert(
     key = key,
+    category = category,
     severity = severity,
     title = title,
     message = message,
+    pids = pids,
 )
 
 class RecordingChannel(

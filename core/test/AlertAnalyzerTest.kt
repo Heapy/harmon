@@ -1,6 +1,7 @@
 import dev.yoda.harmon.analysis.AlertAnalyzer
 import dev.yoda.harmon.config.AlertThresholds
 import dev.yoda.harmon.config.HarmonConfig
+import dev.yoda.harmon.model.AlertCategory
 import dev.yoda.harmon.model.ReparentedFrom
 import dev.yoda.harmon.model.Severity
 import kotlin.test.Test
@@ -482,6 +483,45 @@ class AlertAnalyzerTest {
             .alerts
 
         assertEquals(Severity.WARNING, alerts.single().severity)
+    }
+
+    @Test
+    fun labelsEveryAlertWithItsCategoryAndTheProcessesItPointsAt() {
+        val firefoxPath = "/Applications/Firefox.app/Contents/MacOS/"
+        val usage = systemUsage(
+            processes = listOf(
+                processUsage(
+                    pid = 100,
+                    name = "firefox",
+                    executablePath = "${firefoxPath}firefox",
+                    cpuPercent = 220.0,
+                    footprint = 3uL * 1_073_741_824uL,
+                    diskWriteBytesPerSecond = 200uL.toDouble() * 1_048_576.0,
+                    impact = 130.0,
+                ),
+                processUsage(
+                    pid = 101,
+                    parentPid = 100,
+                    name = "plugin-container",
+                    executablePath = "${firefoxPath}plugin-container",
+                    cpuPercent = 10.0,
+                ),
+                orphan(),
+            ),
+            swapUsed = 2uL * 1_073_741_824uL,
+            batteryPercentage = 15,
+        )
+
+        val alerts = AlertAnalyzer().analyze(usage, HarmonConfig(), activeKeys = emptySet()).alerts
+        val byCategory = alerts.associateBy { it.category }
+
+        assertEquals(listOf(100, 101), byCategory.getValue(AlertCategory.CPU).pids)
+        assertEquals(listOf(100, 101), byCategory.getValue(AlertCategory.MEMORY).pids)
+        assertEquals(listOf(100, 101), byCategory.getValue(AlertCategory.DISK).pids)
+        assertEquals(listOf(100, 101), byCategory.getValue(AlertCategory.ENERGY).pids)
+        assertEquals(listOf(44559), byCategory.getValue(AlertCategory.ORPHAN).pids)
+        assertEquals(emptyList(), byCategory.getValue(AlertCategory.SWAP).pids)
+        assertEquals(emptyList(), byCategory.getValue(AlertCategory.BATTERY).pids)
     }
 
     @Test

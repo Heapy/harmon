@@ -1,5 +1,6 @@
 package dev.yoda.harmon.web
 
+import dev.yoda.harmon.config.HarmonConfig
 import dev.yoda.harmon.model.RawSystemSnapshot
 import dev.yoda.harmon.monitor.CollectionProfile
 import dev.yoda.harmon.monitor.SystemCollector
@@ -68,6 +69,7 @@ class LiveUiSampler(
     private val encoder: (WebUiPayload) -> String = WebUiPayloadJson::encode,
     private val diagnostics: (LiveUiSamplerDiagnostic) -> Unit = {},
     private val sessionFactory: ((WebUiPayload) -> LiveSamplingSession)? = null,
+    private val config: HarmonConfig? = null,
 ) {
     private val lifecycleLock = LiveUiSamplerCondition()
     private val queue = dispatch_queue_create("dev.yoda.harmon.web.sample", null)
@@ -250,6 +252,7 @@ class LiveUiSampler(
             now = wallClock,
             monotonicNowNanoseconds = monotonicNowNanoseconds,
             previousPayload = previousPayload,
+            config = config,
         )
 
     private fun sampleLoop() {
@@ -545,23 +548,24 @@ class LiveUiRuntime(
     companion object {
         fun production(
             collector: SystemCollector,
-            terminalApplications: Set<String>,
-            sampleSeconds: Long,
+            config: HarmonConfig,
             endpointStore: LiveUiEndpointStore,
             token: String,
             logError: (String) -> Unit,
         ): LiveUiRuntime {
+            val sampleSeconds = config.webSampleSeconds
             val warming = WebUiPayloadFactory.warming(sampleSeconds.toDouble())
             val state = LiveUiState(WebUiPayloadJson.encode(warming))
             return LiveUiRuntime(
                 state = state,
                 sampler = LiveUiSampler(
                     collector = collector,
-                    calculator = UsageCalculator(terminalApplications),
+                    calculator = UsageCalculator(config.terminalApplications),
                     sampleSeconds = sampleSeconds,
                     state = state,
                     initialPayload = warming,
                     logError = logError,
+                    config = config,
                 ),
                 token = token,
                 endpointStore = endpointStore,

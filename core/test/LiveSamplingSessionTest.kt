@@ -1,3 +1,5 @@
+import dev.yoda.harmon.config.HarmonConfig
+import dev.yoda.harmon.model.AlertCategory
 import dev.yoda.harmon.model.RawSystemSnapshot
 import dev.yoda.harmon.monitor.CollectionProfile
 import dev.yoda.harmon.monitor.SystemCollector
@@ -44,6 +46,73 @@ class LiveSamplingSessionTest {
             collector.profiles,
         )
     }
+
+    @Test
+    fun evaluatesTheConfiguredThresholdsOnEveryLiveSample() {
+        val hungry = { userTimeNs: ULong ->
+            rawProcess(
+                pid = 100,
+                name = "firefox",
+                footprint = 9uL * GIBIBYTE,
+                userTimeNs = userTimeNs,
+            )
+        }
+        val collector = AttributionScriptedCollector(
+            listOf(
+                rawSnapshot(1_000_000_000u, listOf(hungry(0u))),
+                rawSnapshot(2_000_000_000u, listOf(hungry(2_000_000_000u))),
+            ),
+        )
+        val session = attributionSession(
+            collector,
+            monotonicTimes = listOf(0uL, 1_000_000_000uL),
+            config = HarmonConfig(),
+        )
+
+        session.capture()
+        val ready = session.capture()
+
+        val categories = ready.alerts.map { it.category }.toSet()
+        assertEquals(WebUiStatus.READY, ready.status)
+        assertTrue("cpu" in categories, "expected a cpu alert, got $categories")
+        assertTrue("memory" in categories, "expected a memory alert, got $categories")
+        assertEquals(listOf(100), ready.alerts.first().pids)
+        assertContains(ready.reportText, "Alerts")
+    }
+
+    @Test
+    fun keepsALostParentMarkedUntilTheProcessLeavesTheSnapshot() {
+        val child = { parentPid: Int ->
+            rawProcess(pid = 500, startedAt = 500u, name = "worker", parentPid = parentPid)
+        }
+        val parent = rawProcess(pid = 400, startedAt = 400u, name = "supervisor")
+        val collector = AttributionScriptedCollector(
+            listOf(
+                rawSnapshot(1_000_000_000u, listOf(parent, child(400))),
+                rawSnapshot(2_000_000_000u, listOf(child(1))),
+                rawSnapshot(3_000_000_000u, listOf(child(1))),
+                rawSnapshot(4_000_000_000u, listOf(parent)),
+            ),
+        )
+        val session = attributionSession(
+            collector,
+            monotonicTimes = listOf(0uL, 1_000_000_000uL, 2_000_000_000uL, 3_000_000_000uL),
+            config = HarmonConfig(),
+        )
+
+        session.capture()
+        val transition = session.capture()
+        val later = session.capture()
+        val gone = session.capture()
+
+        assertEquals(listOf(500), transition.orphanPids())
+        assertEquals(listOf(500), later.orphanPids())
+        assertEquals(emptyList(), gone.orphanPids())
+    }
+
+    private fun WebUiPayload.orphanPids(): List<Int> = alerts
+        .filter { it.category == AlertCategory.ORPHAN.name.lowercase() }
+        .flatMap { it.pids }
 
     @Test
     fun startsFullThenPublishesFastMetricsWithCachedAttribution() {
@@ -398,6 +467,7 @@ class LiveSamplingSessionTest {
         monotonicTimes: List<ULong>,
         now: () -> Instant = { Instant.parse("2026-08-12T10:00:00Z") },
         previousPayload: WebUiPayload? = null,
+        config: HarmonConfig? = null,
     ): LiveSamplingSession {
         val times = ArrayDeque(monotonicTimes)
         return LiveSamplingSession(
@@ -407,6 +477,7 @@ class LiveSamplingSessionTest {
             now = now,
             monotonicNowNanoseconds = { times.removeFirst() },
             previousPayload = previousPayload,
+            config = config,
         )
     }
 

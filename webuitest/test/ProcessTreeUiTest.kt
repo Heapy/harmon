@@ -167,6 +167,53 @@ class ProcessTreeUiTest {
     }
 
     @Test
+    fun currentAlertsAreReadableWithoutOpeningTheTextReport() =
+        processUiOnLivePage("alert-panel") { _, page ->
+            val panel = page.locator(".alert-panel")
+            assertThat(panel).containsText("Current alerts (6)")
+            assertThat(panel.locator(".alert-item")).hasCount(6)
+            assertThat(panel.locator("[data-alert-key='cpu:code'] .alert-chip")).hasClass(
+                "alert-chip critical",
+            )
+            assertThat(panel).containsText("Code Helper uses 80.0% CPU")
+            assertThat(panel).containsText("2.0 GiB of swap is in use")
+            assertThat(panel).containsText("1 more matching the same rules, past the per-category cap.")
+        }
+
+    @Test
+    fun everyMarkedCategoryLandsOnTheProcessItPointsAt() =
+        processUiOnLivePage("alert-badges") { _, page ->
+            assertThat(processUiRow(page, 100).locator(".alert-chip")).hasText("memory")
+            assertThat(processUiRow(page, 200).locator(".alert-chip")).hasText("cpu")
+            assertThat(processUiRow(page, 102).locator(".alert-chip"))
+                .hasText(arrayOf("memory", "disk"))
+            assertThat(processUiRow(page, 103).locator(".alert-chip"))
+                .hasText(arrayOf("memory", "energy"))
+            assertThat(processUiRow(page, 301).locator(".alert-chip")).hasText("orphan")
+
+            assertThat(processUiRow(page, 300).locator(".alert-chip")).hasCount(0)
+        }
+
+    @Test
+    fun aCollapsedParentStillReportsTheAlertsInsideIt() =
+        processUiOnLivePage("alert-descendants") { _, page ->
+            assertThat(processUiRow(page, 100).locator(".alert-descendants")).hasCount(0)
+
+            page.getByRole(AriaRole.BUTTON, processUiNamed("Collapse Firefox (PID 100)")).click()
+
+            assertThat(processUiRow(page, 100).locator(".alert-descendants"))
+                .hasText("3 alerts inside")
+            assertThat(processUiRow(page, 102)).hasCount(0)
+
+            page.getByRole(AriaRole.BUTTON, processUiNamed("Expand Firefox (PID 100)")).click()
+            page.getByRole(AriaRole.BUTTON, processUiNamed("Collapse Firefox Content (PID 101)"))
+                .click()
+
+            assertThat(processUiRow(page, 101).locator(".alert-descendants"))
+                .hasText("2 alerts inside")
+        }
+
+    @Test
     fun treeControlsCollapseAndExpandByProcess() = processUiOnLivePage("tree-controls") { _, page ->
         page.getByRole(AriaRole.BUTTON, processUiNamed("Collapse Firefox (PID 100)")).click()
         assertThat(processUiRow(page, 101)).hasCount(0)
