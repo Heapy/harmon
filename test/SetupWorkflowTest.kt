@@ -208,7 +208,7 @@ class SetupWorkflowTest {
     @Test
     fun systemPhaseWritesOnlyRootOwnedSystemFilesAndUsesTheFixedServiceOrder() {
         val fileSystem = workflowFileSystem()
-        val runner = WorkflowCommandRunner()
+        val runner = WorkflowCommandRunner(fileSystem)
         val userPaths = UserSetupPaths.forHome(TEST_HOME)
         fileSystem.files[userPaths.agentPlist] = "agent"
         fileSystem.files[SystemSetupPaths.previousCollectorPlist] = "pre-rename daemon"
@@ -1070,6 +1070,9 @@ class SetupWorkflowTest {
     @Test
     fun systemStopDisablesEveryServiceBeforeIdempotentBootout() {
         val fileSystem = installedStopFileSystem()
+        val paths = UserSetupPaths.forHome(TEST_HOME)
+        fileSystem.files[SystemSetupPaths.previousCollectorPlist] = "pre-rename daemon"
+        fileSystem.files[paths.previousAgentPlist] = "pre-rename agent"
         val runner = WorkflowCommandRunner(fileSystem)
 
         SystemStop(
@@ -1089,7 +1092,17 @@ class SetupWorkflowTest {
                 listOf(
                     "/bin/launchctl",
                     "disable",
+                    "system/dev.yoda.harmon.collector",
+                ),
+                listOf(
+                    "/bin/launchctl",
+                    "disable",
                     "gui/501/io.heapy.harmon.agent",
+                ),
+                listOf(
+                    "/bin/launchctl",
+                    "disable",
+                    "gui/501/dev.yoda.harmon.agent",
                 ),
                 listOf(
                     "/bin/launchctl",

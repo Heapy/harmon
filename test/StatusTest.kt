@@ -311,7 +311,7 @@ class StatusTest {
 
         assertEquals(DISABLED, parseLaunchctlPrintDisabled("io.heapy.harmon.agent", real).state)
         assertEquals(ENABLED, parseLaunchctlPrintDisabled("com.docker.helper", real).state)
-        assertEquals(ENABLED, parseLaunchctlPrintDisabled("io.heapy.harmon", real).state)
+        assertEquals(ENABLED, parseLaunchctlPrintDisabled("dev.yoda.harmon", real).state)
     }
 
     @Test
