@@ -25,6 +25,7 @@ import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFailsWith
 import kotlin.test.assertFalse
+import kotlin.test.assertIs
 import kotlin.test.assertTrue
 
 class SetupWorkflowTest {
@@ -122,7 +123,7 @@ class SetupWorkflowTest {
             "--gid",
             "20",
         )
-        val runner = WorkflowCommandRunner(fileSystem, failedArguments = sudo)
+        val runner = WorkflowCommandRunner(fileSystem, failedArguments = setOf(sudo))
 
         assertFailsWith<CommandExecutionException> {
             UserSetup(
@@ -172,7 +173,10 @@ class SetupWorkflowTest {
                 groupId = 20u,
                 home = TEST_HOME,
                 fileSystem = fileSystem,
-                commandRunner = WorkflowCommandRunner(fileSystem, failedArguments = sudo),
+                commandRunner = WorkflowCommandRunner(
+                    fileSystem,
+                    failedArguments = setOf(sudo),
+                ),
             ).run()
         }
 
@@ -432,9 +436,7 @@ class SetupWorkflowTest {
         assertEquals("history", fileSystem.files["${paths.supportDirectory}/history.db"])
         assertEquals("log", fileSystem.files["${paths.logDirectory}/agent.log"])
 
-        val invocations = runner.invocations
-            .map(CommandInvocation::arguments)
-            .filterNot { it.getOrNull(1) == "print-disabled" }
+        val invocations = runner.invocations.map(CommandInvocation::arguments)
         assertEquals(
             listOf(
                 listOf(
@@ -625,10 +627,20 @@ class SetupWorkflowTest {
     }
 
     @Test
-    fun userUninstallClearsTheDisableOverridesAStopLeftBehind() {
+    fun userUninstallClearsTheDisableOverridesWhenTheSystemPhaseFails() {
         val fileSystem = workflowFileSystem()
+        val paths = UserSetupPaths.forHome(TEST_HOME)
+        val sudo = listOf(
+            "/usr/bin/sudo",
+            paths.installedAgent,
+            "uninstall",
+            "--system",
+            "--uid",
+            "501",
+        )
         val runner = WorkflowCommandRunner(
             fileSystem,
+            failedArguments = setOf(sudo),
             disabledLabels = setOf(
                 "io.heapy.harmon.agent",
                 "dev.yoda.harmon.agent",
@@ -636,15 +648,23 @@ class SetupWorkflowTest {
             ),
         )
 
-        UserUninstall(
-            executablePath = UserSetupPaths.forHome(TEST_HOME).installedAgent,
-            userId = 501u,
-            home = TEST_HOME,
-            purge = false,
-            fileSystem = fileSystem,
-            commandRunner = runner,
-        ).run()
+        assertFailsWith<CommandExecutionException> {
+            UserUninstall(
+                executablePath = paths.installedAgent,
+                userId = 501u,
+                home = TEST_HOME,
+                purge = false,
+                fileSystem = fileSystem,
+                commandRunner = runner,
+            ).run()
+        }
 
+        assertEquals(
+            listOf(listOf("/bin/launchctl", "print-disabled", "gui/501")),
+            runner.invocations
+                .map(CommandInvocation::arguments)
+                .filter { it.getOrNull(1) == "print-disabled" },
+        )
         val enables = runner.invocations
             .map(CommandInvocation::arguments)
             .filter { it.getOrNull(1) == "enable" }
@@ -656,6 +676,47 @@ class SetupWorkflowTest {
             ),
             enables,
         )
+    }
+
+    @Test
+    fun userUninstallPreservesTheSystemFailureWhenOverrideCleanupAlsoFails() {
+        val fileSystem = workflowFileSystem()
+        val paths = UserSetupPaths.forHome(TEST_HOME)
+        val sudo = listOf(
+            "/usr/bin/sudo",
+            paths.installedAgent,
+            "uninstall",
+            "--system",
+            "--uid",
+            "501",
+        )
+        val failedEnable = listOf(
+            "/bin/launchctl",
+            "enable",
+            "gui/501/io.heapy.harmon.agent",
+        )
+        val runner = WorkflowCommandRunner(
+            fileSystem,
+            failedArguments = setOf(sudo, failedEnable),
+            disabledLabels = setOf("io.heapy.harmon.agent"),
+        )
+
+        val failure = assertFailsWith<CommandExecutionException> {
+            UserUninstall(
+                executablePath = paths.installedAgent,
+                userId = 501u,
+                home = TEST_HOME,
+                purge = false,
+                fileSystem = fileSystem,
+                commandRunner = runner,
+            ).run()
+        }
+
+        assertEquals(sudo, failure.result.invocation.arguments)
+        val cleanupFailure = assertIs<CommandExecutionException>(
+            failure.suppressedExceptions.single(),
+        )
+        assertEquals(failedEnable, cleanupFailure.result.invocation.arguments)
     }
 
     @Test
@@ -682,6 +743,39 @@ class SetupWorkflowTest {
             runner.invocations.none { it.arguments.getOrNull(1) == "enable" },
             "uninstall added launchd rows for labels that had none",
         )
+        assertEquals(
+            listOf(
+                listOf("/bin/launchctl", "print-disabled", "system"),
+                listOf("/bin/launchctl", "print-disabled", "gui/501"),
+            ),
+            runner.invocations
+                .map(CommandInvocation::arguments)
+                .filter { it.getOrNull(1) == "print-disabled" },
+        )
+    }
+
+    @Test
+    fun systemUninstallLeavesOverridesAloneWhenDomainSnapshotsCannotBeRead() {
+        val systemSnapshot = listOf("/bin/launchctl", "print-disabled", "system")
+        val userSnapshot = listOf("/bin/launchctl", "print-disabled", "gui/501")
+        val runner = WorkflowCommandRunner(
+            failedArguments = setOf(systemSnapshot, userSnapshot),
+        )
+
+        SystemUninstall(
+            targetUserId = 501u,
+            purge = false,
+            fileSystem = workflowFileSystem(),
+            commandRunner = runner,
+        ).run()
+
+        assertEquals(
+            listOf(systemSnapshot, userSnapshot),
+            runner.invocations
+                .map(CommandInvocation::arguments)
+                .filter { it.getOrNull(1) == "print-disabled" },
+        )
+        assertTrue(runner.invocations.none { it.arguments.getOrNull(1) == "enable" })
     }
 
     @Test
@@ -734,6 +828,15 @@ class SetupWorkflowTest {
             commandRunner = runner,
         ).run()
 
+        assertEquals(
+            listOf(
+                listOf("/bin/launchctl", "print-disabled", "system"),
+                listOf("/bin/launchctl", "print-disabled", "gui/501"),
+            ),
+            runner.invocations
+                .map(CommandInvocation::arguments)
+                .filter { it.getOrNull(1) == "print-disabled" },
+        )
         assertEquals(
             listOf(
                 listOf("/bin/launchctl", "enable", "system/io.heapy.harmon.collector"),
@@ -812,7 +915,7 @@ class SetupWorkflowTest {
             "--uid",
             "501",
         )
-        val runner = WorkflowCommandRunner(fileSystem, failedArguments = sudo)
+        val runner = WorkflowCommandRunner(fileSystem, failedArguments = setOf(sudo))
 
         assertFailsWith<CommandExecutionException> {
             UserStop(
@@ -876,7 +979,10 @@ class SetupWorkflowTest {
             "gui/501/io.heapy.harmon.agent",
         )
         val fileSystem = installedStopFileSystem()
-        val runner = WorkflowCommandRunner(fileSystem, failedArguments = failedDisable)
+        val runner = WorkflowCommandRunner(
+            fileSystem,
+            failedArguments = setOf(failedDisable),
+        )
 
         val failure = assertFailsWith<SetupException> {
             SystemStop(
@@ -1023,7 +1129,7 @@ class SetupWorkflowTest {
 
 private class WorkflowCommandRunner(
     private val fileSystem: WorkflowFileSystem? = null,
-    private val failedArguments: List<String>? = null,
+    private val failedArguments: Set<List<String>> = emptySet(),
     private val disabledLabels: Set<String> = emptySet(),
 ) : CommandRunner {
     val invocations = mutableListOf<CommandInvocation>()
@@ -1035,7 +1141,7 @@ private class WorkflowCommandRunner(
         pathsPresentWhenInvoked += arguments.first() to
             (fileSystem?.files?.keys?.toSet() ?: emptySet())
         return when {
-            arguments == failedArguments ->
+            arguments in failedArguments ->
                 CommandResult(invocation, 77, "Operation not permitted")
             arguments.take(2) == listOf("/bin/launchctl", "print-disabled") ->
                 success(

@@ -128,15 +128,17 @@ is known, then transferred to the separate tap repository. See
 data. The login-user process unloads the current, pre-rename, and source-installer
 LaunchAgents, removes their published and staged plists and the managed legacy
 `~/.local/bin/harmon` symlink, then makes one sudo re-exec for the current and
-pre-rename system LaunchDaemons, current and legacy helpers, and socket. Each
-phase also clears the persistent disable overrides that `harmon stop` may have
-written for the labels it owns, and only when one is set, since
-launchd keeps a row for every label it is told about and offers no way to delete
-one. It keeps `Harmon.app` until that re-exec returns because the command can
-itself be running from the old bundle; only then is the app removed. Config,
-logs, reports, and `history.db` are preserved. The old install and uninstall
-scripts are thin source-build compatibility entry points and contain no
-installation or removal policy.
+pre-rename system LaunchDaemons, current and legacy helpers, and socket. The
+privileged phase reads each launchd domain's disabled-services dictionary once
+and clears each owned label reported disabled in those snapshots. If the sudo
+re-exec fails, the login-user phase performs the same one-snapshot cleanup for
+its GUI domain before reporting the original failure. Overrides are cleared only
+when reported as set, since launchd keeps a row for every label it is told about
+and offers no way to delete one. The user process keeps `Harmon.app` until the
+re-exec returns because the command can itself be running from the old bundle;
+only then is the app removed. Config, logs, reports, and `history.db` are
+preserved. The old install and uninstall scripts are thin source-build
+compatibility entry points and contain no installation or removal policy.
 
 `--purge` keeps that same boundary and adds the user data. The login-user phase
 prints every data tree it is about to remove, including the root-owned one,

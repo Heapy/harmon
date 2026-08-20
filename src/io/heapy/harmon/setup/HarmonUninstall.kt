@@ -136,29 +136,39 @@ class UserUninstall(
             "$agentDomain/$LEGACY_AGENT_LABEL",
         )
         services.forEach(commandRunner::bootoutIfLoaded)
-        // A stop leaves persistent overrides behind; an uninstall that kept them would keep
-        // deciding how a future install behaves.
-        services.forEach(commandRunner::enableIfDisabled)
-        fileSystem.removeFileIfExists(paths.stagedAgentPlist)
-        fileSystem.removeFileIfExists(paths.agentPlist)
-        fileSystem.removeFileIfExists(paths.previousAgentPlist)
-        fileSystem.removeFileIfExists(paths.legacyAgentPlist)
-        fileSystem.removeFileIfExists(paths.liveUiEndpoint)
-        removeLegacyCommandLink(paths)
+        // The root phase owns override cleanup on success, avoiding a duplicate GUI-domain query.
+        // If local cleanup or the re-exec fails, the catch preserves the user-phase guarantee.
+        try {
+            fileSystem.removeFileIfExists(paths.stagedAgentPlist)
+            fileSystem.removeFileIfExists(paths.agentPlist)
+            fileSystem.removeFileIfExists(paths.previousAgentPlist)
+            fileSystem.removeFileIfExists(paths.legacyAgentPlist)
+            fileSystem.removeFileIfExists(paths.liveUiEndpoint)
+            removeLegacyCommandLink(paths)
 
-        // Legacy installs may be executing this command from inside Harmon.app.
-        commandRunner.requireSuccess(
-            arguments = buildList {
-                add("/usr/bin/sudo")
-                add(executablePath)
-                add("uninstall")
-                add("--system")
-                add("--uid")
-                add(userId.toString())
-                if (purge) add("--purge")
-            },
-            captureOutput = false,
-        )
+            // Legacy installs may be executing this command from inside Harmon.app.
+            commandRunner.requireSuccess(
+                arguments = buildList {
+                    add("/usr/bin/sudo")
+                    add(executablePath)
+                    add("uninstall")
+                    add("--system")
+                    add("--uid")
+                    add(userId.toString())
+                    if (purge) add("--purge")
+                },
+                captureOutput = false,
+            )
+        } catch (failure: Throwable) {
+            // The root phase normally clears every override from one domain snapshot. If it
+            // never completes, preserve that cleanup guarantee before reporting its failure.
+            try {
+                commandRunner.enableDisabledServices(services)
+            } catch (cleanupFailure: Throwable) {
+                failure.addSuppressed(cleanupFailure)
+            }
+            throw failure
+        }
 
         // Everything above is recoverable with 'harmon setup'; a purge is not. Deleting only after
         // the privileged phase returns means a declined password leaves user data intact.
@@ -197,7 +207,7 @@ class SystemUninstall(
             "gui/$targetUserId/$LEGACY_AGENT_LABEL",
         )
         services.forEach(commandRunner::bootoutIfLoaded)
-        services.forEach(commandRunner::enableIfDisabled)
+        commandRunner.enableDisabledServices(services)
         fileSystem.removeFileIfExists(SystemSetupPaths.collectorPlist)
         fileSystem.removeFileIfExists(SystemSetupPaths.previousCollectorPlist)
         fileSystem.removeFileIfExists(SystemSetupPaths.collectorBinary)

@@ -37,23 +37,25 @@ fun CommandRunner.bootoutIfLoaded(service: String) {
 }
 
 /**
- * Clears a persistent disable override, but only when one is actually set: launchd keeps a row for
- * every label it has been told about, so an unconditional enable would add rows uninstall cannot
- * remove afterwards.
+ * Clears persistent disable overrides, but only when they are actually set: launchd keeps a row
+ * for every label it has been told about, so an unconditional enable would add rows uninstall
+ * cannot remove afterwards. `print-disabled` returns the whole domain dictionary, so each domain
+ * is queried once and that snapshot is reused for all of its labels. An unreadable snapshot leaves
+ * its domain untouched rather than creating rows for labels whose state is unknown.
  */
-fun CommandRunner.enableIfDisabled(service: String) {
-    val domain = service.substringBeforeLast('/')
-    val label = service.substringAfterLast('/')
-    val enablement = parseLaunchctlPrintDisabled(
-        label,
-        run(listOf("/bin/launchctl", "print-disabled", domain)),
-    )
-    if (enablement.state != LaunchdEnablement.DISABLED) {
-        return
-    }
-    val result = run(listOf("/bin/launchctl", "enable", service))
-    if (!result.successful && !isMissingLaunchdTarget(result)) {
-        throw CommandExecutionException(result)
+fun CommandRunner.enableDisabledServices(services: List<String>) {
+    services.groupBy { it.substringBeforeLast('/') }.forEach { (domain, domainServices) ->
+        val disabledResult = run(listOf("/bin/launchctl", "print-disabled", domain))
+        domainServices.forEach { service ->
+            val label = service.substringAfterLast('/')
+            val enablement = parseLaunchctlPrintDisabled(label, disabledResult)
+            if (enablement.state == LaunchdEnablement.DISABLED) {
+                val result = run(listOf("/bin/launchctl", "enable", service))
+                if (!result.successful && !isMissingLaunchdTarget(result)) {
+                    throw CommandExecutionException(result)
+                }
+            }
+        }
     }
 }
 
