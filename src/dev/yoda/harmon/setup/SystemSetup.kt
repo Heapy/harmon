@@ -87,24 +87,5 @@ class SystemSetup(
         )
     }
 
-    private fun bootoutIfLoaded(service: String) {
-        val result = commandRunner.run(
-            listOf("/bin/launchctl", "bootout", service),
-        )
-        if (!result.successful && !isMissingLaunchdJob(result)) {
-            throw CommandExecutionException(result)
-        }
-    }
+    private fun bootoutIfLoaded(service: String) = commandRunner.bootoutIfLoaded(service)
 }
-
-fun isMissingLaunchdJob(result: CommandResult): Boolean {
-    if (result.exitCode == LAUNCHCTL_NO_SUCH_PROCESS_EXIT_CODE) {
-        return true
-    }
-    val output = result.output.lowercase()
-    return "no such process" in output ||
-        "could not find service" in output ||
-        "service not found" in output
-}
-
-private const val LAUNCHCTL_NO_SUCH_PROCESS_EXIT_CODE = 3

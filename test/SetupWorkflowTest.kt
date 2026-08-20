@@ -1,4 +1,5 @@
 import dev.yoda.harmon.BuildInfo
+import dev.yoda.harmon.setup.CommandExecutionException
 import dev.yoda.harmon.setup.CommandInvocation
 import dev.yoda.harmon.setup.CommandResult
 import dev.yoda.harmon.setup.CommandRunner
@@ -269,7 +270,9 @@ class SetupWorkflowTest {
         assertEquals("history", fileSystem.files["${paths.supportDirectory}/history.db"])
         assertEquals("log", fileSystem.files["${paths.logDirectory}/agent.log"])
 
-        val invocations = runner.invocations.map(CommandInvocation::arguments)
+        val invocations = runner.invocations
+            .map(CommandInvocation::arguments)
+            .filterNot { it.getOrNull(1) == "print-disabled" }
         assertEquals(
             listOf(
                 listOf(
@@ -460,6 +463,111 @@ class SetupWorkflowTest {
     }
 
     @Test
+    fun userUninstallClearsTheDisableOverridesAStopLeftBehind() {
+        val fileSystem = workflowFileSystem()
+        val runner = WorkflowCommandRunner(
+            fileSystem,
+            disabledLabels = setOf("dev.yoda.harmon.agent", "dev.yoda.harmon"),
+        )
+
+        UserUninstall(
+            executablePath = UserSetupPaths.forHome(TEST_HOME).installedAgent,
+            userId = 501u,
+            home = TEST_HOME,
+            purge = false,
+            fileSystem = fileSystem,
+            commandRunner = runner,
+        ).run()
+
+        val enables = runner.invocations
+            .map(CommandInvocation::arguments)
+            .filter { it.getOrNull(1) == "enable" }
+        assertEquals(
+            listOf(
+                listOf("/bin/launchctl", "enable", "gui/501/dev.yoda.harmon.agent"),
+                listOf("/bin/launchctl", "enable", "gui/501/dev.yoda.harmon"),
+            ),
+            enables,
+        )
+    }
+
+    @Test
+    fun uninstallDoesNotEnableALabelThatWasNeverDisabled() {
+        val fileSystem = workflowFileSystem()
+        val runner = WorkflowCommandRunner(fileSystem)
+
+        UserUninstall(
+            executablePath = UserSetupPaths.forHome(TEST_HOME).installedAgent,
+            userId = 501u,
+            home = TEST_HOME,
+            purge = false,
+            fileSystem = fileSystem,
+            commandRunner = runner,
+        ).run()
+
+        assertTrue(
+            runner.invocations.none { it.arguments.getOrNull(1) == "enable" },
+            "uninstall added launchd rows for labels that had none",
+        )
+    }
+
+    @Test
+    fun systemUninstallClearsTheCollectorDisableOverride() {
+        val fileSystem = workflowFileSystem()
+        val runner = WorkflowCommandRunner(
+            fileSystem,
+            disabledLabels = setOf("dev.yoda.harmon.collector"),
+        )
+
+        SystemUninstall(
+            targetUserId = 501u,
+            purge = false,
+            fileSystem = fileSystem,
+            commandRunner = runner,
+        ).run()
+
+        assertEquals(
+            listOf(
+                listOf("/bin/launchctl", "enable", "system/dev.yoda.harmon.collector"),
+            ),
+            runner.invocations
+                .map(CommandInvocation::arguments)
+                .filter { it.getOrNull(1) == "enable" },
+        )
+    }
+
+    @Test
+    fun theSystemUninstallFormClearsTheUserOverridesItAlsoUnloads() {
+        val fileSystem = workflowFileSystem()
+        val runner = WorkflowCommandRunner(
+            fileSystem,
+            disabledLabels = setOf(
+                "dev.yoda.harmon.collector",
+                "dev.yoda.harmon.agent",
+                "dev.yoda.harmon",
+            ),
+        )
+
+        SystemUninstall(
+            targetUserId = 501u,
+            purge = false,
+            fileSystem = fileSystem,
+            commandRunner = runner,
+        ).run()
+
+        assertEquals(
+            listOf(
+                listOf("/bin/launchctl", "enable", "system/dev.yoda.harmon.collector"),
+                listOf("/bin/launchctl", "enable", "gui/501/dev.yoda.harmon.agent"),
+                listOf("/bin/launchctl", "enable", "gui/501/dev.yoda.harmon"),
+            ),
+            runner.invocations
+                .map(CommandInvocation::arguments)
+                .filter { it.getOrNull(1) == "enable" },
+        )
+    }
+
+    @Test
     fun uninstallPurgeListsUserTreesWithTheSupportTreeLast() {
         assertEquals(
             listOf(
@@ -473,7 +581,7 @@ class SetupWorkflowTest {
     }
 
     @Test
-    fun userStopDisablesServicesBeforeBootoutAndRequestsTheSystemPhase() {
+    fun userStopTouchesLaunchdOnlyThroughTheSystemPhase() {
         val fileSystem = workflowFileSystem()
         val runner = WorkflowCommandRunner(fileSystem)
         val paths = UserSetupPaths.forHome(TEST_HOME)
@@ -490,26 +598,6 @@ class SetupWorkflowTest {
         assertEquals(
             listOf(
                 listOf(
-                    "/bin/launchctl",
-                    "disable",
-                    "gui/501/dev.yoda.harmon.agent",
-                ),
-                listOf(
-                    "/bin/launchctl",
-                    "disable",
-                    "gui/501/dev.yoda.harmon",
-                ),
-                listOf(
-                    "/bin/launchctl",
-                    "bootout",
-                    "gui/501/dev.yoda.harmon.agent",
-                ),
-                listOf(
-                    "/bin/launchctl",
-                    "bootout",
-                    "gui/501/dev.yoda.harmon",
-                ),
-                listOf(
                     "/usr/bin/sudo",
                     TEST_AGENT_SOURCE,
                     "stop",
@@ -522,20 +610,146 @@ class SetupWorkflowTest {
         )
         assertFalse(runner.invocations.last().captureOutput)
         assertFalse(paths.liveUiEndpoint in fileSystem.files)
-        assertFalse(
+        assertTrue(
             runner.pathsPresentWhenInvoked
                 .single { it.first == "/usr/bin/sudo" }
                 .second.contains(paths.liveUiEndpoint),
-            "the stale live UI endpoint was still present during the system phase",
+            "the endpoint was removed before the privileged phase could fail",
+        )
+    }
+
+    @Test
+    fun userStopKeepsTheEndpointWhenTheSystemPhaseFails() {
+        val fileSystem = workflowFileSystem()
+        val paths = UserSetupPaths.forHome(TEST_HOME)
+        fileSystem.files[paths.liveUiEndpoint] = "stale endpoint"
+        val sudo = listOf(
+            "/usr/bin/sudo",
+            TEST_AGENT_SOURCE,
+            "stop",
+            "--system",
+            "--uid",
+            "501",
+        )
+        val runner = WorkflowCommandRunner(fileSystem, failedArguments = sudo)
+
+        assertFailsWith<CommandExecutionException> {
+            UserStop(
+                executablePath = TEST_AGENT_SOURCE,
+                userId = 501u,
+                home = TEST_HOME,
+                fileSystem = fileSystem,
+                commandRunner = runner,
+            ).run()
+        }
+
+        assertEquals(listOf(sudo), runner.invocations.map(CommandInvocation::arguments))
+        assertTrue(
+            paths.liveUiEndpoint in fileSystem.files,
+            "a declined password still removed the endpoint",
+        )
+    }
+
+    @Test
+    fun systemStopBootsOutNothingWhenADisableFails() {
+        val failedDisable = listOf(
+            "/bin/launchctl",
+            "disable",
+            "gui/501/dev.yoda.harmon.agent",
+        )
+        val fileSystem = installedStopFileSystem()
+        val runner = WorkflowCommandRunner(fileSystem, failedArguments = failedDisable)
+
+        val failure = assertFailsWith<SetupException> {
+            SystemStop(
+                targetUserId = 501u,
+                targetHome = TEST_HOME,
+                fileSystem = fileSystem,
+                commandRunner = runner,
+            ).run()
+        }
+
+        assertEquals(
+            listOf(
+                listOf(
+                    "/bin/launchctl",
+                    "disable",
+                    "system/dev.yoda.harmon.collector",
+                ),
+                failedDisable,
+            ),
+            runner.invocations.map(CommandInvocation::arguments),
+        )
+        assertTrue(
+            "system/dev.yoda.harmon.collector is now disabled" in failure.message.orEmpty(),
+            "the partial state was not reported: ${failure.message}",
+        )
+    }
+
+    @Test
+    fun systemStopToleratesADomainThatDoesNotResolve() {
+        val runner = WorkflowMissingDomainRunner("gui/501")
+
+        SystemStop(
+            targetUserId = 501u,
+            targetHome = TEST_HOME,
+            fileSystem = installedStopFileSystem(),
+            commandRunner = runner,
+        ).run()
+
+        assertEquals(
+            listOf(
+                listOf("/bin/launchctl", "disable", "system/dev.yoda.harmon.collector"),
+                listOf("/bin/launchctl", "disable", "gui/501/dev.yoda.harmon.agent"),
+                listOf("/bin/launchctl", "disable", "gui/501/dev.yoda.harmon"),
+                listOf("/bin/launchctl", "bootout", "system/dev.yoda.harmon.collector"),
+                listOf("/bin/launchctl", "bootout", "gui/501/dev.yoda.harmon.agent"),
+                listOf("/bin/launchctl", "bootout", "gui/501/dev.yoda.harmon"),
+            ),
+            runner.invocations.map(CommandInvocation::arguments),
+        )
+    }
+
+    @Test
+    fun systemStopNeverNamesALabelWithNoJobDefinition() {
+        val fileSystem = workflowFileSystem()
+        val paths = UserSetupPaths.forHome(TEST_HOME)
+        fileSystem.files[SystemSetupPaths.collectorPlist] = "daemon"
+        fileSystem.files[paths.agentPlist] = "agent"
+        val runner = WorkflowCommandRunner(fileSystem)
+
+        SystemStop(
+            targetUserId = 501u,
+            targetHome = TEST_HOME,
+            fileSystem = fileSystem,
+            commandRunner = runner,
+        ).run()
+
+        val arguments = runner.invocations.map(CommandInvocation::arguments)
+        assertEquals(
+            listOf(
+                listOf("/bin/launchctl", "disable", "system/dev.yoda.harmon.collector"),
+                listOf("/bin/launchctl", "disable", "gui/501/dev.yoda.harmon.agent"),
+            ),
+            arguments.filter { it.getOrNull(1) == "disable" },
+            "a label with no plist was named, which adds a launchd row nothing can remove",
+        )
+        assertEquals(
+            3,
+            arguments.count { it.getOrNull(1) == "bootout" },
+            "an already loaded job must still be unloaded: $arguments",
         )
     }
 
     @Test
     fun systemStopDisablesEveryServiceBeforeIdempotentBootout() {
-        val runner = WorkflowCommandRunner()
+        val fileSystem = installedStopFileSystem()
+        val runner = WorkflowCommandRunner(fileSystem)
 
         SystemStop(
             targetUserId = 501u,
+            targetHome = TEST_HOME,
+            fileSystem = fileSystem,
             commandRunner = runner,
         ).run()
 
@@ -579,6 +793,8 @@ class SetupWorkflowTest {
 
 private class WorkflowCommandRunner(
     private val fileSystem: WorkflowFileSystem? = null,
+    private val failedArguments: List<String>? = null,
+    private val disabledLabels: Set<String> = emptySet(),
 ) : CommandRunner {
     val invocations = mutableListOf<CommandInvocation>()
     val pathsPresentWhenInvoked = mutableListOf<Pair<String, Set<String>>>()
@@ -589,6 +805,17 @@ private class WorkflowCommandRunner(
         pathsPresentWhenInvoked += arguments.first() to
             (fileSystem?.files?.keys?.toSet() ?: emptySet())
         return when {
+            arguments == failedArguments ->
+                CommandResult(invocation, 77, "Operation not permitted")
+            arguments.take(2) == listOf("/bin/launchctl", "print-disabled") ->
+                success(
+                    invocation,
+                    buildString {
+                        appendLine("\tdisabled services = {")
+                        disabledLabels.forEach { appendLine("\t\t\"$it\" => disabled") }
+                        append("\t}")
+                    },
+                )
             arguments.take(2) == listOf("/usr/bin/security", "find-identity") ->
                 success(
                     invocation,
@@ -608,6 +835,37 @@ private class WorkflowCommandRunner(
         invocation: CommandInvocation,
         output: String = "",
     ): CommandResult = CommandResult(invocation, 0, output)
+}
+
+/** The plists a normal installation has, so a stop is allowed to disable all three labels. */
+private fun installedStopFileSystem(): WorkflowFileSystem {
+    val fileSystem = workflowFileSystem()
+    val paths = UserSetupPaths.forHome(TEST_HOME)
+    fileSystem.files[SystemSetupPaths.collectorPlist] = "daemon"
+    fileSystem.files[paths.agentPlist] = "agent"
+    fileSystem.files[paths.legacyAgentPlist] = "legacy agent"
+    return fileSystem
+}
+
+/** Every call against the named domain fails the way launchd answers for a logged-out user. */
+private class WorkflowMissingDomainRunner(
+    private val domain: String,
+) : CommandRunner {
+    val invocations = mutableListOf<CommandInvocation>()
+
+    override fun run(invocation: CommandInvocation): CommandResult {
+        invocations += invocation
+        val target = invocation.arguments.last()
+        return if (target.startsWith("$domain/") || target == domain) {
+            CommandResult(
+                invocation,
+                112,
+                "Bad request.\nCould not find domain for user gui: 501",
+            )
+        } else {
+            CommandResult(invocation, 0, "")
+        }
+    }
 }
 
 private class WorkflowFileSystem : SetupFileSystem {

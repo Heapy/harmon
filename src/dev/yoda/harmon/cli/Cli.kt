@@ -356,9 +356,12 @@ object CliParser {
         public for automation.
 
         uninstall --purge additionally removes the configuration, logs, reports,
-        and history database, printing every path first. It never prompts, so it
-        stays usable in scripts, and it leaves nothing outside the Homebrew
-        Cellar. The --system form purges the root-owned log directory.
+        and history database, printing each removed tree first. It never
+        prompts, so it stays usable in scripts. That data is deleted only after
+        the privileged phase succeeds; the services and deployed binaries are
+        removed before it, and setup restores those. Either form clears the
+        disable overrides a stop wrote and leaves no Harmon file outside the
+        Homebrew Cellar. The --system form purges the root-owned log directory.
     """.trimIndent()
 
     private fun parseSetup(arguments: List<String>): Command.Setup {

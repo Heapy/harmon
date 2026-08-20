@@ -13,8 +13,8 @@ data class UninstallRequest(
 
 /**
  * The trees a purge removes. Whole trees rather than named files: the WAL and SHM sidecars of
- * history.db and the report temporaries are named nowhere in the code, and SetupFileSystem cannot
- * enumerate a directory, so any explicit file list would be incomplete by construction.
+ * history.db and the report temporaries carry pid and sequence suffixes, and SetupFileSystem
+ * cannot enumerate a directory, so any explicit file list would be incomplete by construction.
  */
 object UninstallPurge {
     /** The support tree hosts the running executable, so it is removed last. */
@@ -129,8 +129,14 @@ class UserUninstall(
 ) {
     fun run() {
         val paths = UserSetupPaths.forHome(home)
-        bootoutIfLoaded("gui/$userId/$AGENT_LABEL")
-        bootoutIfLoaded("gui/$userId/$LEGACY_AGENT_LABEL")
+        val agentService = "gui/$userId/$AGENT_LABEL"
+        val legacyAgentService = "gui/$userId/$LEGACY_AGENT_LABEL"
+        commandRunner.bootoutIfLoaded(agentService)
+        commandRunner.bootoutIfLoaded(legacyAgentService)
+        // A stop leaves persistent overrides behind; an uninstall that kept them would keep
+        // deciding how a future install behaves.
+        commandRunner.enableIfDisabled(agentService)
+        commandRunner.enableIfDisabled(legacyAgentService)
         fileSystem.removeFileIfExists(paths.agentPlist)
         fileSystem.removeFileIfExists(paths.legacyAgentPlist)
         fileSystem.removeFileIfExists(paths.liveUiEndpoint)
@@ -168,15 +174,6 @@ class UserUninstall(
             fileSystem.removeFileIfExists(paths.legacyCommandLink)
         }
     }
-
-    private fun bootoutIfLoaded(service: String) {
-        val result = commandRunner.run(
-            listOf("/bin/launchctl", "bootout", service),
-        )
-        if (!result.successful && !isMissingLaunchdJob(result)) {
-            throw CommandExecutionException(result)
-        }
-    }
 }
 
 class SystemUninstall(
@@ -186,24 +183,21 @@ class SystemUninstall(
     private val commandRunner: CommandRunner,
 ) {
     fun run() {
-        bootoutIfLoaded("system/$COLLECTOR_LABEL")
-        bootoutIfLoaded("gui/$targetUserId/$AGENT_LABEL")
-        bootoutIfLoaded("gui/$targetUserId/$LEGACY_AGENT_LABEL")
+        // Root can reach the user's GUI domain, so the public --system form is a complete
+        // uninstall of the launchd state rather than half of one.
+        val services = listOf(
+            "system/$COLLECTOR_LABEL",
+            "gui/$targetUserId/$AGENT_LABEL",
+            "gui/$targetUserId/$LEGACY_AGENT_LABEL",
+        )
+        services.forEach(commandRunner::bootoutIfLoaded)
+        services.forEach(commandRunner::enableIfDisabled)
         fileSystem.removeFileIfExists(SystemSetupPaths.collectorPlist)
         fileSystem.removeFileIfExists(SystemSetupPaths.collectorBinary)
         fileSystem.removeFileIfExists(SystemSetupPaths.legacyCollectorBinary)
         fileSystem.removeFileIfExists(SystemSetupPaths.socket)
         if (purge) {
             UninstallPurge.systemTrees.forEach(fileSystem::removeTreeIfExists)
-        }
-    }
-
-    private fun bootoutIfLoaded(service: String) {
-        val result = commandRunner.run(
-            listOf("/bin/launchctl", "bootout", service),
-        )
-        if (!result.successful && !isMissingLaunchdJob(result)) {
-            throw CommandExecutionException(result)
         }
     }
 }

@@ -18,22 +18,43 @@ data class ProtocolObservation(
     val socket: String,
     val version: Int? = null,
     val error: String? = null,
+    val notProbed: Boolean = false,
+)
+
+/**
+ * Whether launchd knows the job. A failed `launchctl print` only proves the job is gone when it
+ * says so; every other failure leaves the load state unknown and must not read as an unload.
+ */
+enum class LaunchdLoadState { LOADED, ABSENT, UNKNOWN }
+
+enum class LaunchdEnablement { ENABLED, DISABLED, UNKNOWN }
+
+data class LaunchdEnablementObservation(
+    val state: LaunchdEnablement,
+    val error: String? = null,
 )
 
 data class LaunchdServiceObservation(
     val service: String,
-    val loaded: Boolean,
+    val load: LaunchdLoadState,
     val state: String? = null,
     val processId: Int? = null,
     val program: String? = null,
     val error: String? = null,
-    val disabled: Boolean? = null,
+    val enablement: LaunchdEnablementObservation =
+        LaunchdEnablementObservation(LaunchdEnablement.UNKNOWN),
 ) {
+    val loaded: Boolean
+        get() = load == LaunchdLoadState.LOADED
+
     val running: Boolean
         get() = loaded && state == "running"
 
+    val disabled: Boolean
+        get() = enablement.state == LaunchdEnablement.DISABLED
+
     val intentionallyStopped: Boolean
-        get() = !loaded && disabled == true
+        get() = load == LaunchdLoadState.ABSENT && disabled
 }
 
 data class HarmonStatusSnapshot(
@@ -55,8 +76,7 @@ data class HarmonStatusReport(
     val issues: List<String>,
 ) {
     val intentionallyStopped: Boolean
-        get() = snapshot.agentService.intentionallyStopped &&
-            snapshot.collectorService.intentionallyStopped
+        get() = StatusEvaluator.isIntentionallyStopped(snapshot)
 
     val exitCode: Int
         get() = if (issues.isEmpty() && !intentionallyStopped) 0 else 1
@@ -95,36 +115,53 @@ data class HarmonStatusReport(
         version?.let { "$it ($path)" }
             ?: "unavailable ($path: ${error.orEmpty().oneLine()})"
 
-    private fun ProtocolObservation.description(): String =
-        if (intentionallyStopped) {
-            "not running (intentionally stopped)"
-        } else {
-            version?.let { "live $it ($socket)" }
-                ?: "unavailable ($socket: ${error.orEmpty().oneLine()})"
-        }
+    private fun ProtocolObservation.description(): String = when {
+        notProbed -> "not running (intentionally stopped)"
+        version != null -> "live $version ($socket)"
+        else -> "unavailable ($socket: ${error.orEmpty().oneLine()})"
+    }
 
     private fun LaunchdServiceObservation.description(): String {
         if (!loaded) {
-            if (disabled == true) {
+            if (intentionallyStopped) {
                 return "stopped (disabled)"
             }
-            return "unloaded (${error.orEmpty().oneLine()})"
+            val reason = error.orEmpty().oneLine()
+            return when (load) {
+                LaunchdLoadState.ABSENT -> "unloaded ($reason)"
+                else -> "state unknown ($reason)"
+            }
         }
         val details = buildList {
             state?.let { add("state $it") }
             processId?.let { add("pid $it") }
             program?.let { add("program $it") }
-            if (disabled == true) add("disabled")
+            when (enablement.state) {
+                LaunchdEnablement.DISABLED -> add("disabled")
+                LaunchdEnablement.UNKNOWN ->
+                    add("enablement unknown (${enablement.error.orEmpty().oneLine()})")
+                LaunchdEnablement.ENABLED -> Unit
+            }
         }
         return details.joinToString().ifEmpty { "loaded" }
     }
 }
 
 object StatusEvaluator {
+    /**
+     * Disable flags outlive the installation that set them, so a stop is only claimed when both
+     * deployed copies are still there to be started again. One predicate, because the socket probe,
+     * the issue list, and the rendering all have to agree on the state.
+     */
+    fun isIntentionallyStopped(snapshot: HarmonStatusSnapshot): Boolean =
+        snapshot.installedAgent.version != null &&
+            snapshot.installedCollector.version != null &&
+            snapshot.agentService.intentionallyStopped &&
+            snapshot.collectorService.intentionallyStopped
+
     fun evaluate(snapshot: HarmonStatusSnapshot): HarmonStatusReport {
         val issues = mutableListOf<String>()
-        val intentionallyStopped = snapshot.agentService.intentionallyStopped &&
-            snapshot.collectorService.intentionallyStopped
+        val intentionallyStopped = isIntentionallyStopped(snapshot)
         val sourceVersion = snapshot.runningCliVersion
         val sourceCollectorVersion = snapshot.sourceCollector.version
         if (sourceCollectorVersion == null) {
@@ -223,7 +260,7 @@ object StatusEvaluator {
             !observation.loaded -> issues += actionable(
                 "The $label service is not loaded: ${observation.error.orEmpty().oneLine()}.",
             )
-            observation.disabled == true -> issues += actionable(
+            observation.disabled -> issues += actionable(
                 "The $label service is loaded but disabled.",
             )
             !observation.running -> issues += actionable(
@@ -234,6 +271,11 @@ object StatusEvaluator {
                 "The $label service runs '${observation.program ?: "an unknown program"}' " +
                     "instead of '$expectedProgram'.",
             )
+            // A running job that will not load after the next boot looks identical to a healthy
+            // one, so an uninspectable override is a finding rather than a silent default.
+            observation.enablement.state == LaunchdEnablement.UNKNOWN -> issues +=
+                "The $label service is running but its persistent enablement could not be " +
+                    "inspected: ${observation.enablement.error.orEmpty().oneLine()}."
         }
     }
 
@@ -272,46 +314,46 @@ class HarmonStatus(
         )
         val agentServiceName = "gui/$userId/$AGENT_LABEL"
         val collectorServiceName = "system/$COLLECTOR_LABEL"
-        val agentService = inspectService(agentServiceName)
-        val collectorService = inspectService(collectorServiceName)
-        val servicesIntentionallyStopped = agentService.intentionallyStopped &&
-            collectorService.intentionallyStopped
-        val liveProtocol = if (servicesIntentionallyStopped) {
-            ProtocolObservation(
+        val unprobed = HarmonStatusSnapshot(
+            runningCliVersion = BuildInfo.VERSION,
+            runningCliPath = self,
+            sourceCollector = sourceCollector,
+            installedAgent = installedAgent,
+            installedCollector = installedCollector,
+            expectedProtocol = BuildInfo.COLLECTOR_PROTOCOL_VERSION,
+            liveProtocol = ProtocolObservation(
                 socket = SystemSetupPaths.socket,
                 error = "not probed because both services are disabled",
-            )
+                notProbed = true,
+            ),
+            agentService = inspectService(agentServiceName),
+            collectorService = inspectService(collectorServiceName),
+            expectedAgentProgram = userPaths.installedAgent,
+            expectedCollectorProgram = SystemSetupPaths.collectorBinary,
+        )
+        // The same predicate the report renders from, so a skipped probe and a stopped headline
+        // cannot disagree.
+        val snapshot = if (StatusEvaluator.isIntentionallyStopped(unprobed)) {
+            unprobed
         } else {
-            try {
-                ProtocolObservation(
-                    socket = SystemSetupPaths.socket,
-                    version = protocolProbe(SystemSetupPaths.socket),
-                )
-            } catch (failure: Throwable) {
-                ProtocolObservation(
-                    socket = SystemSetupPaths.socket,
-                    error = failureDescription(failure),
-                )
-            }
+            unprobed.copy(liveProtocol = probeProtocol())
         }
 
-        val report = StatusEvaluator.evaluate(
-            HarmonStatusSnapshot(
-                runningCliVersion = BuildInfo.VERSION,
-                runningCliPath = self,
-                sourceCollector = sourceCollector,
-                installedAgent = installedAgent,
-                installedCollector = installedCollector,
-                expectedProtocol = BuildInfo.COLLECTOR_PROTOCOL_VERSION,
-                liveProtocol = liveProtocol,
-                agentService = agentService,
-                collectorService = collectorService,
-                expectedAgentProgram = userPaths.installedAgent,
-                expectedCollectorProgram = SystemSetupPaths.collectorBinary,
-            ),
-        )
+        val report = StatusEvaluator.evaluate(snapshot)
         println(report.render())
         return report.exitCode
+    }
+
+    private fun probeProtocol(): ProtocolObservation = try {
+        ProtocolObservation(
+            socket = SystemSetupPaths.socket,
+            version = protocolProbe(SystemSetupPaths.socket),
+        )
+    } catch (failure: Throwable) {
+        ProtocolObservation(
+            socket = SystemSetupPaths.socket,
+            error = failureDescription(failure),
+        )
     }
 
     private fun inspectBinary(
@@ -348,7 +390,7 @@ class HarmonStatus(
         return parseLaunchctlPrint(
             service = service,
             result = printResult,
-            disabled = parseLaunchctlPrintDisabled(label, disabledResult),
+            enablement = parseLaunchctlPrintDisabled(label, disabledResult),
         )
     }
 }
@@ -364,14 +406,19 @@ fun parseBinaryVersion(output: String, expectedName: String): String? {
 fun parseLaunchctlPrint(
     service: String,
     result: CommandResult,
-    disabled: Boolean? = null,
+    enablement: LaunchdEnablementObservation =
+        LaunchdEnablementObservation(LaunchdEnablement.UNKNOWN),
 ): LaunchdServiceObservation {
     if (!result.successful) {
         return LaunchdServiceObservation(
             service = service,
-            loaded = false,
+            load = if (isMissingLaunchdJob(result)) {
+                LaunchdLoadState.ABSENT
+            } else {
+                LaunchdLoadState.UNKNOWN
+            },
             error = result.output.ifBlank { "exit code ${result.exitCode}" },
-            disabled = disabled,
+            enablement = enablement,
         )
     }
     var state: String? = null
@@ -391,37 +438,56 @@ fun parseLaunchctlPrint(
     }
     return LaunchdServiceObservation(
         service = service,
-        loaded = true,
+        load = LaunchdLoadState.LOADED,
         state = state,
         processId = processId,
         program = program,
-        disabled = disabled,
+        enablement = enablement,
     )
 }
 
+/**
+ * Reads one label out of the single dictionary `launchctl print-disabled` prints. Entries are
+ * only trusted between the header and its closing brace, and output that never closes the
+ * dictionary is unknown rather than enabled: absent output must not read as an absent override.
+ */
 fun parseLaunchctlPrintDisabled(
     serviceLabel: String,
     result: CommandResult,
-): Boolean? {
+): LaunchdEnablementObservation {
     if (!result.successful) {
-        return null
+        return LaunchdEnablementObservation(
+            LaunchdEnablement.UNKNOWN,
+            result.output.ifBlank { "exit code ${result.exitCode}" },
+        )
     }
-    var foundDictionary = false
+    var inDictionary = false
+    var closedDictionary = false
     var serviceState: String? = null
     result.output.lineSequence().forEach { rawLine ->
         val line = rawLine.trim()
-        if (line == "disabled services = {") {
-            foundDictionary = true
-        }
-        val match = LAUNCHCTL_DISABLED_ENTRY_PATTERN.matchEntire(line)
-        if (match?.groupValues?.get(1) == serviceLabel) {
-            serviceState = match.groupValues[2]
+        when {
+            !inDictionary -> if (line == LAUNCHCTL_DISABLED_HEADER) inDictionary = true
+            closedDictionary -> Unit
+            line == "}" -> closedDictionary = true
+            serviceState == null -> {
+                val match = LAUNCHCTL_DISABLED_ENTRY_PATTERN.matchEntire(line)
+                if (match?.groupValues?.get(1) == serviceLabel) {
+                    serviceState = match.groupValues[2]
+                }
+            }
         }
     }
-    if (!foundDictionary) {
-        return null
+    if (!inDictionary || !closedDictionary) {
+        return LaunchdEnablementObservation(
+            LaunchdEnablement.UNKNOWN,
+            "unexpected 'launchctl print-disabled' output",
+        )
     }
-    return serviceState == "disabled" || serviceState == "true"
+    val disabled = serviceState == "disabled" || serviceState == "true"
+    return LaunchdEnablementObservation(
+        if (disabled) LaunchdEnablement.DISABLED else LaunchdEnablement.ENABLED,
+    )
 }
 
 private fun String.oneLine(): String =
@@ -434,6 +500,8 @@ private fun statusEffectiveUserId(): UInt = geteuid()
 private fun statusHomeDirectory(): String =
     getenv("HOME")?.toKString()
         ?: throw SetupException("HOME is not set")
+
+private const val LAUNCHCTL_DISABLED_HEADER = "disabled services = {"
 
 private val LAUNCHCTL_DISABLED_ENTRY_PATTERN =
     Regex("""^"([^"]+)"\s*=>\s*(enabled|disabled|true|false)$""")

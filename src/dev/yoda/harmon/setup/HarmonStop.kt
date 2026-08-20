@@ -41,6 +41,7 @@ object StopValidation {
 class HarmonStop(
     private val commandRunner: CommandRunner = PosixCommandRunner,
     private val fileSystem: SetupFileSystem = PosixSetupFileSystem,
+    private val accountDirectory: AccountDirectory = PosixAccountDirectory,
     private val effectiveUserId: () -> UInt = ::stopEffectiveUserId,
     private val homeDirectory: () -> String = ::stopHomeDirectory,
     private val executablePath: () -> String = ExecutablePath::current,
@@ -74,6 +75,8 @@ class HarmonStop(
         )
         SystemStop(
             targetUserId = targetUserId,
+            targetHome = accountDirectory.homeDirectory(targetUserId),
+            fileSystem = fileSystem,
             commandRunner = commandRunner,
         ).run()
     }
@@ -87,14 +90,8 @@ class UserStop(
     private val commandRunner: CommandRunner,
 ) {
     fun run() {
-        val userDomain = "gui/$userId"
-        commandRunner.disableAndBootout(
-            listOf(
-                "$userDomain/$AGENT_LABEL",
-                "$userDomain/$LEGACY_AGENT_LABEL",
-            ),
-        )
-        fileSystem.removeFileIfExists(UserSetupPaths.forHome(home).liveUiEndpoint)
+        // The root phase stops all three labels, including the user agent, so a declined password
+        // leaves launchd exactly as it was instead of a half-stopped pair.
         commandRunner.requireSuccess(
             arguments = listOf(
                 "/usr/bin/sudo",
@@ -106,35 +103,74 @@ class UserStop(
             ),
             captureOutput = false,
         )
+        fileSystem.removeFileIfExists(UserSetupPaths.forHome(home).liveUiEndpoint)
     }
 }
 
 class SystemStop(
     private val targetUserId: UInt,
+    private val targetHome: String?,
+    private val fileSystem: SetupFileSystem,
     private val commandRunner: CommandRunner,
 ) {
     fun run() {
         val userDomain = "gui/$targetUserId"
+        val userPaths = targetHome?.let(UserSetupPaths::forHome)
         commandRunner.disableAndBootout(
             listOf(
-                "system/$COLLECTOR_LABEL",
-                "$userDomain/$AGENT_LABEL",
-                "$userDomain/$LEGACY_AGENT_LABEL",
+                StoppedService("system/$COLLECTOR_LABEL", SystemSetupPaths.collectorPlist),
+                StoppedService("$userDomain/$AGENT_LABEL", userPaths?.agentPlist),
+                StoppedService("$userDomain/$LEGACY_AGENT_LABEL", userPaths?.legacyAgentPlist),
             ),
+            fileSystem,
         )
     }
 }
 
-private fun CommandRunner.disableAndBootout(services: List<String>) {
+/** A launchd target and the job definition that would make launchd load it again. */
+private data class StoppedService(val target: String, val plist: String?)
+
+/**
+ * Every disable is written before the first bootout, so an unexpected failure aborts while all
+ * three services are still loaded and running. A domain or job launchd does not know needs no
+ * override to stay unloadable, so those failures are tolerated rather than fatal.
+ */
+private fun CommandRunner.disableAndBootout(
+    services: List<StoppedService>,
+    fileSystem: SetupFileSystem,
+) {
+    val disabled = mutableListOf<String>()
     services.forEach { service ->
-        requireSuccess(listOf("/bin/launchctl", "disable", service))
-    }
-    services.forEach { service ->
-        val result = run(listOf("/bin/launchctl", "bootout", service))
-        if (!result.successful && !isMissingLaunchdJob(result)) {
-            throw CommandExecutionException(result)
+        // launchd keeps a row for every label it is told about and cannot delete one, so a label
+        // with no job definition is left unnamed instead of being disabled against nothing.
+        if (service.plist == null || !fileSystem.isRegularFile(service.plist)) {
+            return@forEach
+        }
+        val result = run(listOf("/bin/launchctl", "disable", service.target))
+        when {
+            result.successful -> disabled += service.target
+            isMissingLaunchdTarget(result) -> Unit
+            else -> throw SetupException(partialStopMessage(service.target, result, disabled))
         }
     }
+    services.forEach { service -> bootoutIfLoaded(service.target) }
+}
+
+private fun partialStopMessage(
+    service: String,
+    result: CommandResult,
+    disabled: List<String>,
+): String = buildString {
+    append("Unable to disable $service: ")
+    append(result.output.lineSequence().joinToString(" ") { it.trim() }.trim().ifEmpty {
+        "exit code ${result.exitCode}"
+    })
+    append(". Nothing was unloaded")
+    if (disabled.isNotEmpty()) {
+        append(", but ${disabled.joinToString()} ${if (disabled.size == 1) "is" else "are"} " +
+            "now disabled")
+    }
+    append(". Run 'harmon stop' again to finish, or 'harmon setup' to start Harmon.")
 }
 
 @OptIn(ExperimentalForeignApi::class)

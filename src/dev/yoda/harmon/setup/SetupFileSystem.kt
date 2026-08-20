@@ -1,8 +1,10 @@
 package dev.yoda.harmon.setup
 
 import dev.yoda.harmon.util.systemErrorText
+import kotlinx.cinterop.BetaInteropApi
 import kotlinx.cinterop.ByteVar
 import kotlinx.cinterop.ExperimentalForeignApi
+import kotlinx.cinterop.ObjCObjectVar
 import kotlinx.cinterop.addressOf
 import kotlinx.cinterop.alloc
 import kotlinx.cinterop.allocArray
@@ -11,6 +13,8 @@ import kotlinx.cinterop.ptr
 import kotlinx.cinterop.readBytes
 import kotlinx.cinterop.toKString
 import kotlinx.cinterop.usePinned
+import kotlinx.cinterop.value
+import platform.Foundation.NSError
 import platform.Foundation.NSFileManager
 import platform.posix.EEXIST
 import platform.posix.ENOENT
@@ -192,13 +196,22 @@ object PosixSetupFileSystem : SetupFileSystem {
         }
     }
 
-    @OptIn(ExperimentalForeignApi::class)
+    @OptIn(ExperimentalForeignApi::class, BetaInteropApi::class)
     override fun removeTreeIfExists(path: String) {
         if (!exists(path)) {
             return
         }
-        if (!NSFileManager.defaultManager.removeItemAtPath(path, null)) {
-            throw IllegalStateException("Unable to remove '$path'")
+        memScoped {
+            val error = alloc<ObjCObjectVar<NSError?>>()
+            if (!NSFileManager.defaultManager.removeItemAtPath(path, error.ptr)) {
+                // Without the cause an aborted purge reports only a path, and a locked file, a
+                // root-owned leftover, and a protected directory all look the same.
+                val cause = error.value
+                val detail = cause?.let {
+                    "${it.localizedDescription} [${it.domain} ${it.code}]"
+                } ?: "NSFileManager reported no error"
+                throw IllegalStateException("Unable to remove '$path': $detail")
+            }
         }
     }
 

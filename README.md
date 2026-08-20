@@ -87,10 +87,12 @@ brew uninstall harmon
 `--purge` additionally removes `~/.config/harmon`, `~/Library/Logs/Harmon`,
 `/Library/Logs/Harmon`, and the whole `~/Library/Application Support/Harmon`
 tree — the history database with its WAL and SHM sidecars, the generated
-reports, and the app bundle. It prints every path before removing any of it and
-never prompts, so it stays usable in scripts. Nothing is deleted until the sudo
-phase succeeds: a declined password leaves all data intact. It is idempotent, so
-it also works after a plain `harmon uninstall`.
+reports, and the app bundle. It prints each removed tree before deleting
+anything and never prompts, so it stays usable in scripts. That data survives a
+declined sudo password: it is deleted only after the privileged phase succeeds.
+The services and deployed binaries are removed before it, and `harmon setup`
+restores those. It is idempotent, so it also works after a plain
+`harmon uninstall`.
 
 ## What Harmon monitors
 
@@ -302,6 +304,8 @@ harmon test-notifications [--config PATH]
 harmon setup
 harmon setup --system --uid UID --gid GID
 harmon status
+harmon stop
+harmon stop --system --uid UID
 harmon ui
 harmon uninstall [--purge]
 harmon uninstall --system --uid UID [--purge]
@@ -661,9 +665,12 @@ removing the installation or any user data:
 harmon stop
 ```
 
-The command removes the live UI endpoint and requests sudo once for the root
-collector. `harmon status` then reports that Harmon is intentionally stopped;
-run `harmon setup` to enable and start both services again.
+The command requests sudo once; the privileged phase disables and unloads both
+services, and the returning user phase removes the live UI endpoint. A declined
+password therefore changes nothing. `harmon status` then reports that Harmon is
+intentionally stopped; run `harmon setup` to enable and start both services
+again. Automation that already holds root can call the privileged phase
+directly with `harmon stop --system --uid UID`.
 
 Remove both services and installed binaries while preserving configuration,
 logs, generated reports and the sample history:
@@ -692,11 +699,13 @@ harmon uninstall --purge
 It removes `~/.config/harmon`, `~/Library/Logs/Harmon`, `/Library/Logs/Harmon`,
 and the whole `~/Library/Application Support/Harmon` tree. The tree is removed
 whole rather than file by file because the WAL and SHM sidecars of `history.db`
-and the report temporaries are named nowhere in the code, so no explicit list
-could be complete. Every path is printed before anything is deleted, and nothing
-is deleted until the privileged phase returns, so a declined sudo password
-leaves the data intact. The `--system` form purges only the root-owned log
-directory. Purging is idempotent and can be run after a plain
+and the report temporaries carry pid and sequence suffixes that no explicit list
+could enumerate. Each removed tree is printed before anything is deleted, and
+that data is deleted only after the privileged phase returns, so a declined sudo
+password leaves it intact — the services and deployed binaries are already gone
+by then, and `harmon setup` restores them. Both forms also clear the launchd
+disable overrides a `harmon stop` wrote. The `--system` form purges only the
+root-owned log directory. Purging is idempotent and can be run after a plain
 `harmon uninstall`.
 
 If both `harmon uninstall` and `brew uninstall harmon` already ran, there is no

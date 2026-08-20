@@ -2,6 +2,12 @@ import dev.yoda.harmon.setup.BinaryVersionObservation
 import dev.yoda.harmon.setup.CommandInvocation
 import dev.yoda.harmon.setup.CommandResult
 import dev.yoda.harmon.setup.HarmonStatusSnapshot
+import dev.yoda.harmon.setup.LaunchdEnablement
+import dev.yoda.harmon.setup.LaunchdEnablement.DISABLED
+import dev.yoda.harmon.setup.LaunchdEnablement.ENABLED
+import dev.yoda.harmon.setup.LaunchdEnablement.UNKNOWN
+import dev.yoda.harmon.setup.LaunchdEnablementObservation
+import dev.yoda.harmon.setup.LaunchdLoadState
 import dev.yoda.harmon.setup.LaunchdServiceObservation
 import dev.yoda.harmon.setup.ProtocolObservation
 import dev.yoda.harmon.setup.StatusEvaluator
@@ -77,8 +83,9 @@ class StatusTest {
                 liveProtocol = ProtocolObservation(SOCKET, error = "Connection refused"),
                 agentService = LaunchdServiceObservation(
                     service = AGENT_SERVICE,
-                    loaded = false,
+                    load = LaunchdLoadState.ABSENT,
                     error = "No such process",
+                    enablement = enabled(),
                 ),
             ),
         )
@@ -90,17 +97,13 @@ class StatusTest {
 
     @Test
     fun reportsBothDisabledServicesAsAnIntentionalStop() {
-        val stoppedService: (String) -> LaunchdServiceObservation = { service ->
-            LaunchdServiceObservation(
-                service = service,
-                loaded = false,
-                error = "Could not find service",
-                disabled = true,
-            )
-        }
         val report = StatusEvaluator.evaluate(
             healthyStatusSnapshot().copy(
-                liveProtocol = ProtocolObservation(SOCKET, error = "Connection refused"),
+                liveProtocol = ProtocolObservation(
+                    SOCKET,
+                    error = "not probed because both services are disabled",
+                    notProbed = true,
+                ),
                 agentService = stoppedService(AGENT_SERVICE),
                 collectorService = stoppedService(COLLECTOR_SERVICE),
             ),
@@ -119,18 +122,109 @@ class StatusTest {
     fun aSingleDisabledServiceIsStillAnIncompleteState() {
         val report = StatusEvaluator.evaluate(
             healthyStatusSnapshot().copy(
-                agentService = LaunchdServiceObservation(
-                    service = AGENT_SERVICE,
-                    loaded = false,
-                    error = "Could not find service",
-                    disabled = true,
-                ),
+                agentService = stoppedService(AGENT_SERVICE),
             ),
         )
 
         assertEquals(1, report.exitCode)
         assertFalse(report.intentionallyStopped)
         assertTrue(report.issues.any { "agent service is disabled and not loaded" in it })
+    }
+
+    @Test
+    fun anUninstalledPairWithLeftoverOverridesIsNotAnIntentionalStop() {
+        val report = StatusEvaluator.evaluate(
+            healthyStatusSnapshot().copy(
+                installedAgent = BinaryVersionObservation(
+                    INSTALLED_AGENT,
+                    error = "file is missing",
+                ),
+                installedCollector = BinaryVersionObservation(
+                    INSTALLED_COLLECTOR,
+                    error = "file is missing",
+                ),
+                liveProtocol = ProtocolObservation(SOCKET, error = "Connection refused"),
+                agentService = stoppedService(AGENT_SERVICE),
+                collectorService = stoppedService(COLLECTOR_SERVICE),
+            ),
+        )
+
+        assertFalse(report.intentionallyStopped, report.render())
+        assertFalse(
+            report.render().contains("Harmon is intentionally stopped."),
+            report.render(),
+        )
+        assertTrue(report.render().contains("Problems:"), report.render())
+        assertTrue(report.issues.any { "file is missing" in it }, report.render())
+    }
+
+    @Test
+    fun aRealSocketErrorSurvivesEvenWhileTheServicesReadAsStopped() {
+        val report = StatusEvaluator.evaluate(
+            healthyStatusSnapshot().copy(
+                liveProtocol = ProtocolObservation(SOCKET, error = "Connection refused"),
+                agentService = stoppedService(AGENT_SERVICE),
+                collectorService = stoppedService(COLLECTOR_SERVICE),
+            ),
+        )
+
+        assertTrue(report.render().contains("Connection refused"), report.render())
+        assertFalse(
+            report.render().contains("not running (intentionally stopped)"),
+            report.render(),
+        )
+    }
+
+    @Test
+    fun aPrintFailureThatDoesNotProveAbsenceIsNotAnIntentionalStop() {
+        val unknownService: (String) -> LaunchdServiceObservation = { service ->
+            LaunchdServiceObservation(
+                service = service,
+                load = LaunchdLoadState.UNKNOWN,
+                error = "Could not find domain for user gui: 501",
+                enablement = LaunchdEnablementObservation(LaunchdEnablement.DISABLED),
+            )
+        }
+        val report = StatusEvaluator.evaluate(
+            healthyStatusSnapshot().copy(
+                liveProtocol = ProtocolObservation(SOCKET, error = "Connection refused"),
+                agentService = unknownService(AGENT_SERVICE),
+                collectorService = unknownService(COLLECTOR_SERVICE),
+            ),
+        )
+
+        assertEquals(1, report.exitCode)
+        assertFalse(report.intentionallyStopped)
+        assertTrue(report.render().contains("Could not find domain"), report.render())
+        assertTrue(report.issues.any { "agent service is not loaded" in it }, report.render())
+    }
+
+    @Test
+    fun aRunningServiceWithUninspectableEnablementIsNotHealthy() {
+        val report = StatusEvaluator.evaluate(
+            healthyStatusSnapshot().copy(
+                agentService = healthyStatusSnapshot().agentService.copy(
+                    enablement = LaunchdEnablementObservation(
+                        LaunchdEnablement.UNKNOWN,
+                        "Could not find domain for user gui: 501",
+                    ),
+                ),
+            ),
+        )
+
+        assertEquals(1, report.exitCode)
+        assertTrue(
+            report.issues.any {
+                "agent service is running but its persistent enablement could not be " +
+                    "inspected" in it
+            },
+            report.render(),
+        )
+        assertTrue(
+            report.render().contains("enablement unknown (Could not find domain"),
+            report.render(),
+        )
+        assertFalse(report.render().contains("Installation is healthy."), report.render())
     }
 
     @Test
@@ -162,13 +256,31 @@ class StatusTest {
     }
 
     @Test
-    fun parsesEnabledDisabledAndLegacyBooleanOverrides() {
+    fun onlyAMissingServiceProvesTheJobIsUnloaded() {
         val invocation = CommandInvocation(
-            listOf("/bin/launchctl", "print-disabled", "gui/501"),
+            listOf("/bin/launchctl", "print", AGENT_SERVICE),
         )
-        val result = CommandResult(
-            invocation,
-            0,
+        val absent = parseLaunchctlPrint(
+            AGENT_SERVICE,
+            CommandResult(
+                invocation,
+                113,
+                "Could not find service \"dev.yoda.harmon.agent\" in domain for user gui: 501",
+            ),
+        )
+        val unknown = parseLaunchctlPrint(
+            AGENT_SERVICE,
+            CommandResult(invocation, 112, "Could not find domain for user gui: 501"),
+        )
+
+        assertEquals(LaunchdLoadState.ABSENT, absent.load)
+        assertEquals(LaunchdLoadState.UNKNOWN, unknown.load)
+        assertFalse(unknown.loaded)
+    }
+
+    @Test
+    fun parsesEnabledDisabledAndLegacyBooleanOverrides() {
+        val result = printDisabled(
             """
                 disabled services = {
                     "enabled.service" => enabled
@@ -176,21 +288,79 @@ class StatusTest {
                     "legacy.disabled" => true
                     "legacy.enabled" => false
                 }
-            """.trimIndent(),
+            """,
         )
 
-        assertEquals(false, parseLaunchctlPrintDisabled("enabled.service", result))
-        assertEquals(true, parseLaunchctlPrintDisabled("disabled.service", result))
-        assertEquals(true, parseLaunchctlPrintDisabled("legacy.disabled", result))
-        assertEquals(false, parseLaunchctlPrintDisabled("legacy.enabled", result))
-        assertEquals(false, parseLaunchctlPrintDisabled("missing.service", result))
-        assertEquals(
-            null,
-            parseLaunchctlPrintDisabled(
-                "disabled.service",
-                CommandResult(invocation, 1, "permission denied"),
+        assertEquals(ENABLED, parseLaunchctlPrintDisabled("enabled.service", result).state)
+        assertEquals(DISABLED, parseLaunchctlPrintDisabled("disabled.service", result).state)
+        assertEquals(DISABLED, parseLaunchctlPrintDisabled("legacy.disabled", result).state)
+        assertEquals(ENABLED, parseLaunchctlPrintDisabled("legacy.enabled", result).state)
+        assertEquals(ENABLED, parseLaunchctlPrintDisabled("missing.service", result).state)
+    }
+
+    @Test
+    fun parsesTheTabIndentedShapeLaunchctlActuallyPrints() {
+        val real = CommandResult(
+            CommandInvocation(listOf("/bin/launchctl", "print-disabled", "gui/501")),
+            0,
+            "\n\tdisabled services = {\n" +
+                "\t\t\"com.docker.helper\" => enabled\n" +
+                "\t\t\"dev.yoda.harmon.agent\" => disabled\n" +
+                "\t}\n",
+        )
+
+        assertEquals(DISABLED, parseLaunchctlPrintDisabled("dev.yoda.harmon.agent", real).state)
+        assertEquals(ENABLED, parseLaunchctlPrintDisabled("com.docker.helper", real).state)
+        assertEquals(ENABLED, parseLaunchctlPrintDisabled("dev.yoda.harmon", real).state)
+    }
+
+    @Test
+    fun reportsWhyPersistentEnablementCouldNotBeRead() {
+        val failed = parseLaunchctlPrintDisabled(
+            "disabled.service",
+            CommandResult(
+                CommandInvocation(listOf("/bin/launchctl", "print-disabled", "gui/501")),
+                112,
+                "Could not find domain for user gui: 501",
             ),
         )
+
+        assertEquals(UNKNOWN, failed.state)
+        assertEquals("Could not find domain for user gui: 501", failed.error)
+    }
+
+    @Test
+    fun trustsOnlyEntriesInsideTheDisabledServicesDictionary() {
+        val trailingEntry = printDisabled(
+            """
+                disabled services = {
+                    "svc" => disabled
+                }
+                "svc" => enabled
+            """,
+        )
+        val headerAfterEntry = printDisabled(
+            """
+                "svc" => disabled
+                disabled services = {
+                }
+            """,
+        )
+
+        assertEquals(DISABLED, parseLaunchctlPrintDisabled("svc", trailingEntry).state)
+        assertEquals(ENABLED, parseLaunchctlPrintDisabled("svc", headerAfterEntry).state)
+    }
+
+    @Test
+    fun anUnterminatedDictionaryIsUnknownRatherThanEnabled() {
+        val truncated = printDisabled(
+            """
+                disabled services = {
+                    "other.service" => disabled
+            """,
+        )
+
+        assertEquals(UNKNOWN, parseLaunchctlPrintDisabled("svc", truncated).state)
     }
 
     @Test
@@ -200,6 +370,23 @@ class StatusTest {
         assertFalse(parseBinaryVersion("harmon 0.4.0 extra", "harmon") != null)
     }
 }
+
+private fun enabled(): LaunchdEnablementObservation =
+    LaunchdEnablementObservation(LaunchdEnablement.ENABLED)
+
+private fun stoppedService(service: String): LaunchdServiceObservation =
+    LaunchdServiceObservation(
+        service = service,
+        load = LaunchdLoadState.ABSENT,
+        error = "Could not find service",
+        enablement = LaunchdEnablementObservation(LaunchdEnablement.DISABLED),
+    )
+
+private fun printDisabled(output: String): CommandResult = CommandResult(
+    CommandInvocation(listOf("/bin/launchctl", "print-disabled", "gui/501")),
+    0,
+    output.trimIndent(),
+)
 
 private fun healthyStatusSnapshot(): HarmonStatusSnapshot = HarmonStatusSnapshot(
     runningCliVersion = "0.4.0",
@@ -211,17 +398,19 @@ private fun healthyStatusSnapshot(): HarmonStatusSnapshot = HarmonStatusSnapshot
     liveProtocol = ProtocolObservation(SOCKET, version = 2),
     agentService = LaunchdServiceObservation(
         service = AGENT_SERVICE,
-        loaded = true,
+        load = LaunchdLoadState.LOADED,
         state = "running",
         processId = 123,
         program = INSTALLED_AGENT,
+        enablement = enabled(),
     ),
     collectorService = LaunchdServiceObservation(
         service = COLLECTOR_SERVICE,
-        loaded = true,
+        load = LaunchdLoadState.LOADED,
         state = "running",
         processId = 456,
         program = INSTALLED_COLLECTOR,
+        enablement = enabled(),
     ),
     expectedAgentProgram = INSTALLED_AGENT,
     expectedCollectorProgram = INSTALLED_COLLECTOR,

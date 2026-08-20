@@ -232,9 +232,9 @@ sudo test ! -e /Library/LaunchDaemons/dev.yoda.harmon.collector.plist
 sudo test ! -e /Library/PrivilegedHelperTools/harmon-collector
 ```
 
-The command prints every path before removing any of it and never prompts, so
-the block stays non-interactive apart from sudo's own password prompt. This is
-the last step that needs `$HARMON_ACCEPTANCE_CONFIG`.
+The command prints each removed tree before deleting anything and never prompts,
+so the block stays non-interactive apart from sudo's own password prompt. This
+is the last step that needs `$HARMON_ACCEPTANCE_CONFIG`.
 
 The Homebrew Cellar copy remains until `brew uninstall harmon`. Legacy-path
 cleanup is transitional compatibility behavior; remove it only after the

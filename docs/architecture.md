@@ -64,26 +64,41 @@ atomically renamed. No text template or XML substitution remains.
 running CLI and adjacent source collector with the copies in `Harmon.app` and
 `/Library/PrivilegedHelperTools`, probes the socket's advertised protocol, and
 parses `launchctl print` plus `print-disabled` for both jobs, including PID,
-executable path, and persistent enablement. A pair that is explicitly disabled
-and unloaded is reported as intentionally stopped; status skips the expected
-dead socket probe, exits 1 because monitoring is not running, and names setup as
-the restart path without presenting the stopped services as failures. A
-Homebrew/source version newer than either installed copy, a mixed installed
-pair, an old live protocol, a wrong program path, or any other unloaded,
-disabled, or non-running job produces exit 1 and the explicit action
+executable path, and persistent enablement. Both readings are three-valued.
+`launchctl print` proves a job is unloaded only when it reports the service as
+missing; every other failure leaves the load state unknown and keeps its error
+visible. `print-disabled` that fails or prints a dictionary it cannot bound
+leaves enablement unknown rather than enabled, and a running job whose
+enablement could not be read is reported and exits 1: it may be one already
+disabled and therefore dead after the next boot. A pair that is confirmed
+unloaded and explicitly disabled is reported as intentionally stopped; status
+skips the expected dead socket probe, exits 1 because monitoring is not running,
+and names setup as the restart path without presenting the stopped services as
+failures. A Homebrew/source version newer than either installed copy, a mixed
+installed pair, an old live protocol, a wrong program path, or any other
+unloaded, disabled, or non-running job produces exit 1 and the explicit action
 `Run 'harmon setup'`. Healthy versions, protocol, socket, and jobs produce exit
 0. Status never invokes sudo or mutates a service.
 
 `harmon stop` disables and unloads the user agent and root collector while
 leaving their plists, deployed binaries, configuration, logs, reports, and
-history in place. The login-user phase disables the current and legacy agent
-labels before unloading them, then makes one sudo re-exec as
-`stop --system --uid N`; the root phase applies the same operation to the
-collector and both user labels. Disabling precedes unloading so launchd cannot
-restart a keep-alive job during the transition. `harmon setup` explicitly
-re-enables and starts both current jobs, and is therefore the restart path. The
-user phase also removes the ephemeral live UI endpoint after unloading the
-agent, so `harmon ui` does not have to discover and clean a stale endpoint.
+history in place. The login-user phase touches launchd only through one sudo
+re-exec as `stop --system --uid N`, because root can reach the user's GUI domain
+as well as the system one; a declined password therefore leaves both services
+exactly as they were rather than half stopped. The root phase writes every
+disable before the first bootout, so an unexpected failure aborts while all
+three labels are still loaded — the persistent override is the part a later run
+cannot undo, and it prevents a re-bootstrap at the next login or boot rather
+than a respawn mid-transition. A domain or job launchd does not know is
+tolerated: neither can be loaded, so neither needs an override. Only a label
+whose plist is present is named at all, for the same reason in reverse: launchd
+keeps a row for every label it is told about and cannot delete one, so
+disabling a job that does not exist would leave a permanent row behind. That is
+why the root phase resolves the target home through `AccountDirectory`.
+`harmon setup` explicitly re-enables and starts both current jobs, and is
+therefore the restart path. Once the privileged phase returns, the user phase
+removes the ephemeral live UI endpoint, so `harmon ui` does not have to discover
+and clean a stale endpoint.
 
 The Homebrew formula is a distribution layer, not a service manager. A release
 archive contains exactly `bin/harmon`, `libexec/harmon-collector`, and the three
@@ -99,15 +114,18 @@ is known, then transferred to the separate tap repository. See
 data. The login-user process unloads both current and legacy LaunchAgents,
 removes their plists and the managed legacy `~/.local/bin/harmon` symlink, then
 makes one sudo re-exec for the system LaunchDaemon, current and legacy helpers,
-and socket. It keeps `Harmon.app` until that re-exec returns because the command
-can itself be running from the old bundle; only then is the app removed. Config,
+and socket. Each phase also clears the persistent disable override a `harmon
+stop` may have written for the labels it owns, and only when one is set, since
+launchd keeps a row for every label it is told about and offers no way to delete
+one. It keeps `Harmon.app` until that re-exec returns because the command can
+itself be running from the old bundle; only then is the app removed. Config,
 logs, reports, and `history.db` are preserved. The old install and uninstall
 scripts are thin source-build compatibility entry points and contain no
 installation or removal policy.
 
 `--purge` keeps that same boundary and adds the user data. The login-user phase
-prints every path it is about to remove, including the root-owned one, before
-sudo can prompt; the root phase repeats its own path and removes
+prints every data tree it is about to remove, including the root-owned one,
+before sudo can prompt; the root phase repeats its own path and removes
 `/Library/Logs/Harmon`. The user phase then removes `~/.config/harmon`,
 `~/Library/Logs/Harmon`, and the whole `~/Library/Application Support/Harmon`
 tree — but only after the re-exec returns. Everything removed before that
@@ -116,8 +134,8 @@ password must leave the data intact. Within the purge the support tree goes
 last, because it is the one that can contain the running executable. It is
 removed as a whole tree rather than as named files: `SetupFileSystem` cannot
 enumerate a directory, and the WAL and SHM sidecars of `history.db` and the
-report temporaries are named nowhere in the code, so any explicit list would be
-incomplete by construction. Both phases are idempotent.
+report temporaries carry pid and sequence suffixes, so any explicit list would
+be incomplete by construction. Both phases are idempotent.
 
 The icon shown next to a notification is the bundle's own icon: `Info.plist`
 names `Harmon.icns` through `CFBundleIconFile`, and the installer copies that
