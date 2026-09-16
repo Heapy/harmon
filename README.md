@@ -219,7 +219,7 @@ reinstalled together with `harmon setup`; a v2/v3 mismatch fails explicitly.
 - Apple Silicon Mac running macOS 12 Monterey or newer.
 
 A source build additionally needs Xcode Command Line Tools or Xcode and Kotlin
-Toolchain 0.12.1 through the checked-in `./kotlin` wrapper. The toolchain
+Toolchain 0.12.2 through the checked-in `./kotlin` wrapper. The toolchain
 resolves Kotlin 2.4.10.
 
 ## Build and test
