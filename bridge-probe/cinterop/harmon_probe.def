@@ -386,12 +386,32 @@ static inline void hm_read_process_metadata(
         &process_info,
         (int)sizeof(process_info)
     );
+    struct kinfo_proc zombie;
+    memset(&zombie, 0, sizeof(zombie));
+    int is_zombie = 0;
     if (info_size == (int)sizeof(process_info)) {
         if (parent_pid != NULL) {
             *parent_pid = (int32_t)process_info.pbi_ppid;
         }
         if (uid != NULL) {
             *uid = process_info.pbi_uid;
+        }
+    } else {
+        /*
+         * proc_pidinfo answers ESRCH for an unreaped zombie, but kinfo_proc still holds its parent,
+         * uid and command name. Only zombies take it: refused metadata of other users stays unknown.
+         */
+        int zombie_name[4] = {CTL_KERN, KERN_PROC, KERN_PROC_PID, (int)pid};
+        size_t zombie_size = sizeof(zombie);
+        is_zombie = sysctl(zombie_name, 4, &zombie, &zombie_size, NULL, 0) == 0 &&
+            zombie_size == sizeof(zombie) &&
+            zombie.kp_proc.p_pid == pid &&
+            zombie.kp_proc.p_stat == SZOMB;
+        if (is_zombie && parent_pid != NULL) {
+            *parent_pid = (int32_t)zombie.kp_eproc.e_ppid;
+        }
+        if (is_zombie && uid != NULL) {
+            *uid = zombie.kp_eproc.e_ucred.cr_uid;
         }
     }
 
@@ -402,6 +422,14 @@ static inline void hm_read_process_metadata(
                 ? process_info.pbi_name
                 : process_info.pbi_comm;
             snprintf(name, name_size, "%s", fallback);
+        } else if (name_result <= 0 && is_zombie) {
+            snprintf(
+                name,
+                name_size,
+                "%.*s",
+                (int)sizeof(zombie.kp_proc.p_comm),
+                zombie.kp_proc.p_comm
+            );
         }
         name[name_size - 1] = '\0';
     }

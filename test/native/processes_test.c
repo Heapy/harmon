@@ -64,6 +64,16 @@ static void hm_fresh_exec_path(pid_t pid, char *out, size_t out_size) {
     }
 }
 
+static int hm_test_read_zombie(pid_t pid, struct kinfo_proc *out) {
+    int name[4] = {CTL_KERN, KERN_PROC, KERN_PROC_PID, (int)pid};
+    size_t size = sizeof(*out);
+    memset(out, 0, sizeof(*out));
+    return sysctl(name, 4, out, &size, NULL, 0) == 0 &&
+        size == sizeof(*out) &&
+        out->kp_proc.p_pid == pid &&
+        out->kp_proc.p_stat == SZOMB;
+}
+
 static int hm_count_readable_processes(void) {
     const int capacity = hm_count_processes() + HM_PROCESS_LIST_HEADROOM;
     pid_t *pids = (pid_t *)calloc((size_t)capacity, sizeof(pid_t));
@@ -750,18 +760,21 @@ static void hm_check_rusage_issue_uids(const HMProcessIssue *issues, int written
             &info,
             (int)sizeof(info)
         );
-        int expected_unknown = 0;
+        uint32_t expected = UINT32_MAX;
+        struct kinfo_proc zombie;
         if (size == (int)sizeof(info)) {
             ++readable;
+            expected = info.pbi_uid;
+        } else if (hm_test_read_zombie(issue->pid, &zombie)) {
+            ++readable;
+            expected = zombie.kp_eproc.e_ucred.cr_uid;
         } else {
             errno = 0;
             if (kill(issue->pid, 0) != 0 && errno == ESRCH) {
                 continue;
             }
             ++refused;
-            expected_unknown = 1;
         }
-        const uint32_t expected = expected_unknown ? UINT32_MAX : info.pbi_uid;
         if (issue->uid != expected) {
             ++mismatched;
             if (first < 0) {
@@ -1274,6 +1287,101 @@ static void hm_check_exec_path_fallback(void) {
     rmdir(directory);
 }
 
+#define HM_ZOMBIE_WAIT_ATTEMPTS 1000
+
+static void hm_check_zombie_listing(void) {
+    char own_path[HM_PROCESS_PATH_SIZE];
+    memset(own_path, 0, sizeof(own_path));
+    const int path_length = proc_pidpath(getpid(), own_path, (uint32_t)sizeof(own_path));
+    const char *separator = strrchr(own_path, '/');
+    char own_command[MAXCOMLEN + 1];
+    snprintf(own_command, sizeof(own_command), "%s", separator != NULL ? separator + 1 : own_path);
+
+    const pid_t child = fork();
+    if (child == 0) {
+        _exit(0);
+    }
+    const int fork_errno = child < 0 ? errno : 0;
+    struct kinfo_proc info;
+    int zombie = 0;
+    for (int attempt = 0; child > 0 && !zombie && attempt < HM_ZOMBIE_WAIT_ATTEMPTS; ++attempt) {
+        zombie = hm_test_read_zombie(child, &info);
+        if (!zombie) {
+            usleep(1000);
+        }
+    }
+
+    const int capacity = hm_count_processes() + HM_PROCESS_LIST_HEADROOM;
+    HMProcessSample *samples = (HMProcessSample *)calloc(
+        (size_t)capacity,
+        sizeof(HMProcessSample)
+    );
+    HMProcessIssue *issues = (HMProcessIssue *)calloc(
+        HM_LISTING_ISSUE_CAPACITY,
+        sizeof(HMProcessIssue)
+    );
+    int written = -1;
+    int written_issues = 0;
+    if (samples != NULL && issues != NULL) {
+        written = hm_list_processes(
+            samples,
+            capacity,
+            issues,
+            HM_LISTING_ISSUE_CAPACITY,
+            0,
+            0,
+            NULL,
+            NULL,
+            &written_issues
+        );
+    }
+
+    const HMProcessSample *listed = NULL;
+    for (int index = 0; index < written; ++index) {
+        if (samples[index].pid == child) {
+            listed = &samples[index];
+            break;
+        }
+    }
+    int as_issue = 0;
+    for (int index = 0; index < written_issues; ++index) {
+        as_issue |= issues[index].pid == child;
+    }
+
+    CHECK(
+        "processes.zombie-sample-carries-metadata",
+        path_length > 0 &&
+            zombie &&
+            listed != NULL &&
+            strcmp(listed->name, own_command) == 0 &&
+            listed->uid == (uint32_t)geteuid() &&
+            listed->parent_pid == (int32_t)getpid(),
+        "expected the unreaped child %d (fork %s, zombie after waiting: %d, own path "
+            "length %d) in a listing of %d to carry the name '%s', uid %u and parent %d; "
+            "got %s name '%s', uid %u, parent %d",
+        (int)child,
+        child > 0 ? "succeeded" : strerror(fork_errno),
+        zombie,
+        path_length,
+        written,
+        own_command,
+        (uint32_t)geteuid(),
+        (int)getpid(),
+        listed != NULL ? "a sample with" : as_issue ? "only an issue, no sample" : "no entry,",
+        listed != NULL ? listed->name : "",
+        listed != NULL ? listed->uid : 0U,
+        listed != NULL ? listed->parent_pid : 0
+    );
+
+    if (child > 0) {
+        int status = 0;
+        while (waitpid(child, &status, 0) < 0 && errno == EINTR) {
+        }
+    }
+    free(samples);
+    free(issues);
+}
+
 static void hm_check_process_listing_invalid_arguments(void) {
     HMProcessSample sample;
     HMProcessIssue issue;
@@ -1306,5 +1414,6 @@ void hm_run_processes_tests(void) {
     hm_check_own_listing();
     hm_check_listing_frees_its_pid_list();
     hm_check_exec_path_fallback();
+    hm_check_zombie_listing();
     hm_check_process_listing_invalid_arguments();
 }

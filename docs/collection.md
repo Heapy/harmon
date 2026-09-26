@@ -60,6 +60,7 @@ bridge used by the user application.
 |---|---|---|
 | Process enumeration | `proc_listallpids` | Candidate PIDs |
 | Process identity | `proc_pidinfo(PROC_PIDTBSDINFO)` | Parent PID and UID |
+| Zombie identity fallback | `sysctl(KERN_PROC_PID)` | Parent PID, UID and a name cut to 16 characters for an unreaped zombie, which `proc_pidinfo` and `proc_name` refuse with `ESRCH`; other refusals stay unknown |
 | Process display metadata | `proc_name`, `proc_pidpath` | Name and executable path |
 | Executable path fallback | `sysctl(KERN_PROCARGS2)` | The path a process was exec'd with, when `proc_pidpath` cannot resolve one |
 | Process resource ledger | `proc_pid_rusage(RUSAGE_INFO_V6)` | CPU, memory, wakeups, page-ins, physical disk I/O, logical writes, instructions, cycles, energy, start time |
@@ -791,9 +792,10 @@ a secret-free HTML shell and authenticated read-only JSON on a random
 
 Public or partly public signals that could improve a future version include:
 
-- zombie state from `proc_bsdinfo.pbi_status`; unlike the existing orphan rule,
-  this detects a live parent that has not reaped an exited child and therefore
-  needs its own signal and IPC field;
+- zombie state from `kinfo_proc.kp_proc.p_stat == SZOMB`, the same read that
+  already recovers a zombie's parent (`proc_bsdinfo` is refused for zombies);
+  unlike the existing orphan rule, this detects a live parent that has not
+  reaped an exited child and therefore needs its own signal and IPC field;
 - Foundation `ProcessInfo.thermalState` and low-power-mode state;
 - per-interface network totals from supported networking APIs;
 - file-system event summaries for user-selected directories;

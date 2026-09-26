@@ -24,9 +24,10 @@ figures, `host_statistics` for the tick counters, `host_statistics64` for the
 virtual memory sample, `hw.memsize` and `getloadavg` for the two the collector
 divides by, a second walk of the block storage registry, a second IOPS read for
 the battery, a second region walk for the compressed bytes, a second
-`proc_pidinfo` for the process metadata — plus a second read of the saved
-argument region, because the anchor has to mirror the bridge's whole fallback
-order or it calls every process with a replaced binary a disagreement — a second
+`proc_pidinfo` for the process metadata (a `kinfo_proc` read for a zombie) —
+plus a second read of the saved argument region, because the anchor has to
+mirror the bridge's whole fallback order or it calls every process with a
+replaced binary a disagreement — a second
 `proc_pid_rusage` plus `PROC_PIDTASKINFO` for the 24 numbers of a process sample. A plausibility
 assertion survives a transposed pair of fields; an anchor does not. Where an
 anchor cannot separate two fields, the gap is listed below rather than left to
@@ -95,7 +96,10 @@ run under:
   kernel's trust cache and is killed before it runs a line, while a copy of a
   binary the compiler ad-hoc signed minutes earlier runs normally. The directory
   is resolved through `realpath` first: `/tmp` is a symlink, and `proc_pidpath`
-  answers with `/private/tmp`.
+  answers with `/private/tmp`;
+- `processes.zombie-sample-carries-metadata` needs an unreaped zombie, so it
+  forks a child that exits at once, waits until `kinfo_proc` reports `SZOMB`,
+  takes the listing, and reaps the child afterwards.
 
 Both report what they did in every failure, so a machine that refuses `mlock`,
 serves the read from cache or cannot fork says so in those words instead of
