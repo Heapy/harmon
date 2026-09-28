@@ -470,8 +470,10 @@ is `400`; another name or port, including `localhost`, is `421`. The root HTML
 shell is public and contains no secret. Every browser `/api/live` call requires
 one constant-time-checked `Authorization: Bearer <token>` header. Query-token
 authorization exists only for the capture-free native endpoint probe and is
-rejected when `watch=1` is present. Cookies and CORS permissions are never
-emitted.
+rejected when `watch=1` is present. Every authorized `/api/live` 200 response
+carries `X-Harmon-Live: 1`; the endpoint probe requires it before `harmon ui`
+opens the browser, so a stranger that answers 200 on a reused port is not taken
+for Harmon. Cookies and CORS permissions are never emitted.
 
 The port and fresh 256-bit token are atomically published in the user's `0600`
 `live-ui.endpoint`. The agent publishes it once per start. These remove it:
@@ -483,14 +485,20 @@ The port and fresh 256-bit token are atomically published in the user's `0600`
 - `harmon run` with `webUiEnabled=false`;
 - `harmon stop` and `harmon uninstall`;
 - `harmon ui` when its two-second probe of `/api/live` finds nothing listening
-  on the port (curl `CURLE_COULDNT_CONNECT`) or another process answering there
-  with an HTTP status other than 200.
+  on the port (curl `CURLE_COULDNT_CONNECT`) or another process answering there:
+  an HTTP status other than 200, or a 200 without `X-Harmon-Live`.
 
 `harmon ui` keeps the file when the agent does not answer in time: a timeout,
 or a connection closed without a reply because eight clients are already
 active. A busy agent can miss one probe, and removing its only endpoint would
 leave it unreachable until it restarts. Each outcome prints its own message
-with the next step. When the agent answers, `harmon ui` opens
+with the next step. An agent from a release without the header answers 200
+without it, so after an upgrade and before `harmon setup` restarts the agent,
+`harmon ui` removes that live agent's endpoint, and the UI stays unreachable
+until the agent restarts. This is accepted: the stale message points to
+`harmon status`, which reports the installed agent's older version and asks for
+`harmon setup`, which restarts the agent and republishes the file. When the
+agent answers, `harmon ui` opens
 `http://127.0.0.1:<port>/#token=<token>`; fragments are not sent to the server.
 Live-only bootstrap validates the token, stores it in that port's
 `sessionStorage`, and replaces the displayed history entry with `/` before its

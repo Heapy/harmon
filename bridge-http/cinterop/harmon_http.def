@@ -11,16 +11,19 @@ linkerOpts = -lcurl
 #include <stdint.h>
 #include <stdio.h>
 #include <string.h>
+#include <strings.h>
 
 #ifdef __cplusplus
 extern "C" {
 #endif
 
 #define HM_HTTP_ERROR_SIZE 256
+#define HM_HARMON_LIVE_HEADER "X-Harmon-Live"
 
 typedef struct {
     long status_code;
     int32_t curl_code;
+    int32_t harmon_live_header;
     char error[HM_HTTP_ERROR_SIZE];
 } HMHttpResult;
 
@@ -33,6 +36,25 @@ static inline size_t hm_discard_http_response(
     (void)data;
     (void)context;
     return size * count;
+}
+
+static inline size_t hm_record_harmon_live_header(
+    char *data,
+    size_t size,
+    size_t count,
+    void *context
+) {
+    HMHttpResult *output = context;
+    const size_t length = size * count;
+    const size_t name_length = sizeof(HM_HARMON_LIVE_HEADER) - 1U;
+    if (
+        length > name_length &&
+        data[name_length] == ':' &&
+        strncasecmp(data, HM_HARMON_LIVE_HEADER, name_length) == 0
+    ) {
+        output->harmon_live_header = 1;
+    }
+    return length;
 }
 
 static inline int hm_http_global_init(void) {
@@ -121,6 +143,8 @@ static inline int hm_http_get_status(
     curl_easy_setopt(request, CURLOPT_PROXY, "");
     curl_easy_setopt(request, CURLOPT_USERAGENT, "harmon/0.1.0");
     curl_easy_setopt(request, CURLOPT_WRITEFUNCTION, hm_discard_http_response);
+    curl_easy_setopt(request, CURLOPT_HEADERFUNCTION, hm_record_harmon_live_header);
+    curl_easy_setopt(request, CURLOPT_HEADERDATA, output);
     curl_easy_setopt(request, CURLOPT_ERRORBUFFER, output->error);
 
     CURLcode result = curl_easy_perform(request);

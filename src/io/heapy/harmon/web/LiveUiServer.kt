@@ -443,7 +443,7 @@ class LiveUiServer(
         if (!headerAuthorized && !queryAuthorized) return HttpResponse.forbidden()
 
         if (watchRequested) onWatch()
-        return HttpResponse.ok("application/json; charset=utf-8", state.currentJson())
+        return HttpResponse.live(state.currentJson())
     }
 
     @OptIn(ExperimentalForeignApi::class)
@@ -530,6 +530,7 @@ class LiveUiServer(
             append("X-Content-Type-Options: nosniff\r\n")
             append("X-Frame-Options: DENY\r\n")
             append("Cross-Origin-Resource-Policy: same-origin\r\n")
+            if (response.identifiesHarmon) append("$LIVE_UI_HARMON_HEADER: 1\r\n")
             append("Connection: close\r\n\r\n")
         }.encodeToByteArray()
         if (sendAll(client, header)) sendAll(client, body)
@@ -768,10 +769,14 @@ class LiveUiServer(
         val status: String,
         val contentType: String,
         val body: String,
+        val identifiesHarmon: Boolean = false,
     ) {
         companion object {
             fun ok(contentType: String, body: String): HttpResponse =
                 HttpResponse("200 OK", contentType, body)
+
+            fun live(body: String): HttpResponse =
+                HttpResponse("200 OK", "application/json; charset=utf-8", body, identifiesHarmon = true)
 
             fun badRequest(): HttpResponse = text("400 Bad Request", "Bad request")
 
@@ -803,6 +808,8 @@ class LiveUiServer(
         const val WAKE_BUFFER_BYTES = 64
     }
 }
+
+internal const val LIVE_UI_HARMON_HEADER = "X-Harmon-Live"
 
 fun liveUiWatchRequested(target: String): Boolean =
     target.substringBefore('?') == "/api/live" && queryParameters(target, "watch") == listOf("1")

@@ -32,6 +32,8 @@ private val C_HARNESS_CHECKS = setOf(
     "http.global-init-succeeds",
     "http.get-status-refused-port-reports-couldnt-connect",
     "http.get-status-dropped-connection-is-not-refused",
+    "http.get-status-reports-a-missing-harmon-live-header",
+    "http.get-status-reports-the-harmon-live-header",
     "pure.anchor-absolute-difference",
     "pure.anchor-below-floors-at-zero",
     "pure.anchor-lowest-and-highest",

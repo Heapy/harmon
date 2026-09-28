@@ -117,7 +117,8 @@ object LiveUiLauncher {
                 val cause = when (state) {
                     LiveUiEndpointState.NothingListens -> "nothing listens on $address"
                     is LiveUiEndpointState.AnotherProcess ->
-                        "another process answered on $address with HTTP ${state.httpStatus}"
+                        "another process answered on $address with HTTP ${state.httpStatus}" +
+                            if (state.httpStatus == 200L) " but no $LIVE_UI_HARMON_HEADER header" else ""
                 }
                 throw IllegalStateException(
                     "Harmon live UI is not running: $cause; removed its stale endpoint. Run 'harmon status'.",
@@ -139,6 +140,7 @@ object LiveUiLauncher {
 data class LiveUiProbeOutcome(
     val curlCode: Int,
     val httpStatus: Long,
+    val harmonHeader: Boolean,
     val error: String,
 )
 
@@ -157,7 +159,7 @@ sealed interface LiveUiEndpointState {
 fun classifyLiveUiProbe(outcome: LiveUiProbeOutcome): LiveUiEndpointState = when {
     outcome.curlCode == CURLE_COULDNT_CONNECT -> LiveUiEndpointState.NothingListens
     outcome.curlCode != CURLE_OK || outcome.httpStatus <= 0L -> LiveUiEndpointState.NoAnswer(outcome.error)
-    outcome.httpStatus == 200L -> LiveUiEndpointState.Responds
+    outcome.httpStatus == 200L && outcome.harmonHeader -> LiveUiEndpointState.Responds
     else -> LiveUiEndpointState.AnotherProcess(outcome.httpStatus)
 }
 
@@ -173,11 +175,16 @@ private object LiveUiEndpointProbe {
 
     fun probe(endpoint: LiveUiEndpoint): LiveUiProbeOutcome = memScoped {
         if (initialization != CURLE_OK) {
-            return@memScoped LiveUiProbeOutcome(initialization, 0L, "libcurl initialization failed")
+            return@memScoped LiveUiProbeOutcome(initialization, 0L, false, "libcurl initialization failed")
         }
         val result = alloc<HMHttpResult>()
         hm_http_get_status(endpoint.apiUrl, LIVE_UI_PROBE_TIMEOUT_SECONDS, result.ptr)
-        LiveUiProbeOutcome(result.curl_code, result.status_code, result.error.toKString())
+        LiveUiProbeOutcome(
+            curlCode = result.curl_code,
+            httpStatus = result.status_code,
+            harmonHeader = result.harmon_live_header != 0,
+            error = result.error.toKString(),
+        )
     }
 }
 

@@ -146,7 +146,7 @@ class LiveUiEndpointTest {
     fun probeFindsNothingListeningWhenTheConnectionIsRefused() {
         assertEquals(
             LiveUiEndpointState.NothingListens,
-            classifyLiveUiProbe(LiveUiProbeOutcome(7, 0L, "Couldn't connect to server")),
+            classifyLiveUiProbe(LiveUiProbeOutcome(7, 0L, harmonHeader = false, error = "Couldn't connect to server")),
         )
     }
 
@@ -155,7 +155,7 @@ class LiveUiEndpointTest {
         for (curlCode in listOf(28, 52, 56)) {
             assertEquals(
                 LiveUiEndpointState.NoAnswer("curl $curlCode"),
-                classifyLiveUiProbe(LiveUiProbeOutcome(curlCode, 0L, "curl $curlCode")),
+                classifyLiveUiProbe(LiveUiProbeOutcome(curlCode, 0L, harmonHeader = false, error = "curl $curlCode")),
             )
         }
     }
@@ -164,20 +164,20 @@ class LiveUiEndpointTest {
     fun probeWithoutAnHttpStatusIsNoAnswer() {
         assertEquals(
             LiveUiEndpointState.NoAnswer("curl_easy_init failed"),
-            classifyLiveUiProbe(LiveUiProbeOutcome(0, 0L, "curl_easy_init failed")),
+            classifyLiveUiProbe(LiveUiProbeOutcome(0, 0L, harmonHeader = false, error = "curl_easy_init failed")),
         )
     }
 
     @Test
-    fun probeRespondsOnlyWithHttp200() {
+    fun probeRespondsOnlyWithHttp200AndTheHarmonHeader() {
         assertEquals(
             LiveUiEndpointState.Responds,
-            classifyLiveUiProbe(LiveUiProbeOutcome(0, 200L, "")),
+            classifyLiveUiProbe(LiveUiProbeOutcome(0, 200L, harmonHeader = true, error = "")),
         )
-        for (httpStatus in listOf(403L, 404L)) {
+        for (httpStatus in listOf(200L, 403L, 404L)) {
             assertEquals(
                 LiveUiEndpointState.AnotherProcess(httpStatus),
-                classifyLiveUiProbe(LiveUiProbeOutcome(0, httpStatus, "")),
+                classifyLiveUiProbe(LiveUiProbeOutcome(0, httpStatus, harmonHeader = false, error = "")),
             )
         }
     }
@@ -187,7 +187,9 @@ class LiveUiEndpointTest {
         val (fileSystem, store) = LiveUiLauncherPublishedStore()
 
         val failure = assertFailsWith<IllegalStateException> {
-            LiveUiLauncher.open(store) { LiveUiProbeOutcome(7, 0L, "Couldn't connect to server") }
+            LiveUiLauncher.open(store) {
+                LiveUiProbeOutcome(7, 0L, harmonHeader = false, error = "Couldn't connect to server")
+            }
         }
 
         assertContains(failure.message.orEmpty(), "not running")
@@ -201,11 +203,28 @@ class LiveUiEndpointTest {
         val (fileSystem, store) = LiveUiLauncherPublishedStore()
 
         val failure = assertFailsWith<IllegalStateException> {
-            LiveUiLauncher.open(store) { LiveUiProbeOutcome(0, 404L, "") }
+            LiveUiLauncher.open(store) { LiveUiProbeOutcome(0, 404L, harmonHeader = false, error = "") }
         }
 
         assertContains(failure.message.orEmpty(), "not running")
         assertContains(failure.message.orEmpty(), "another process answered on 127.0.0.1:49321 with HTTP 404")
+        assertContains(failure.message.orEmpty(), "harmon status")
+        assertFalse(fileSystem.isRegularFile(store.path))
+    }
+
+    @Test
+    fun launcherRemovesAnEndpointAnsweredWithoutTheHarmonHeader() {
+        val (fileSystem, store) = LiveUiLauncherPublishedStore()
+
+        val failure = assertFailsWith<IllegalStateException> {
+            LiveUiLauncher.open(store) { LiveUiProbeOutcome(0, 200L, harmonHeader = false, error = "") }
+        }
+
+        assertContains(failure.message.orEmpty(), "not running")
+        assertContains(
+            failure.message.orEmpty(),
+            "another process answered on 127.0.0.1:49321 with HTTP 200 but no X-Harmon-Live header",
+        )
         assertContains(failure.message.orEmpty(), "harmon status")
         assertFalse(fileSystem.isRegularFile(store.path))
     }
@@ -216,7 +235,12 @@ class LiveUiEndpointTest {
 
         val failure = assertFailsWith<IllegalStateException> {
             LiveUiLauncher.open(store) {
-                LiveUiProbeOutcome(28, 0L, "Operation timed out after 2001 milliseconds")
+                LiveUiProbeOutcome(
+                    28,
+                    0L,
+                    harmonHeader = false,
+                    error = "Operation timed out after 2001 milliseconds",
+                )
             }
         }
 
