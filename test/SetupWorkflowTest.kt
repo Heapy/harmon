@@ -7,10 +7,8 @@ import io.heapy.harmon.setup.CommandRunner
 import io.heapy.harmon.setup.FileOwnership
 import io.heapy.harmon.setup.InstallResourceOrigin
 import io.heapy.harmon.setup.InstallResources
-import io.heapy.harmon.setup.InstalledFileAttributes
 import io.heapy.harmon.setup.HarmonStop
 import io.heapy.harmon.setup.SetupException
-import io.heapy.harmon.setup.SetupFileSystem
 import io.heapy.harmon.setup.SystemSetup
 import io.heapy.harmon.setup.SystemSetupPaths
 import io.heapy.harmon.setup.SystemStop
@@ -1646,7 +1644,7 @@ class SetupWorkflowTest {
 }
 
 private class WorkflowCommandRunner(
-    private val fileSystem: WorkflowFileSystem? = null,
+    private val fileSystem: InMemorySetupFileSystem? = null,
     private val failedArguments: Set<List<String>> = emptySet(),
     private val missingArguments: Set<List<String>> = emptySet(),
     private val disabledLabels: Set<String> = emptySet(),
@@ -1696,7 +1694,7 @@ private class WorkflowCommandRunner(
 }
 
 /** Current and source-installer plists used by the stop sequencing tests. */
-private fun installedStopFileSystem(): WorkflowFileSystem {
+private fun installedStopFileSystem(): InMemorySetupFileSystem {
     val fileSystem = workflowFileSystem()
     val paths = UserSetupPaths.forHome(TEST_HOME)
     fileSystem.files[SystemSetupPaths.collectorPlist] = "daemon"
@@ -1726,83 +1724,7 @@ private class WorkflowMissingDomainRunner(
     }
 }
 
-private class WorkflowFileSystem : SetupFileSystem {
-    val files = mutableMapOf<String, String>()
-    val directories = mutableSetOf<String>()
-    val symlinks = mutableMapOf<String, String>()
-    val attributes = mutableMapOf<String, InstalledFileAttributes>()
-    val writtenTargets = mutableListOf<String>()
-    val treeRemovalAttempts = mutableListOf<String>()
-    val failedTreeRemovals = mutableSetOf<String>()
-
-    override fun ensureDirectory(path: String, attributes: InstalledFileAttributes) {
-        directories += path
-        this.attributes[path] = attributes
-    }
-
-    override fun copyFileAtomically(
-        source: String,
-        target: String,
-        attributes: InstalledFileAttributes,
-        validateTemporaryFile: ((String) -> Unit)?,
-        beforePublish: (() -> Unit)?,
-    ) {
-        val temporary = "$target.fake.tmp"
-        validateTemporaryFile?.invoke(temporary)
-        beforePublish?.invoke()
-        files[target] = files[source] ?: "<binary:$source>"
-        this.attributes[target] = attributes
-        writtenTargets += target
-    }
-
-    override fun writeTextAtomically(
-        target: String,
-        content: String,
-        attributes: InstalledFileAttributes,
-        validateTemporaryFile: ((String) -> Unit)?,
-    ) {
-        val temporary = "$target.fake.tmp"
-        validateTemporaryFile?.invoke(temporary)
-        files[target] = content
-        this.attributes[target] = attributes
-        writtenTargets += target
-    }
-
-    override fun setMode(path: String, mode: UInt) {
-        attributes[path] = InstalledFileAttributes(mode)
-    }
-
-    override fun exists(path: String): Boolean =
-        path in files || path in directories || path in symlinks
-
-    override fun isRegularFile(path: String): Boolean = path in files
-
-    override fun isReadable(path: String): Boolean = path in files
-
-    override fun isSymbolicLink(path: String): Boolean = path in symlinks
-
-    override fun readSymbolicLink(path: String): String? = symlinks[path]
-
-    override fun readText(path: String): String =
-        files[path] ?: error("missing fake file $path")
-
-    override fun removeFileIfExists(path: String) {
-        files.remove(path)
-        symlinks.remove(path)
-    }
-
-    override fun removeTreeIfExists(path: String) {
-        treeRemovalAttempts += path
-        if (path in failedTreeRemovals) {
-            throw IllegalStateException("Unable to remove '$path': injected failure")
-        }
-        files.keys.filter { it == path || it.startsWith("$path/") }.forEach(files::remove)
-        directories.removeAll { it == path || it.startsWith("$path/") }
-        symlinks.keys.filter { it == path || it.startsWith("$path/") }.forEach(symlinks::remove)
-    }
-}
-
-private fun workflowFileSystem(): WorkflowFileSystem = WorkflowFileSystem().apply {
+private fun workflowFileSystem(): InMemorySetupFileSystem = InMemorySetupFileSystem().apply {
     files[TEST_AGENT_SOURCE] = "agent"
     files[TEST_COLLECTOR_SOURCE] = "collector"
     files[TEST_INFO_SOURCE] = """
