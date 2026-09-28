@@ -106,7 +106,9 @@ root collector while leaving their plists, deployed binaries, configuration,
 logs, reports, and history in place. The login-user phase touches launchd only
 through one sudo re-exec as `stop --system --uid N`, because root can reach the
 user's GUI domain as well as the system one; a declined password therefore
-leaves every service exactly as it was rather than half stopped. The root phase
+leaves every service exactly as it was rather than half stopped. After the
+privileged phase returns, `harmon stop` removes the live UI endpoint file, so
+`harmon ui` reports that the live UI is not running. The root phase
 writes every applicable disable before the first bootout, with GUI definitions
 before system definitions, so an unexpected failure aborts while every loaded
 job is still running and before the collector changes. The persistent override
@@ -122,9 +124,7 @@ stoppable. The root phase therefore resolves the target home through
 `harmon setup` retires compatibility jobs, clears overrides reported disabled
 after their definitions are no longer discoverable, and explicitly re-enables
 and starts both current jobs. It is therefore the restart path without leaving
-retired labels disabled indefinitely. Once the privileged phase returns, the
-user phase removes the ephemeral live UI endpoint, so `harmon ui` does not have
-to discover and clean a stale endpoint.
+retired labels disabled indefinitely.
 
 The Homebrew formula is a distribution layer, not a service manager. A release
 archive contains exactly `bin/harmon`, `libexec/harmon-collector`, and the three
@@ -474,7 +474,23 @@ rejected when `watch=1` is present. Cookies and CORS permissions are never
 emitted.
 
 The port and fresh 256-bit token are atomically published in the user's `0600`
-`live-ui.endpoint`. `harmon ui` opens
+`live-ui.endpoint`. The agent publishes it once per start. These remove it:
+
+- `LiveUiRuntime.stop`, on a normal agent exit only. The agent has no signal
+  handler, so SIGTERM, SIGINT, `launchctl bootout`, and logout leave the file
+  behind;
+- the agent itself when its live UI fails to start;
+- `harmon run` with `webUiEnabled=false`;
+- `harmon stop` and `harmon uninstall`;
+- `harmon ui` when its two-second probe of `/api/live` finds nothing listening
+  on the port (curl `CURLE_COULDNT_CONNECT`) or another process answering there
+  with an HTTP status other than 200.
+
+`harmon ui` keeps the file when the agent does not answer in time: a timeout,
+or a connection closed without a reply because eight clients are already
+active. A busy agent can miss one probe, and removing its only endpoint would
+leave it unreachable until it restarts. Each outcome prints its own message
+with the next step. When the agent answers, `harmon ui` opens
 `http://127.0.0.1:<port>/#token=<token>`; fragments are not sent to the server.
 Live-only bootstrap validates the token, stores it in that port's
 `sessionStorage`, and replaces the displayed history entry with `/` before its

@@ -16,6 +16,7 @@ import io.heapy.harmon.web.LiveUiEndpointStore
 import io.heapy.harmon.web.LiveUiLauncher
 import io.heapy.harmon.web.LiveUiRuntime
 import io.heapy.harmon.web.generateLiveUiToken
+import io.heapy.harmon.web.probeLiveUiEndpoint
 import kotlin.time.Clock
 
 fun main(arguments: Array<String>) {
@@ -55,17 +56,11 @@ fun main(arguments: Array<String>) {
                     printError(
                         "${Clock.System.now()} live UI unavailable: ${failureDescription(failure)}",
                     )
+                    removeStaleLiveUiEndpoint()
                     null
                 }
             } else {
-                try {
-                    LiveUiEndpointStore().remove()
-                } catch (failure: Throwable) {
-                    printError(
-                        "${Clock.System.now()} stale live UI endpoint cleanup failed: " +
-                            failureDescription(failure),
-                    )
-                }
+                removeStaleLiveUiEndpoint()
                 null
             }
             try {
@@ -86,6 +81,17 @@ fun main(arguments: Array<String>) {
         status = status::run,
         stop = stop::run,
         uninstall = uninstall::run,
-        openUi = { LiveUiLauncher.open(LiveUiEndpointStore()) },
+        openUi = { LiveUiLauncher.open(LiveUiEndpointStore(), ::probeLiveUiEndpoint) },
     )
+}
+
+private fun removeStaleLiveUiEndpoint() {
+    try {
+        LiveUiEndpointStore().remove()
+    } catch (failure: Throwable) {
+        printError(
+            "${Clock.System.now()} stale live UI endpoint cleanup failed: " +
+                failureDescription(failure),
+        )
+    }
 }

@@ -107,11 +107,26 @@ class LiveUiEndpointStore(
 }
 
 object LiveUiLauncher {
-    fun open(store: LiveUiEndpointStore) {
+    fun open(store: LiveUiEndpointStore, probe: (LiveUiEndpoint) -> LiveUiProbeOutcome) {
         val endpoint = store.read()
-        if (!liveUiEndpointResponds(endpoint)) {
-            store.removeIfCurrent(endpoint)
-            throw IllegalStateException("Harmon live UI is not responding; its stale endpoint was removed")
+        val address = "127.0.0.1:${endpoint.port}"
+        when (val state = classifyLiveUiProbe(probe(endpoint))) {
+            LiveUiEndpointState.Responds -> Unit
+            is LiveUiEndpointState.Stale -> {
+                store.removeIfCurrent(endpoint)
+                val cause = when (state) {
+                    LiveUiEndpointState.NothingListens -> "nothing listens on $address"
+                    is LiveUiEndpointState.AnotherProcess ->
+                        "another process answered on $address with HTTP ${state.httpStatus}"
+                }
+                throw IllegalStateException(
+                    "Harmon live UI is not running: $cause; removed its stale endpoint. Run 'harmon status'.",
+                )
+            }
+            is LiveUiEndpointState.NoAnswer -> throw IllegalStateException(
+                "Harmon live UI did not answer on $address within $LIVE_UI_PROBE_TIMEOUT_SECONDS s " +
+                    "(${state.error}). The agent may be busy; try again or run 'harmon status'.",
+            )
         }
         val url = NSURL.URLWithString(endpoint.url)
             ?: throw IllegalStateException("Unable to create the live UI URL")
@@ -121,19 +136,48 @@ object LiveUiLauncher {
     }
 }
 
-@OptIn(ExperimentalForeignApi::class)
+data class LiveUiProbeOutcome(
+    val curlCode: Int,
+    val httpStatus: Long,
+    val error: String,
+)
+
+sealed interface LiveUiEndpointState {
+    data object Responds : LiveUiEndpointState
+
+    sealed interface Stale : LiveUiEndpointState
+
+    data object NothingListens : Stale
+
+    data class AnotherProcess(val httpStatus: Long) : Stale
+
+    data class NoAnswer(val error: String) : LiveUiEndpointState
+}
+
+fun classifyLiveUiProbe(outcome: LiveUiProbeOutcome): LiveUiEndpointState = when {
+    outcome.curlCode == CURLE_COULDNT_CONNECT -> LiveUiEndpointState.NothingListens
+    outcome.curlCode != CURLE_OK || outcome.httpStatus <= 0L -> LiveUiEndpointState.NoAnswer(outcome.error)
+    outcome.httpStatus == 200L -> LiveUiEndpointState.Responds
+    else -> LiveUiEndpointState.AnotherProcess(outcome.httpStatus)
+}
+
 fun liveUiEndpointResponds(endpoint: LiveUiEndpoint): Boolean =
-    LiveUiEndpointProbe.responds(endpoint)
+    classifyLiveUiProbe(probeLiveUiEndpoint(endpoint)) == LiveUiEndpointState.Responds
+
+fun probeLiveUiEndpoint(endpoint: LiveUiEndpoint): LiveUiProbeOutcome =
+    LiveUiEndpointProbe.probe(endpoint)
 
 @OptIn(ExperimentalForeignApi::class)
 private object LiveUiEndpointProbe {
-    private val initialized = hm_http_global_init() == 0
+    private val initialization = hm_http_global_init()
 
-    fun responds(endpoint: LiveUiEndpoint): Boolean = memScoped {
-        if (!initialized) return@memScoped false
+    fun probe(endpoint: LiveUiEndpoint): LiveUiProbeOutcome = memScoped {
+        if (initialization != CURLE_OK) {
+            return@memScoped LiveUiProbeOutcome(initialization, 0L, "libcurl initialization failed")
+        }
         val result = alloc<HMHttpResult>()
-        hm_http_get_status(endpoint.apiUrl, LIVE_UI_PROBE_TIMEOUT_SECONDS, result.ptr) == 0 &&
-            result.status_code == 200L
+        hm_http_get_status(endpoint.apiUrl, LIVE_UI_PROBE_TIMEOUT_SECONDS, result.ptr)
+        LiveUiProbeOutcome(result.curl_code, result.status_code, result.error.toKString())
     }
 }
 
@@ -164,3 +208,5 @@ private fun currentHomeDirectory(): String =
 
 private const val TOKEN_BYTES = 32
 private const val LIVE_UI_PROBE_TIMEOUT_SECONDS = 2L
+private const val CURLE_OK = 0
+private const val CURLE_COULDNT_CONNECT = 7

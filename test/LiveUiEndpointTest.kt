@@ -1,5 +1,10 @@
 import io.heapy.harmon.web.LiveUiEndpoint
+import io.heapy.harmon.web.LiveUiEndpointState
+import io.heapy.harmon.web.LiveUiEndpointStore
+import io.heapy.harmon.web.LiveUiLauncher
+import io.heapy.harmon.web.LiveUiProbeOutcome
 import io.heapy.harmon.web.LiveHttpSocketKind
+import io.heapy.harmon.web.classifyLiveUiProbe
 import io.heapy.harmon.web.configureLiveHttpSocket
 import io.heapy.harmon.web.generateLiveUiToken
 import io.heapy.harmon.web.liveUiWatchRequested
@@ -136,6 +141,99 @@ class LiveUiEndpointTest {
 
         assertContains(failure, "SO_NOSIGPIPE")
     }
+
+    @Test
+    fun probeFindsNothingListeningWhenTheConnectionIsRefused() {
+        assertEquals(
+            LiveUiEndpointState.NothingListens,
+            classifyLiveUiProbe(LiveUiProbeOutcome(7, 0L, "Couldn't connect to server")),
+        )
+    }
+
+    @Test
+    fun probeKeepsTimeoutsAndDroppedConnectionsAsNoAnswer() {
+        for (curlCode in listOf(28, 52, 56)) {
+            assertEquals(
+                LiveUiEndpointState.NoAnswer("curl $curlCode"),
+                classifyLiveUiProbe(LiveUiProbeOutcome(curlCode, 0L, "curl $curlCode")),
+            )
+        }
+    }
+
+    @Test
+    fun probeWithoutAnHttpStatusIsNoAnswer() {
+        assertEquals(
+            LiveUiEndpointState.NoAnswer("curl_easy_init failed"),
+            classifyLiveUiProbe(LiveUiProbeOutcome(0, 0L, "curl_easy_init failed")),
+        )
+    }
+
+    @Test
+    fun probeRespondsOnlyWithHttp200() {
+        assertEquals(
+            LiveUiEndpointState.Responds,
+            classifyLiveUiProbe(LiveUiProbeOutcome(0, 200L, "")),
+        )
+        for (httpStatus in listOf(403L, 404L)) {
+            assertEquals(
+                LiveUiEndpointState.AnotherProcess(httpStatus),
+                classifyLiveUiProbe(LiveUiProbeOutcome(0, httpStatus, "")),
+            )
+        }
+    }
+
+    @Test
+    fun launcherRemovesAnEndpointThatNothingListensOn() {
+        val (fileSystem, store) = LiveUiLauncherPublishedStore()
+
+        val failure = assertFailsWith<IllegalStateException> {
+            LiveUiLauncher.open(store) { LiveUiProbeOutcome(7, 0L, "Couldn't connect to server") }
+        }
+
+        assertContains(failure.message.orEmpty(), "not running")
+        assertContains(failure.message.orEmpty(), "nothing listens on 127.0.0.1:49321")
+        assertContains(failure.message.orEmpty(), "harmon status")
+        assertFalse(fileSystem.isRegularFile(store.path))
+    }
+
+    @Test
+    fun launcherRemovesAnEndpointThatAnotherProcessAnswers() {
+        val (fileSystem, store) = LiveUiLauncherPublishedStore()
+
+        val failure = assertFailsWith<IllegalStateException> {
+            LiveUiLauncher.open(store) { LiveUiProbeOutcome(0, 404L, "") }
+        }
+
+        assertContains(failure.message.orEmpty(), "not running")
+        assertContains(failure.message.orEmpty(), "another process answered on 127.0.0.1:49321 with HTTP 404")
+        assertContains(failure.message.orEmpty(), "harmon status")
+        assertFalse(fileSystem.isRegularFile(store.path))
+    }
+
+    @Test
+    fun launcherKeepsTheEndpointOfAnAgentThatDidNotAnswerInTime() {
+        val (_, store) = LiveUiLauncherPublishedStore()
+
+        val failure = assertFailsWith<IllegalStateException> {
+            LiveUiLauncher.open(store) {
+                LiveUiProbeOutcome(28, 0L, "Operation timed out after 2001 milliseconds")
+            }
+        }
+
+        assertContains(failure.message.orEmpty(), "did not answer on 127.0.0.1:49321 within 2 s")
+        assertContains(failure.message.orEmpty(), "Operation timed out after 2001 milliseconds")
+        assertContains(failure.message.orEmpty(), "try again")
+        assertEquals(LIVE_UI_LAUNCHER_ENDPOINT, store.read())
+    }
+}
+
+private val LIVE_UI_LAUNCHER_ENDPOINT = LiveUiEndpoint(49_321, "c".repeat(64))
+
+private fun LiveUiLauncherPublishedStore(): Pair<InMemorySetupFileSystem, LiveUiEndpointStore> {
+    val fileSystem = InMemorySetupFileSystem()
+    val store = LiveUiEndpointStore("/fake/home", fileSystem)
+    store.publish(LIVE_UI_LAUNCHER_ENDPOINT)
+    return fileSystem to store
 }
 
 @OptIn(ExperimentalForeignApi::class)

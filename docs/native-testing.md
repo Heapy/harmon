@@ -123,9 +123,23 @@ portable checked-in header, so the generated copies live for one run.
 
 Each `*_test.c` is one suite reporting under one name prefix, named after it.
 Framing and socket suites include the IPC header; process, attribution,
-snapshot, and pure suites include the probe header; the HTTP callback suite
-includes the HTTP header. `main.c` maps files to prefixes, `harness.h` carries
-the protocol and alarm, and `anchors.h` carries comparisons shared by suites.
+snapshot, and pure suites include the probe header; the HTTP suite includes the
+HTTP header. `main.c` maps files to prefixes, `harness.h` carries the protocol
+and alarm, and `anchors.h` carries comparisons shared by suites.
+
+The HTTP suite pins the curl codes that `harmon ui` sorts into its probe states,
+on real loopback sockets and without an HTTP server.
+`http.get-status-refused-port-reports-couldnt-connect` requires
+`CURLE_COULDNT_CONNECT` (7) from `hm_http_get_status` on a port nothing listens
+on. That port is the local port of an established loopback connection, which
+stays reserved for the whole check. A port bound without `listen()` would not
+do: XNU drops the SYN, and curl waits out its timeout (28).
+`http.get-status-dropped-connection-is-not-refused` accepts one connection on a
+helper thread and closes it unread, as the live UI does with a ninth client. It
+requires any curl code other than 0 and 7, because the code depends on timing:
+10 runs here gave 56 (connection reset) eight times and 52 (empty reply) twice.
+The helper thread waits at most five seconds for the connection, so a probe
+that never connects cannot leave it blocked in `accept`.
 
 **The sanitized pass.** `./kotlin test` runs the C harness twice: once as above,
 once with `--sanitize`, which builds the same sources with
@@ -282,8 +296,8 @@ and is not repeated here.
 
 Nothing reaches these at all:
 
-- `hm_http_post_json` with `hm_http_global_init`/`hm_http_global_cleanup`: would
-  need a local HTTP server in the tests;
+- `hm_http_post_json` and `hm_http_global_cleanup`: would need a local HTTP
+  server in the tests;
 - the attribution budget split inside `hm_list_processes` (head/tail passes,
   `hm_attribute_candidate`): both harnesses take the listing with attribution off,
   so the policy never runs; the region walk itself is covered directly;
@@ -300,6 +314,11 @@ Nothing reaches these at all:
 - the peer-uid gate inside `hm_unix_connect`, `hm_unix_accept` with a null
   `peer_user_id`, and its bypass for uid 0: same reason. The server-side gate that
   matters, `socket.accept-rejects-foreign-uid`, is covered.
+
+`hm_http_get_status` is reached only for a refused and a dropped connection
+(`http.get-status-refused-port-reports-couldnt-connect`,
+`http.get-status-dropped-connection-is-not-refused`); its HTTP 200 path runs
+only in `webuicheck`, against the production live UI server.
 
 One piece of the C harness is on this list rather than the bridge:
 `hm_top_up_own_processes` in `processes_test.c` forks the shortfall of
