@@ -2,6 +2,7 @@
 
 #include <fcntl.h>
 #include <pthread.h>
+#include <spawn.h>
 #include <sys/mman.h>
 #include <sys/wait.h>
 
@@ -1409,7 +1410,115 @@ static void hm_check_process_listing_invalid_arguments(void) {
     );
 }
 
+static void hm_check_context_parser(void) {
+    HMProcessContext context = {0};
+    const char strings[] = "/bin/app\0\0\0\0\0\0\0\0app\0\0space value\0\"quoted\"\0Привет\0SECRET=excluded\0";
+    char region[sizeof(int) + sizeof(strings)];
+    int argc = 5;
+    memcpy(region, &argc, sizeof(argc));
+    memcpy(region + sizeof(argc), strings, sizeof(strings));
+    hm_parse_process_arguments(region, sizeof(region), &context);
+    CHECK("processes.argv-preserves-boundaries-and-excludes-environment",
+        context.arguments_available && !context.arguments_truncated && context.argument_count == 5 &&
+        strcmp(hm_process_argument(&context, 0), "app") == 0 &&
+        strcmp(hm_process_argument(&context, 1), "") == 0 &&
+        strcmp(hm_process_argument(&context, 2), "space value") == 0 &&
+        strcmp(hm_process_argument(&context, 3), "\"quoted\"") == 0 &&
+        strcmp(hm_process_argument(&context, 4), "Привет") == 0 &&
+        hm_process_argument(&context, 5) == NULL,
+        "argc=%d available=%d truncated=%d", context.argument_count,
+        context.arguments_available, context.arguments_truncated);
+
+    hm_parse_process_arguments(region, sizeof(int) + 2, &context);
+    int rejected = !context.arguments_available && context.argument_count == 0;
+    hm_parse_process_arguments(region, sizeof(int) + sizeof("/bin/app\0\0app\0\0space" ) - 1, &context);
+    rejected &= !context.arguments_available && context.argument_count == 0;
+    argc = -1;
+    memcpy(region, &argc, sizeof(argc));
+    hm_parse_process_arguments(region, sizeof(region), &context);
+    rejected &= !context.arguments_available;
+    CHECK("processes.argv-rejects-malformed-regions", rejected,
+        "malformed or unterminated argv became available");
+
+    char large[HM_COMMAND_BYTES + 64];
+    memset(large, 'x', sizeof(large));
+    argc = 2;
+    memcpy(large, &argc, sizeof(argc));
+    memcpy(large + sizeof(argc), "/app\0\0\0\0app\0", 12);
+    large[sizeof(large) - 1] = 0;
+    hm_parse_process_arguments(large, sizeof(large), &context);
+    CHECK("processes.argv-byte-limit-is-explicit",
+        context.arguments_available && context.arguments_truncated && context.argument_count == 1 &&
+        strcmp(hm_process_argument(&context, 0), "app") == 0,
+        "expected whole-argument truncation; got %d arguments", context.argument_count);
+
+    memset(large, 0, sizeof(large));
+    argc = HM_COMMAND_ARGUMENTS + 1;
+    memcpy(large, &argc, sizeof(argc));
+    memcpy(large + sizeof(argc), "/app\0\0\0\0app\0", 12);
+    hm_parse_process_arguments(large, sizeof(large), &context);
+    CHECK("processes.argv-count-limit-is-explicit",
+        context.arguments_available && context.arguments_truncated &&
+        context.argument_count == HM_COMMAND_ARGUMENTS,
+        "expected %d arguments, got %d", HM_COMMAND_ARGUMENTS, context.argument_count);
+}
+
+static void hm_check_process_context(int empty_argv0) {
+    char own[HM_PROCESS_PATH_SIZE] = {0};
+    char cwd[HM_PROCESS_PATH_SIZE] = {0};
+    const int prepared = proc_pidpath(getpid(), own, sizeof(own)) > 0 && getcwd(cwd, sizeof(cwd)) != NULL;
+    char *args[] = {empty_argv0 ? "" : own, "--park", "", "space value", "\"quoted\"", "Привет", NULL};
+    char *environment[] = {"HARMON_TEST_SECRET=not-an-argument", NULL};
+    pid_t child = -1;
+    const int spawned = prepared ? posix_spawn(&child, own, NULL, NULL, args, environment) : EINVAL;
+    struct rusage_info_v4 usage = {0};
+    HMProcessContext context = {0};
+    const int read_usage = spawned == 0 &&
+        proc_pid_rusage(child, RUSAGE_INFO_V4, (rusage_info_t *)&usage) == 0;
+    if (read_usage) hm_read_process_context(child, usage.ri_proc_start_abstime, &context);
+    int args_match = context.arguments_available && context.argument_count == 6;
+    for (int i = 0; args_match && i < 6; ++i) {
+        args_match &= strcmp(hm_process_argument(&context, i), args[i]) == 0;
+    }
+    CHECK(empty_argv0 ? "processes.context-preserves-empty-argv-zero" :
+        "processes.context-matches-exec-arguments-and-cwd",
+        read_usage && args_match && strcmp(cwd, context.cwd) == 0 && !context.arguments_truncated,
+        "spawn=%d rusage=%d args-match=%d cwd-match=%d", spawned, read_usage, args_match,
+        strcmp(cwd, context.cwd) == 0);
+    if (empty_argv0) {
+        if (spawned == 0) {
+            kill(child, SIGKILL);
+            while (waitpid(child, NULL, 0) < 0 && errno == EINTR) {}
+        }
+        return;
+    }
+    if (read_usage) hm_read_process_context(child, usage.ri_proc_start_abstime + 1, &context);
+    CHECK("processes.context-rejects-wrong-process-identity",
+        read_usage && !context.arguments_available && context.cwd[0] == 0,
+        "mismatched start time retained context");
+    if (spawned == 0) {
+        kill(child, SIGKILL);
+        while (waitpid(child, NULL, 0) < 0 && errno == EINTR) {}
+        hm_read_process_context(child, usage.ri_proc_start_abstime, &context);
+    }
+    CHECK("processes.context-clears-exited-process",
+        spawned == 0 && !context.arguments_available && context.cwd[0] == 0,
+        "exited process retained context");
+
+    struct rusage_info_v4 self = {0};
+    const int moved = getcwd(cwd, sizeof(cwd)) != NULL &&
+        proc_pid_rusage(getpid(), RUSAGE_INFO_V4, (rusage_info_t *)&self) == 0 && chdir("/private/tmp") == 0;
+    if (moved) hm_read_process_context(getpid(), self.ri_proc_start_abstime, &context);
+    const int matched = moved && strcmp(context.cwd, "/private/tmp") == 0;
+    const int restored = moved && chdir(cwd) == 0;
+    CHECK("processes.context-follows-cwd-changes", matched && restored,
+        "moved=%d matched=%d restored=%d", moved, matched, restored);
+}
+
 void hm_run_processes_tests(void) {
+    hm_check_context_parser();
+    hm_check_process_context(0);
+    hm_check_process_context(1);
     hm_check_process_listing();
     hm_check_own_listing();
     hm_check_listing_frees_its_pid_list();

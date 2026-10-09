@@ -172,6 +172,7 @@ class UsageCalculator(
             uid = current.uid,
             name = current.name,
             executablePath = current.executablePath,
+            context = current.context,
             cpuPercent = cpuPercent.finiteNonNegative(),
             userCpuPercent = userPercent.finiteNonNegative(),
             systemCpuPercent = systemPercent.finiteNonNegative(),

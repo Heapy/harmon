@@ -63,6 +63,8 @@ bridge used by the user application.
 | Zombie identity fallback | `sysctl(KERN_PROC_PID)` | Parent PID, UID and a name cut to 16 characters for an unreaped zombie, which `proc_pidinfo` and `proc_name` refuse with `ESRCH`; other refusals stay unknown |
 | Process display metadata | `proc_name`, `proc_pidpath` | Name and executable path |
 | Executable path fallback | `sysctl(KERN_PROCARGS2)` | The path a process was exec'd with, when `proc_pidpath` cannot resolve one |
+| Process working directory | `proc_pidinfo(PROC_PIDVNODEPATHINFO)` | Current directory, when readable |
+| Process arguments | `sysctl(KERN_PROCARGS2)` | Bounded argv, excluding the environment from retained data |
 | Process resource ledger | `proc_pid_rusage(RUSAGE_INFO_V6)` | CPU, memory, wakeups, page-ins, physical disk I/O, logical writes, instructions, cycles, energy, start time |
 | Older-kernel fallback | `proc_pid_rusage(RUSAGE_INFO_V4)` | Same prefix without V6 energy fields |
 | Process task counters | `proc_pidinfo(PROC_PIDTASKINFO)` | Faults, COW faults, Mach/Unix calls, context switches, threads |
@@ -117,6 +119,37 @@ The path a process reports is therefore where its binary was when it started,
 not where an equivalent binary lives now: two sessions of the same program
 across an upgrade are two paths, and grouping by path keeps them apart. That is
 the honest reading of what ran.
+
+## Local command context
+
+Both `FULL` and `LIVE_FAST` read current working directories and argv for measured
+processes. A reusable native buffer avoids allocating a command buffer for every
+reserved process slot. Each process retains at most 4,096 argument bytes
+(including NUL separators) and 128 complete arguments. A longer argument or list
+produces an explicit truncation marker, never an unmarked partial argument.
+Reading the kernel argument region is bounded to 4 MiB, as for the executable
+path fallback. Only the reported argc arguments are projected; environment data
+from the temporary kernel buffer is discarded. Parsing respects XNU's 64-bit
+saved-path alignment, so an empty argv[0] is not mistaken for padding.
+
+The snapshot retains at most 1 MiB of native context string bytes across processes;
+collection stops adding context when the remainder cannot hold one maximum-size
+cwd and argv. Unreadable, exited and budget-skipped context is unavailable in the
+UI. Optional context failure does not remove resource measurements. Start time is
+checked before and after context collection against the original rusage sample,
+so PID reuse cannot attach another process's context. These reads are still not
+an atomic snapshot: a process can change its cwd or exec during a scan.
+
+`cwd` is the current folder, not necessarily the folder at launch. Arguments
+reflect the kernel-provided argv representation, not a shell command that can be
+replayed verbatim. Empty arguments and arguments containing whitespace or special
+characters are quoted in the UI. Search includes cwd and argv. Context refreshes
+with each capture rather than inheriting the Last FULL attribution cache.
+
+Only the live process-tree projection includes this context. Static HTML/JSON
+reports, text reports, notifications and SQLite history omit it. The Live page's
+Snapshot button freezes the in-memory view, including context; it does not write
+history or a report file.
 
 ## Process identity
 
@@ -763,11 +796,12 @@ The standard `harmon.sample` webhook includes:
   `newAlertKeys` and `suppressedAlertKeys` as defined under [Alerts](#alerts);
 - collection coverage counts.
 
-It excludes executable paths and detailed PID collection failures.
+It excludes executable paths, working directories, arguments and detailed PID
+collection failures.
 
-Harmon does not collect:
+Harmon discards environment variables from the temporary argument buffer. It
+does not collect:
 
-- command-line arguments or environments of other processes;
 - open file names or document contents;
 - window titles, screenshots, keystrokes, or clipboard contents;
 - per-process network destinations;

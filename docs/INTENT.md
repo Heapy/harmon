@@ -58,7 +58,10 @@ history without becoming a significant workload itself.
 - Harmon does not claim exact per-process physical swap, reproduce Activity
   Monitor's private Energy Impact formula, or use private GPU, SMC, or
   `powermetrics` interfaces.
-- It does not collect command lines, environments, document contents, open-file
+- Current working directories and bounded command-line arguments support process
+  identification in the authenticated local Live UI. They are not retained in
+  SQLite history, saved notification reports, or outbound notifications.
+- It does not retain process environments or collect document contents, open-file
   paths, window titles, screenshots, keystrokes, clipboard contents, or network
   destinations.
 - The collector protocol is a narrow, read-only snapshot boundary, not a

@@ -2,6 +2,16 @@ import kotlin.test.Test
 import kotlin.test.assertEquals
 
 private val C_HARNESS_CHECKS = setOf(
+    "processes.argv-preserves-boundaries-and-excludes-environment",
+    "processes.argv-rejects-malformed-regions",
+    "processes.argv-byte-limit-is-explicit",
+    "processes.argv-count-limit-is-explicit",
+    "processes.context-matches-exec-arguments-and-cwd",
+    "processes.context-preserves-empty-argv-zero",
+    "processes.context-rejects-wrong-process-identity",
+    "processes.context-clears-exited-process",
+    "processes.context-follows-cwd-changes",
+
     "pure.constants-are-pinned",
     "pure.saturating-add-zero",
     "pure.saturating-add-adds",

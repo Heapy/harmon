@@ -15,6 +15,14 @@ data class ProcessIdentity(
     val startedAt: ULong,
 )
 
+/** Local process launch context; deliberately omitted from persistent and outgoing reports. */
+@Serializable
+data class ProcessContext(
+    val cwd: String? = null,
+    val argv: List<String>? = null,
+    val argvTruncated: Boolean = false,
+)
+
 @Serializable
 data class RawProcessSample(
     val identity: ProcessIdentity,
@@ -47,6 +55,7 @@ data class RawProcessSample(
     val threadCount: Int,
     val runningThreadCount: Int,
     val billedEnergy: ULong,
+    val context: ProcessContext? = null,
 )
 
 @Serializable
@@ -215,6 +224,7 @@ data class ProcessUsage(
      * pid 1 is orphaning; a process first seen under pid 1 has no transition.
      */
     val reparentedFrom: ReparentedFrom? = null,
+    val context: ProcessContext? = null,
 )
 
 data class ApplicationUsage(

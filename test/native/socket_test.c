@@ -713,12 +713,12 @@ static int hm_collector_ipc_receive_kind(
     char expected[64];
     snprintf(expected, sizeof(expected), "\"kind\":\"%s\"", kind);
     const int matches =
-        strstr(payload, "\"protocolVersion\":3") != NULL &&
+        strstr(payload, "\"protocolVersion\":4") != NULL &&
         strstr(payload, expected) != NULL;
     if (!matches) {
         hm_collector_ipc_fail(
             state,
-            "collector returned %u bytes without protocol v3 %s: %.160s",
+            "collector returned %u bytes without protocol v4 %s: %.160s",
             size,
             kind,
             payload
@@ -744,7 +744,7 @@ static int hm_collector_ipc_probe(HMCollectorIpcIntegration *state) {
     );
     if (status == 0 && hm_send_json_frame(
             descriptor,
-            "{\"protocolVersion\":3,\"kind\":\"probe\"}"
+            "{\"protocolVersion\":4,\"kind\":\"probe\"}"
         ) != 0) {
         hm_collector_ipc_fail(state, "cannot send collector probe: %s", strerror(errno));
         status = -1;
@@ -862,12 +862,12 @@ static int hm_collector_ipc_rejects(
     if (status == 0) {
         switch (request) {
             case HM_COLLECTOR_IPC_MALFORMED:
-                status = hm_send_json_frame(descriptor, "{\"protocolVersion\":3,");
+                status = hm_send_json_frame(descriptor, "{\"protocolVersion\":4,");
                 break;
             case HM_COLLECTOR_IPC_UNKNOWN_PROFILE:
                 status = hm_send_json_frame(
                     descriptor,
-                    "{\"protocolVersion\":3,\"kind\":\"capture\",\"profile\":\"FUTURE\"}"
+                    "{\"protocolVersion\":4,\"kind\":\"capture\",\"profile\":\"FUTURE\"}"
                 );
                 break;
             case HM_COLLECTOR_IPC_OVERSIZED:

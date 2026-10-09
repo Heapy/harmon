@@ -20,8 +20,8 @@ import time
 from typing import Any
 
 
-PROTOCOL_VERSION = 3
-WEB_UI_SCHEMA_VERSION = 2
+PROTOCOL_VERSION = 4
+WEB_UI_SCHEMA_VERSION = 4
 MAX_FRAME_BYTES = 32 * 1024 * 1024
 TOKEN_LENGTH = 64
 DEFAULT_FAST_SAMPLES = 20
@@ -162,7 +162,7 @@ def send_frame(connection: socket.socket, payload: dict[str, Any]) -> None:
 
 def require_protocol_frame(frame: dict[str, Any], kind: str) -> None:
     if frame.get("protocolVersion") != PROTOCOL_VERSION or frame.get("kind") != kind:
-        raise SmokeFailure(f"collector did not return protocol-v3 {kind}")
+        raise SmokeFailure(f"collector did not return protocol-v4 {kind}")
 
 
 def collector_exchange(socket_path: str, request: dict[str, Any]) -> dict[str, Any]:

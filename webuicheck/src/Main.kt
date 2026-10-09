@@ -1,5 +1,6 @@
 package io.heapy.harmon.webuicheck
 
+import io.heapy.harmon.model.ProcessContext
 import io.heapy.harmon.model.ProcessCollectionIssueReason
 import io.heapy.harmon.model.ProcessMetricValue
 import io.heapy.harmon.model.ProcessTreeNode
@@ -480,7 +481,14 @@ private fun measuredNode(
     parentPid = parentPid,
     uid = 501u,
     name = name,
-    executablePath = "/Applications/$name.app/Contents/MacOS/$name",
+    executablePath = if (pid == 200 || pid == 301) "/opt/homebrew/bin/node"
+        else "/Applications/$name.app/Contents/MacOS/$name",
+    context = if (pid == 200 || pid == 301) ProcessContext(
+        cwd = "/Users/test/Projects/Shared workspace",
+        argv = listOf("node", "server.js", "--port", if (pid == 200) "3000" else "3001",
+            "", "space value", "<img src=x onerror=alert(1)>", "Привет"),
+        argvTruncated = pid == 301,
+    ) else null,
     measured = true,
     issueReason = null,
     errorCode = null,

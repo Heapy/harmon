@@ -207,12 +207,13 @@ a machine whose energy counter reads zero: where it reports, that key is not
 consulted at all and `applicationPowerAlertWatts` governs battery-drain alerts
 instead.
 
-The collector protocol is now version 3. Version 2 introduced the corrected CPU
+The collector protocol is now version 4. Version 2 introduced the corrected CPU
 counter units; version 3 adds a strict `HELLO → PROBE|CAPTURE(profile) →
 ACK|SNAPSHOT(appliedProfile)` exchange. Probe performs no collection, and the
-two accepted profiles are `FULL` and `LIVE_FAST`. The collector (root
+two accepted profiles are `FULL` and `LIVE_FAST`. Version 4 adds bounded cwd/argv
+context for the local Live UI. The collector (root
 LaunchDaemon) and agent (user LaunchAgent) remain a matched pair and must be
-reinstalled together with `harmon setup`; a v2/v3 mismatch fails explicitly.
+reinstalled together with `harmon setup`; a protocol-version mismatch fails explicitly.
 
 ## Requirements
 
@@ -326,9 +327,16 @@ CPU Total descending is the default sort. Memory, I/O, Activity, and Compute /
 Energy presets expose footprint/resident/wired/compressed memory, disk and page
 activity, wakeups/faults/syscalls/threads, and instructions/cycles/power.
 Lifetime peak is self-only. Known partial totals remain sortable and badged;
-unavailable values stay below available ones. Search accepts process names and
-PIDs, keeps matching ancestors visible, and includes a matched process's
-subtree. Roots and their first child level start expanded. Expandable system
+unavailable values stay below available ones. The pinned Process column contains
+only the process name. Optional Path, CWD, and Cmdline columns are enabled through
+Columns; CWD and Cmdline are available only on the Live page. Long values stay on
+one line with an ellipsis; click a value to expand it or hover to read it in full.
+Path highlights the executable basename, and Cmdline preserves argument boundaries
+by quoting. Unavailable values and truncated
+argument lists are labelled explicitly. Search accepts names, executable paths,
+working folders, arguments and PIDs, keeps matching ancestors visible, and
+includes a matched process's subtree. Command context stays out of saved reports,
+notifications and SQLite history. Roots and their first child level start expanded. Expandable system
 details and the full text report remain below the tree.
 
 The live sampler stays idle until at least one visible tab is in Live mode. Its

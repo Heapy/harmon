@@ -46,7 +46,7 @@ deadline; stop a blocked sender whose peer reads too slowly; and still require
 partial writes to complete when they fit inside the bound. The socket suite's
 `socket.collector-transport-stays-bounded` check spawns the real debug collector
 with `posix_spawn`, repeats ten silent-client rounds, and follows malformed,
-unknown-profile, oversized, and truncated requests with a healthy v3 probe. It
+unknown-profile, oversized, and truncated requests with a healthy v4 probe. It
 runs in the ordinary and sanitized harnesses.
 
 Two shapes of anchor are in use — a *bracket* around the bridge's read and a
@@ -235,7 +235,7 @@ Both modes emit one machine-readable JSON object and always clean up only the
 processes they started. `collector-only` starts an unprivileged release
 collector on its own temporary Unix socket, grows the process table toward
 1,000 with temporary `/bin/sleep` children, and measures idle CPU plus strictly
-sequential v3 `FULL`/`LIVE_FAST` latency. It is a lower bound, not end-to-end
+sequential v4 `FULL`/`LIVE_FAST` latency. It is a lower bound, not end-to-end
 Live CPU evidence. `live-end-to-end` requires an already-authorized running
 agent and collector plus explicit PIDs, renews the same Bearer-authenticated
 lease for 90 seconds, measures their cumulative CPU delta, checks both payload
@@ -365,3 +365,18 @@ move the binding assertions into ordinary `kotlin.test` tests and delete the
 `selftest` module and its staleness guard. Keep the C harness: direct `errno`,
 `static inline` internals, framing boundaries, and real sockets remain clearer
 and faster to test there.
+
+## Process command context checks
+
+The `processes.argv-*` checks exercise argument boundaries (including empty,
+quoted, spaced and Unicode values), environment exclusion, malformed regions and
+both byte/count truncation limits. `processes.context-*` spawn this harness with
+known argv and environment (including an empty argv[0]), compare its cwd, reject a mismatched start time and
+an exited process, and verify a cwd change. They run in normal and sanitized
+passes and are registered in `NativeCTest.kt`.
+
+`ProcessContextTest` carries context through both IPC profiles and the calculator,
+checks fresh versus unavailable Live context, and proves saved notification HTML,
+JSON and text omit context. The browser command-context check verifies search by
+cwd/arguments/path, argument quoting, truncation/unavailability labels, expansion
+and literal rendering of HTML-like arguments.

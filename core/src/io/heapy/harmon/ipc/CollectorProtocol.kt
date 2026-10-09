@@ -27,7 +27,7 @@ data class CollectorSnapshot(
 )
 
 object CollectorProtocol {
-    const val VERSION = 3
+    const val VERSION = 4
 
     private val json = Json {
         encodeDefaults = true

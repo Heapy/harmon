@@ -11,6 +11,56 @@ import kotlin.test.assertTrue
 
 class ProcessTreeUiTest {
     @Test
+    fun commandContextDistinguishesSameExecutableAndDirectoryAndRemainsPlainText() =
+        processUiOnLivePage("command-context") { _, page ->
+            val server = processUiRow(page, 200)
+            assertThat(server.locator(".process-name")).hasText("Code Helper")
+            assertThat(server.locator(".context-column")).hasCount(0)
+            assertThat(server.locator(".process-cell")).not().containsText("/opt/homebrew")
+            page.locator(".column-picker > summary").click()
+            for (label in listOf("Path", "CWD", "Cmdline")) {
+                page.getByLabel("Process · $label").check()
+            }
+            page.locator(".column-picker > summary").click()
+            assertThat(server.locator("td.path .process-basename")).hasText("node")
+            assertThat(server.locator("td.cwd")).hasText("/Users/test/Projects/Shared workspace")
+            val command = server.locator("td.cmdline summary")
+            assertThat(command).containsText("node server.js --port 3000")
+            assertThat(command).containsText("\"\" \"space value\"")
+            assertThat(command).containsText("<img src=x onerror=alert(1)>")
+            assertThat(server.locator("img")).hasCount(0)
+            assertThat(command).hasCSS("white-space", "nowrap")
+            assertTrue(server.boundingBox().height <= 40, "Collapsed command context must not increase row height")
+            command.click()
+            assertThat(server.locator("td.cmdline details")).hasAttribute("open", "")
+            assertThat(command).hasCSS("white-space", "normal")
+            command.click()
+            assertThat(processUiRow(page, 300).locator("td.cwd .not-available")).hasAttribute("title", "Unavailable")
+            assertThat(processUiRow(page, 301).locator("td.cmdline")).containsText("[truncated]")
+            page.getByRole(AriaRole.BUTTON, processUiNamed("Memory")).click()
+            assertThat(server.locator("td.context-column")).hasCount(3)
+            assertThat(server.locator(".process-name")).hasText("Code Helper")
+
+            page.locator(".column-picker > summary").click()
+            for (label in listOf("Path", "CWD", "Cmdline")) {
+                page.getByLabel("Process · $label").uncheck()
+            }
+            page.locator(".column-picker > summary").click()
+            assertThat(server.locator(".context-column")).hasCount(0)
+            val search = page.getByRole(AriaRole.SEARCHBOX, processUiNamed("Search processes"))
+            search.fill("--port 3001")
+            processUiAssertPids(page, listOf("300", "301"))
+            search.fill("shared WORKSPACE")
+            processUiAssertPids(page, listOf("200", "300", "301"))
+            search.fill("/opt/homebrew/bin/node")
+            processUiAssertPids(page, listOf("200", "300", "301"))
+            search.fill("")
+            page.screenshot(Page.ScreenshotOptions().setPath(java.nio.file.Path.of(
+                System.getProperty("java.io.tmpdir"), "harmon-process-context.png",
+            )))
+        }
+
+    @Test
     fun removesTheLoadingPlaceholderAfterClientRendering() =
         processUiOnLivePage("loading-placeholder") { _, page ->
             assertThat(page.locator("#app > .loading")).hasCount(0)

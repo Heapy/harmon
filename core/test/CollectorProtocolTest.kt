@@ -37,14 +37,14 @@ class CollectorProtocolTest {
     }
 
     @Test
-    fun helloProbeAndAckUseStrictVersionThreeFrames() {
+    fun helloProbeAndAckUseStrictVersionFourFrames() {
         CollectorProtocol.decodeHello(CollectorProtocol.encodeHello())
         assertEquals(
             CollectorRequest.Probe,
             CollectorProtocol.decodeRequest(CollectorProtocol.encodeProbe()),
         )
         CollectorProtocol.decodeAck(CollectorProtocol.encodeAck())
-        assertEquals(3, CollectorProtocol.VERSION)
+        assertEquals(4, CollectorProtocol.VERSION)
     }
 
     @Test
@@ -104,9 +104,9 @@ class CollectorProtocolTest {
     }
 
     @Test
-    fun reportsV2V3MismatchesBeforeDecodingUnknownPayload() {
+    fun reportsOldAndNewVersionMismatchesBeforeDecodingUnknownPayload() {
         val newer = withUnknownField(CollectorProtocol.encodeHello())
-            .withVersion("\"protocolVersion\":4")
+            .withVersion("\"protocolVersion\":5")
         val older = """{"protocolVersion":2,"snapshot":{}}"""
 
         val newerFailure = assertFailsWith<CollectorProtocolException> {
@@ -116,7 +116,7 @@ class CollectorProtocolTest {
             CollectorProtocol.decodeHello(older)
         }
 
-        assertContains(assertNotNull(newerFailure.message), "Unsupported collector protocol 4")
+        assertContains(assertNotNull(newerFailure.message), "Unsupported collector protocol 5")
         assertContains(assertNotNull(olderFailure.message), "Unsupported collector protocol 2")
         assertEquals(2, CollectorProtocol.reportedVersion(older))
     }

@@ -72,7 +72,7 @@ object ProcessPage {
           --amber: #f0bd66;
           --red: #ff7a90;
           --pid-width: 78px;
-          --process-width: 330px;
+          --process-width: 260px;
         }
 
         * { box-sizing: border-box; }
@@ -212,14 +212,22 @@ object ProcessPage {
         }
         thead .pid-column, thead .process-column { z-index: 12; background: #171e27; }
         .metric-column { width: 128px; min-width: 128px; }
-        .tree-cell { display: flex; align-items: center; min-width: 0; height: 34px; }
+        .tree-cell { display: flex; align-items: center; min-width: 0; min-height: 34px; }
         .tree-guide { flex: none; width: calc(var(--depth) * 18px); }
         .twisty, .twisty-space { flex: none; width: 24px; height: 26px; margin-right: 2px; }
         .twisty {
           border: 0; border-radius: 4px; background: transparent; color: #8191a6; cursor: pointer;
         }
         .twisty:hover { background: #24303e; color: #dbe5ef; }
-        .process-name { overflow: hidden; text-overflow: ellipsis; color: #eef2f6; }
+        .process-name { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+        .process-directory { color: var(--muted); }
+        .process-basename { color: var(--cyan); font-weight: 700; }
+        .context-column { width: 280px; min-width: 280px; max-width: 280px; text-align: left; }
+        .context-column.cmdline { width: 380px; min-width: 380px; max-width: 380px; }
+        .context-value { padding: 6px 0; line-height: 1.4; }
+        .context-value summary { cursor: pointer; list-style: none; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+        .context-value summary::-webkit-details-marker { display: none; }
+        .context-value[open] summary { white-space: normal; overflow-wrap: anywhere; }
         .partial { margin-left: 6px; color: var(--amber); font-size: 9px; text-transform: uppercase; }
         .issue { margin-left: 7px; color: #b79c6e; font-size: 10px; text-transform: lowercase; }
         .self { color: #aab5c2; }
@@ -319,6 +327,10 @@ object ProcessPage {
           { id: "watts", group: "Compute / Energy", label: "Watts", metric: "energyWatts", format: "watts", kind: "decimal" },
           { id: "impact", group: "Compute / Energy", label: "Battery impact", metric: "batteryImpactScore", format: "score", kind: "decimal" }
         ];
+        const contextColumns = [
+          { id: "path", label: "Path" },
+          ...(pageMode === "live" ? [{ id: "cwd", label: "CWD" }, { id: "cmdline", label: "Cmdline" }] : [])
+        ];
         const columnById = Object.fromEntries(columns.map(column => [column.id, column]));
         const presets = Object.fromEntries(
           ["Overview", "Memory", "I/O", "Activity", "Compute / Energy"].map(group =>
@@ -332,6 +344,7 @@ object ProcessPage {
           sort: { column: "cpu", scope: "total" },
           sortDirection: "desc",
           selectedColumns: new Set(presets.Overview),
+          selectedContextColumns: new Set(),
           expanded: new Set(),
           initializedExpansion: false,
           requestError: bootstrapError,
@@ -441,7 +454,10 @@ object ProcessPage {
         }
 
         function matches(node, query) {
-          return node.name.toLocaleLowerCase().includes(query) || String(node.pid).includes(query);
+          return node.name.toLocaleLowerCase().includes(query) || String(node.pid).includes(query)
+            || (node.executablePath || "").toLocaleLowerCase().includes(query)
+            || ((node.context && node.context.cwd) || "").toLocaleLowerCase().includes(query)
+            || ((node.context && node.context.argv) || []).join(" ").toLocaleLowerCase().includes(query);
         }
 
         function filterNode(node, query, ancestorMatched) {
@@ -567,7 +583,33 @@ object ProcessPage {
           ));
         }
 
-        function ProcessRows({ roots, metricColumns, byPid, descendants }) {
+        function contextCell(node, column) {
+          const context = node.context || {};
+          let text = column.id === "path" ? node.executablePath : context.cwd;
+          if (column.id === "cmdline") {
+            text = context.argv == null ? null : context.argv.length ? context.argv.map(argument =>
+              /^[a-zA-Z0-9_./:=+,@%-]+$/.test(argument) ? argument : JSON.stringify(argument)
+            ).join(" ") : context.argvTruncated ? "" : "(no arguments)";
+          }
+          const truncated = column.id === "cmdline" && context.argvTruncated;
+          const split = column.id === "path" && text ? text.lastIndexOf("/") + 1 : 0;
+          return e("td", { key: column.id, class: "context-column " + column.id },
+            text == null || (text === "" && !truncated)
+              ? e("span", { class: "not-available", title: "Unavailable" }, "—")
+              : e("details", { class: "context-value" },
+                  e("summary", {
+                    title: text + (truncated ? " … [truncated]" : ""),
+                    "aria-label": column.label + " for PID " + node.pid + ": " + text + (truncated ? " [truncated]" : "")
+                  },
+                    truncated ? e("span", { class: "partial" }, "[truncated] ") : null,
+                    column.id === "path" ? [
+                      e("span", { class: "process-directory" }, text.slice(0, split)),
+                      e("span", { class: "process-basename" }, text.slice(split))
+                    ] : text))
+          );
+        }
+
+        function ProcessRows({ roots, metricColumns, visibleContextColumns, byPid, descendants }) {
           const forceOpen = state.search.trim().length > 0;
           const rows = flatten(roots, 0, forceOpen, []);
           return rows.map(({ node, depth }) => {
@@ -595,7 +637,7 @@ object ProcessPage {
                       draw();
                     }
                   }, open ? "▾" : "▸") : e("span", { class: "twisty-space" }),
-                  e("span", { class: "process-name", title: node.executablePath || node.name }, node.name),
+                  e("span", { class: "process-name", title: node.name }, node.name),
                   !node.measured ? e("span", { class: "issue" },
                     String(node.issueReason || "unavailable").replaceAll("_", " ")) : null,
                   rowAlertBadges(byPid.get(node.pid)),
@@ -605,6 +647,7 @@ object ProcessPage {
                     : null
                 )
               ),
+              ...visibleContextColumns.map(column => contextCell(node, column)),
               ...metricColumns.map(({ column, scope }) => metricCell(node, column, scope))
             );
           });
@@ -762,6 +805,7 @@ object ProcessPage {
           const unavailable = tree ? Math.max(tree.inaccessibleProcessCount, total - tree.measuredProcessCount) : 0;
           const isLive = pageMode === "live" && !state.frozen && document.visibilityState === "visible";
           const metricColumns = selectedMetricColumns();
+          const visibleContextColumns = contextColumns.filter(column => state.selectedContextColumns.has(column.id));
           const attribution = attributionSummary(payload);
           const byPid = alertsByPid(payload);
           const descendants = descendantAlertCounts(roots, byPid);
@@ -800,7 +844,7 @@ object ProcessPage {
               e("div", { class: "toolbar" },
                 e("input", {
                   class: "search", type: "search", value: state.search,
-                  placeholder: "Search process name or PID", "aria-label": "Search processes",
+                  placeholder: "Search name, path, cwd, arguments or PID", "aria-label": "Search processes",
                   onInput: event => { state.search = event.currentTarget.value; draw(); }
                 }),
                 e("div", { class: "preset-list", "aria-label": "Column presets" },
@@ -810,8 +854,18 @@ object ProcessPage {
                   }, name))
                 ),
                 e("details", { class: "column-picker" },
-                  e("summary", null, "Columns (" + state.selectedColumns.size + ")"),
-                  e("div", { class: "column-menu" }, ...columns.map(column =>
+                  e("summary", null, "Columns (" + (state.selectedColumns.size + state.selectedContextColumns.size) + ")"),
+                  e("div", { class: "column-menu" },
+                    ...contextColumns.map(column => e("label", { key: column.id },
+                      e("input", {
+                        type: "checkbox", checked: state.selectedContextColumns.has(column.id),
+                        onChange: event => {
+                          if (event.currentTarget.checked) state.selectedContextColumns.add(column.id);
+                          else state.selectedContextColumns.delete(column.id);
+                          draw();
+                        }
+                      }), "Process · " + column.label
+                    )), ...columns.map(column =>
                     e("label", { key: column.id },
                       e("input", {
                         type: "checkbox", checked: state.selectedColumns.has(column.id),
@@ -828,13 +882,14 @@ object ProcessPage {
                   e("thead", null, e("tr", null,
                     sortHeader("PID", "pid", "identity", "pid-column"),
                     sortHeader("Process", "name", "identity", "process-column"),
+                    ...visibleContextColumns.map(column => e("th", { key: column.id, class: "context-column " + column.id }, column.label)),
                     ...metricColumns.map(({ column, scope }) =>
                       sortHeader(column.label + " " + (scope === "self" ? "Self" : "Total"), column.id, scope, "metric-column")
                     )
                   )),
                   e("tbody", null,
-                    tree && roots.length ? e(ProcessRows, { roots, metricColumns, byPid, descendants }) :
-                      e("tr", null, e("td", { class: "empty", colSpan: 2 + metricColumns.length },
+                    tree && roots.length ? e(ProcessRows, { roots, metricColumns, visibleContextColumns, byPid, descendants }) :
+                      e("tr", null, e("td", { class: "empty", colSpan: 2 + visibleContextColumns.length + metricColumns.length },
                         tree ? "No processes match this search." : "Waiting for process metrics…"
                       ))
                   )
@@ -876,7 +931,7 @@ object ProcessPage {
             }
             if (!response.ok) throw new Error("HTTP " + response.status);
             const payload = await response.json();
-            if (payload.schemaVersion !== 3) throw new Error("unsupported schema " + payload.schemaVersion);
+            if (payload.schemaVersion !== 4) throw new Error("unsupported schema " + payload.schemaVersion);
             if (generation !== state.pollGeneration || !canPoll()) return;
             state.payload = payload;
             state.requestError = null;

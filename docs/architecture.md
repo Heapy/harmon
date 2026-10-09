@@ -216,7 +216,7 @@ sequenceDiagram
         U->>A: Bearer-authenticated GET /api/live?watch=1
         A->>C: FULL baseline, then LIVE_FAST cadence
         C-->>A: Profile-labelled snapshots
-        A-->>U: Schema-v2 tree and full report
+        A-->>U: Schema-v4 tree and full report
     end
 ```
 
@@ -286,7 +286,7 @@ restart the clock. Collector request frames have the tighter 4 KiB limit, and
 the server shares one five-second deadline across its `HELLO` send and the
 complete request receive. Snapshot responses retain the 32 MiB/30-second bound.
 JSON is generated and parsed with `kotlinx.serialization`, with unknown fields
-rejected in both directions. A version-3 connection is exactly:
+rejected in both directions. A version-4 connection is exactly:
 
 1. collector sends `HELLO`;
 2. agent sends either `PROBE` or `CAPTURE(profile)`;
@@ -303,10 +303,12 @@ the next, so captures never overlap. A silent or drip-fed client consumes at
 most the shared five-second handshake/request window; malformed, oversized,
 unknown, and truncated requests are closed without preventing the next probe.
 
-The current version is 3. Version 2 introduced true nanosecond CPU counters;
+The current version is 4. Version 2 introduced true nanosecond CPU counters;
 version 3 adds the handshake, capture-free probe, and explicit collection
-profiles. The agent refuses every other version, for example with
-`Unsupported collector protocol 2; expected 3`. Collector and agent are a
+profiles. Version 4 adds bounded per-process cwd/argv context to snapshots for
+local Live UI identification. Only the live tree projection includes it; saved
+reports, notifications and history exclude it. The agent refuses every other
+version, for example with `Unsupported collector protocol 3; expected 4`. Collector and agent are a
 matched pair and have to be upgraded together.
 
 ## Local authorization
@@ -507,8 +509,8 @@ shows `run harmon ui again` and renews no lease. Snapshot `file://` pages bypass
 this bootstrap and remain self-contained. Responses opt out of caching,
 referrers, external resources, and MIME sniffing.
 
-The browser still receives schema v2 with one row per PID and an attribution
-timestamp and age. The shared core builder handles missing parents and cycles,
+The browser receives schema v4 with one row per PID, live-only cwd/argv context,
+and an attribution timestamp and age. The shared core builder handles missing parents and cycles,
 aggregates every additive process metric with saturating arithmetic, and
 independently marks self/total availability and partial known totals. Lifetime
 peak remains self-only because summing historical peaks is misleading. All 64-bit integers

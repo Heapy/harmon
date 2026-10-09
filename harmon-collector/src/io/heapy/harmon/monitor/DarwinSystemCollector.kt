@@ -5,6 +5,7 @@ import io.heapy.harmon.model.ProcessorCounters
 import io.heapy.harmon.model.ProcessCollectionIssue
 import io.heapy.harmon.model.ProcessCollectionIssueReason
 import io.heapy.harmon.model.ProcessIdentity
+import io.heapy.harmon.model.ProcessContext
 import io.heapy.harmon.model.RawProcessSample
 import io.heapy.harmon.model.RawSystemSnapshot
 import io.heapy.harmon.model.LoadAverages
@@ -16,6 +17,11 @@ import io.heapy.harmon.nativebridge.probe.HMLoadAverageSample
 import io.heapy.harmon.nativebridge.probe.HMProcessorSample
 import io.heapy.harmon.nativebridge.probe.HMProcessIssue
 import io.heapy.harmon.nativebridge.probe.HMProcessSample
+import io.heapy.harmon.nativebridge.probe.HMProcessContext
+import io.heapy.harmon.nativebridge.probe.HM_COMMAND_BYTES
+import io.heapy.harmon.nativebridge.probe.HM_PROCESS_PATH_SIZE
+import io.heapy.harmon.nativebridge.probe.hm_read_process_context
+import io.heapy.harmon.nativebridge.probe.hm_process_argument
 import io.heapy.harmon.nativebridge.probe.HM_PROCESS_ISSUE_CAPACITY
 import io.heapy.harmon.nativebridge.probe.HMStorageSample
 import io.heapy.harmon.nativebridge.probe.HMSwapSample
@@ -49,6 +55,7 @@ import kotlin.time.Clock
 
 const val FULL_COMPRESSED_ATTRIBUTION_PROCESS_LIMIT = 256
 const val FULL_ATTRIBUTION_REGION_BUDGET = 100_000
+const val PROCESS_CONTEXT_BYTE_BUDGET = 1_048_576
 
 data class AttributionLimits(
     val processLimit: Int,
@@ -143,9 +150,27 @@ class DarwinSystemCollector(
         val storageSample = alloc<HMStorageSample>()
         val storageRead = hm_read_storage(storageSample.ptr) == 0
 
+        val nativeContext = alloc<HMProcessContext>()
+        var remainingContextBytes = PROCESS_CONTEXT_BYTE_BUDGET
         val processes = buildList(processCount) {
             for (index in 0..<processCount) {
                 val sample = nativeProcesses[index]
+                val context = if (remainingContextBytes >= HM_COMMAND_BYTES + HM_PROCESS_PATH_SIZE) {
+                    hm_read_process_context(sample.pid, sample.started_at, nativeContext.ptr)
+                    val cwd = nativeContext.cwd.toOptionalString()
+                    val argv = if (nativeContext.arguments_available != 0) {
+                        List(nativeContext.argument_count) { argument ->
+                            checkNotNull(hm_process_argument(nativeContext.ptr, argument)).toKString()
+                        }
+                    } else {
+                        null
+                    }
+                    remainingContextBytes -= nativeContext.argument_bytes.toInt() +
+                        (cwd?.encodeToByteArray()?.size ?: 0)
+                    ProcessContext(cwd, argv, nativeContext.arguments_truncated != 0)
+                } else {
+                    null
+                }
                 add(
                     RawProcessSample(
                         identity = ProcessIdentity(
@@ -156,6 +181,7 @@ class DarwinSystemCollector(
                         uid = sample.uid.toNullableUid(),
                         name = sample.name.toKString(),
                         executablePath = sample.executable_path.toOptionalString(),
+                        context = context,
                         userTimeNs = sample.user_time_ns,
                         systemTimeNs = sample.system_time_ns,
                         packageIdleWakeups = sample.package_idle_wakeups,

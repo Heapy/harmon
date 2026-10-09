@@ -67,6 +67,7 @@ data class ProcessTreeNode(
     val metrics: ProcessTreeMetrics,
     val unavailableProcessCount: Int,
     val children: List<ProcessTreeNode>,
+    val context: ProcessContext? = null,
 )
 
 object ProcessTreeSnapshotJson {
@@ -81,8 +82,8 @@ object ProcessTreeSnapshotJson {
 object ProcessTreeSnapshotBuilder {
     fun build(report: MonitoringReport): ProcessTreeSnapshot = build(report.usage)
 
-    fun build(usage: SystemUsage): ProcessTreeSnapshot {
-        val drafts = buildDrafts(usage)
+    fun build(usage: SystemUsage, includeProcessContext: Boolean = false): ProcessTreeSnapshot {
+        val drafts = buildDrafts(usage, includeProcessContext)
         val parentByPid = resolveParents(drafts)
         breakCycles(parentByPid)
 
@@ -106,9 +107,9 @@ object ProcessTreeSnapshotBuilder {
         )
     }
 
-    private fun buildDrafts(usage: SystemUsage): Map<Int, NodeDraft> = buildMap {
+    private fun buildDrafts(usage: SystemUsage, includeProcessContext: Boolean): Map<Int, NodeDraft> = buildMap {
         for (process in usage.processes) {
-            put(process.identity.pid, NodeDraft.measured(process))
+            put(process.identity.pid, NodeDraft.measured(process, includeProcessContext))
         }
         for (issue in usage.processIssues) {
             if (issue.pid !in this) put(issue.pid, NodeDraft.issue(issue))
@@ -167,6 +168,7 @@ object ProcessTreeSnapshotBuilder {
                 uid = draft.uid,
                 name = draft.name,
                 executablePath = draft.executablePath,
+                context = draft.context,
                 measured = draft.measured,
                 issueReason = draft.issueReason,
                 errorCode = draft.errorCode,
@@ -326,9 +328,10 @@ object ProcessTreeSnapshotBuilder {
         val issueReason: ProcessCollectionIssueReason?,
         val errorCode: Int?,
         val metrics: Map<MetricKey, MetricNumber?>,
+        val context: ProcessContext? = null,
     ) {
         companion object {
-            fun measured(process: ProcessUsage): NodeDraft = NodeDraft(
+            fun measured(process: ProcessUsage, includeProcessContext: Boolean): NodeDraft = NodeDraft(
                 key = "process:${process.identity.pid}:${process.identity.startedAt}",
                 pid = process.identity.pid,
                 startedAt = process.identity.startedAt,
@@ -336,6 +339,7 @@ object ProcessTreeSnapshotBuilder {
                 uid = process.uid,
                 name = process.name,
                 executablePath = process.executablePath,
+                context = if (includeProcessContext) process.context else null,
                 measured = true,
                 issueReason = null,
                 errorCode = null,

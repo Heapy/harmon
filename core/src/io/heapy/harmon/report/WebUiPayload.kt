@@ -13,7 +13,7 @@ import kotlin.time.Clock
 import kotlin.time.Duration
 import kotlin.time.Instant
 
-const val WEB_UI_SCHEMA_VERSION = 3
+const val WEB_UI_SCHEMA_VERSION = 4
 
 @Serializable
 enum class WebUiStatus {
@@ -187,6 +187,7 @@ object WebUiPayloadFactory {
             attributionCapturedAt = attributionCapturedAt,
             attributionWarning = attributionWarning,
             appliedProfile = appliedProfile,
+            includeProcessContext = true,
             alerts = alerts.map(Alert::toWebUiSummary),
             suppressedAlertKeys = suppressedAlertKeys,
             reportText = attributionReport(
@@ -260,6 +261,7 @@ object WebUiPayloadFactory {
         alerts: List<WebUiAlertSummary>,
         suppressedAlertKeys: List<String>,
         reportText: String,
+        includeProcessContext: Boolean = false,
     ): WebUiPayload = WebUiPayload(
         sequence = sequence.toString(),
         status = WebUiStatus.READY,
@@ -274,7 +276,7 @@ object WebUiPayloadFactory {
         appliedProfile = appliedProfile,
         sampleIntervalSeconds = sampleIntervalSeconds.finiteNonNegative(),
         elapsedSeconds = usage.elapsedSeconds.finiteNonNegative(),
-        processTree = ProcessTreeSnapshotBuilder.build(usage),
+        processTree = ProcessTreeSnapshotBuilder.build(usage, includeProcessContext),
         system = usage.toWebUiSummary(),
         alerts = alerts,
         suppressedAlertKeys = suppressedAlertKeys,

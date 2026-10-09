@@ -46,6 +46,19 @@ extern "C" {
 #define HM_MAX_PROCESS_LIST (1 << 20)
 /* Bounds the saved-argument fallback allocation if a future kernel raises kern.argmax. */
 #define HM_MAX_PROCESS_ARGS (4U * 1024U * 1024U)
+#define HM_COMMAND_BYTES 4096
+#define HM_COMMAND_ARGUMENTS 128
+
+/* Reused for one process at a time; never multiplied by the process capacity. */
+typedef struct {
+    char cwd[HM_PROCESS_PATH_SIZE];
+    char arguments[HM_COMMAND_BYTES];
+    uint32_t argument_offsets[HM_COMMAND_ARGUMENTS];
+    int32_t argument_count;
+    int32_t arguments_available;
+    int32_t arguments_truncated;
+    uint32_t argument_bytes;
+} HMProcessContext;
 
 typedef struct {
     int32_t pid;
@@ -353,6 +366,97 @@ static inline int hm_read_exec_path_from_args(pid_t pid, char *out, uint32_t out
     }
     free(region);
     return written;
+}
+
+/* Decode only argc arguments. Never interpret the following environment as argv. */
+static inline void hm_parse_process_arguments(
+    const char *region, size_t size, HMProcessContext *out
+) {
+    out->argument_count = 0;
+    out->argument_bytes = 0;
+    out->arguments_available = 0;
+    out->arguments_truncated = 0;
+    if (region == NULL || size <= sizeof(int)) return;
+    int argc = 0;
+    memcpy(&argc, region, sizeof(argc));
+    if (argc < 0) return;
+    const char *end = region + size;
+    const char *cursor = region + sizeof(int);
+    const char *terminator = memchr(cursor, 0, (size_t)(end - cursor));
+    if (terminator == NULL) return;
+    cursor = terminator + 1;
+    /* XNU exec_extract_strings aligns the saved path to the target pointer size.
+     * Harmon supports only 64-bit macOS processes. The stripped executable_path=
+     * prefix is 16 bytes, so alignment is unchanged. Do not skip every NUL: an
+     * empty argv[0] is an argument, and skipping it would leak env[0] into argv.
+     */
+    const size_t path_bytes = (size_t)(cursor - (region + sizeof(int)));
+    const size_t padding = (8 - path_bytes % 8) % 8;
+    if ((size_t)(end - cursor) < padding) return;
+    for (size_t index = 0; index < padding; ++index) {
+        if (*cursor++ != 0) return;
+    }
+    for (int index = 0; index < argc; ++index) {
+        terminator = memchr(cursor, 0, (size_t)(end - cursor));
+        if (terminator == NULL) {
+            out->argument_count = 0;
+            out->argument_bytes = 0;
+            return;
+        }
+        const size_t bytes = (size_t)(terminator - cursor) + 1;
+        if (index >= HM_COMMAND_ARGUMENTS || bytes > HM_COMMAND_BYTES - out->argument_bytes) {
+            out->arguments_truncated = 1;
+            out->arguments_available = 1;
+            return;
+        }
+        out->argument_offsets[index] = out->argument_bytes;
+        memcpy(out->arguments + out->argument_bytes, cursor, bytes);
+        out->argument_bytes += (uint32_t)bytes;
+        ++out->argument_count;
+        cursor = terminator + 1;
+    }
+    out->arguments_available = 1;
+}
+
+static inline const char *hm_process_argument(const HMProcessContext *context, int index) {
+    if (index < 0 || index >= context->argument_count) return NULL;
+    return context->arguments + context->argument_offsets[index];
+}
+
+static inline int hm_process_has_start_time(pid_t pid, uint64_t started_at) {
+    struct rusage_info_v4 usage;
+    memset(&usage, 0, sizeof(usage));
+    return proc_pid_rusage(pid, RUSAGE_INFO_V4, (rusage_info_t *)&usage) == 0 &&
+        usage.ri_proc_start_abstime == started_at;
+}
+
+static inline void hm_read_process_context(pid_t pid, uint64_t started_at, HMProcessContext *out) {
+    memset(out, 0, sizeof(*out));
+    if (!hm_process_has_start_time(pid, started_at)) return;
+
+    struct proc_vnodepathinfo paths;
+    memset(&paths, 0, sizeof(paths));
+    if (proc_pidinfo(pid, PROC_PIDVNODEPATHINFO, 0, &paths, sizeof(paths)) == sizeof(paths)) {
+        const char *cwd = paths.pvi_cdir.vip_path;
+        if (cwd[0] == '/' && memchr(cwd, 0, sizeof(paths.pvi_cdir.vip_path)) != NULL) {
+            snprintf(out->cwd, sizeof(out->cwd), "%s", cwd);
+        }
+    }
+
+    int mib[3] = {CTL_KERN, KERN_PROCARGS2, (int)pid};
+    size_t size = 0;
+    if (sysctl(mib, 3, NULL, &size, NULL, 0) == 0 &&
+        size > sizeof(int) && size <= HM_MAX_PROCESS_ARGS) {
+        char *region = malloc(size);
+        if (region != NULL) {
+            if (sysctl(mib, 3, region, &size, NULL, 0) == 0) {
+                hm_parse_process_arguments(region, size, out);
+            }
+            free(region);
+        }
+    }
+    /* A recycled PID must not attach another process's context to this sample. */
+    if (!hm_process_has_start_time(pid, started_at)) memset(out, 0, sizeof(*out));
 }
 
 static inline void hm_read_process_metadata(
