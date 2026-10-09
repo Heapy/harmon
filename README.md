@@ -339,6 +339,17 @@ includes a matched process's subtree. Command context stays out of saved reports
 notifications and SQLite history. Roots and their first child level start expanded. Expandable system
 details and the full text report remain below the tree.
 
+Click a process row or focus its name and press Enter to open its details dialog.
+It shows identity, collection status, all Self/Total metrics, alerts, and direct
+children, independently of the table's search, expansion, and column selection.
+Live details also include working directory and command-line arguments. Click a
+child to inspect it in the same dialog; Back retraces those steps. Close, Escape,
+or a click outside dismisses the dialog and restores focus to the original
+process when it is still visible. Details follow the current snapshot in Live
+mode and remain fixed in Snapshot mode and saved reports. If the selected process
+identity disappears, the dialog reports its absence rather than showing another
+process that reused its PID.
+
 The live sampler stays idle until at least one visible tab is in Live mode. Its
 header-authenticated `watch=1` polling renews a shared lease of
 `max(5 seconds, 3 × webSampleSeconds)`; hidden, closed, and Snapshot tabs stop

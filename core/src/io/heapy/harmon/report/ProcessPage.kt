@@ -220,6 +220,31 @@ object ProcessPage {
         }
         .twisty:hover { background: #24303e; color: #dbe5ef; }
         .process-name { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+        button.process-name { border: 0; padding: 0; background: none; color: inherit; font: inherit; cursor: pointer; text-align: left; }
+        tr[data-process-key] { cursor: pointer; }
+        .process-dialog {
+          width: min(920px, calc(100vw - 32px)); max-height: calc(100vh - 40px);
+          padding: 22px; border: 1px solid #3a4758; border-radius: 12px;
+          background: var(--panel); color: #d8dee9; box-shadow: 0 24px 80px #000a;
+        }
+        .process-dialog::backdrop { background: #03070bcc; }
+        .dialog-actions { display: flex; justify-content: space-between; gap: 12px; }
+        .process-dialog h2 { margin: 18px 0 6px; overflow-wrap: anywhere; }
+        .process-dialog h3 { margin: 22px 0 10px; color: var(--cyan); font-size: 13px; }
+        .process-dialog .subtitle { margin-bottom: 16px; }
+        .process-facts { display: grid; grid-template-columns: 160px minmax(0, 1fr); gap: 9px 16px; font-size: 13px; }
+        .process-facts dt { color: var(--muted); }
+        .process-facts dd { margin: 0; white-space: pre-wrap; overflow-wrap: anywhere; }
+        .child-list { display: flex; flex-direction: column; gap: 6px; padding: 0; list-style: none; }
+        .child-list button { width: 100%; text-align: left; overflow-wrap: anywhere; }
+        .process-metrics { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; }
+        .process-metrics .detail-row { gap: 8px; line-height: 1.6; }
+        .process-metrics .detail-row > span:last-child { text-align: right; }
+        @media (max-width: 650px) {
+          .process-metrics { grid-template-columns: 1fr; }
+          .process-facts { grid-template-columns: 1fr; gap: 5px; }
+          .process-facts dd { margin-bottom: 8px; }
+        }
         .process-directory { color: var(--muted); }
         .process-basename { color: var(--cyan); font-weight: 700; }
         .context-column { width: 280px; min-width: 280px; max-width: 280px; text-align: left; }
@@ -347,6 +372,8 @@ object ProcessPage {
           selectedContextColumns: new Set(),
           expanded: new Set(),
           initializedExpansion: false,
+          detailHistory: [],
+          detailOpener: null,
           requestError: bootstrapError,
           timer: null,
           pollGeneration: 0
@@ -622,7 +649,12 @@ object ProcessPage {
               "data-pid": String(node.pid),
               "data-process-key": node.key,
               "aria-level": String(depth + 1),
-              "aria-expanded": hasChildren ? String(open) : null
+              "aria-expanded": hasChildren ? String(open) : null,
+              onClick: event => {
+                if (!event.target.closest("button, details, a, input") && !window.getSelection().toString()) {
+                  openProcess(node, event.currentTarget.querySelector(".process-name"));
+                }
+              }
             },
               e("td", { class: "pid-cell" }, String(node.pid)),
               e("td", { class: "process-cell" },
@@ -637,7 +669,11 @@ object ProcessPage {
                       draw();
                     }
                   }, open ? "▾" : "▸") : e("span", { class: "twisty-space" }),
-                  e("span", { class: "process-name", title: node.name }, node.name),
+                  e("button", {
+                    class: "process-name", type: "button", title: node.name,
+                    "aria-label": "Details for " + node.name + " (PID " + node.pid + ")",
+                    onClick: event => openProcess(node, event.currentTarget)
+                  }, node.name),
                   !node.measured ? e("span", { class: "issue" },
                     String(node.issueReason || "unavailable").replaceAll("_", " ")) : null,
                   rowAlertBadges(byPid.get(node.pid)),
@@ -651,6 +687,116 @@ object ProcessPage {
               ...metricColumns.map(({ column, scope }) => metricCell(node, column, scope))
             );
           });
+        }
+
+        function openProcess(node, opener) {
+          if (!state.detailHistory.length) state.detailOpener = opener;
+          state.detailHistory.push({ key: node.key, name: node.name, pid: node.pid });
+          draw();
+          focusProcessTitle();
+        }
+
+        function focusProcessTitle() {
+          const title = document.getElementById("process-dialog-title");
+          title.focus();
+          title.closest("dialog").scrollTop = 0;
+        }
+
+        function closeProcess() {
+          const opener = state.detailOpener;
+          state.detailHistory = [];
+          state.detailOpener = null;
+          draw();
+          if (opener && opener.isConnected) opener.focus();
+          else document.querySelector(".search").focus();
+        }
+
+        function findProcess(nodes, key) {
+          for (const node of nodes) {
+            if (node.key === key) return node;
+            const child = findProcess(node.children || [], key);
+            if (child) return child;
+          }
+          return null;
+        }
+
+        function processMetricText(node, column, scope) {
+          const value = metric(node, column);
+          if (!metricAvailable(value, scope)) return "Unavailable";
+          return formatMetric(column, value[scope]) +
+            (scope === "total" && value.totalPartial ? " · partial" : "");
+        }
+
+        function ProcessDialog({ payload }) {
+          const selected = state.detailHistory[state.detailHistory.length - 1];
+          if (!selected) return null;
+          const tree = payload && payload.processTree;
+          const node = findProcess((tree && tree.roots) || [], selected.key);
+          const context = (node && node.context) || {};
+          const facts = node ? [
+            ["PID", node.pid], ["Parent PID", node.parentPid], ["UID", node.uid],
+            ["Start identity (mach ticks)", node.startedAt], ["Executable path", node.executablePath],
+            ...(pageMode === "live" ? [
+              ["Working directory", context.cwd],
+              ["Command line", context.argv == null ? null :
+                (context.argv.map(argument => /^[a-zA-Z0-9_./:=+,@%-]+$/.test(argument)
+                  ? argument : JSON.stringify(argument)).join(" ") || (context.argvTruncated ? "" : "(no arguments)")) +
+                (context.argvTruncated ? " … [truncated]" : "")]
+            ] : []),
+            ["Collection", node.measured ? "Measured" : "Unavailable"],
+            ["Collection issue", node.issueReason ? node.issueReason.replaceAll("_", " ") : "None"],
+            ["Error code", node.errorCode ?? "None"],
+            ["Unavailable processes in subtree", node.unavailableProcessCount]
+          ] : [];
+          const allColumns = [...columns, {
+            id: "billedEnergy", group: "Compute / Energy", label: "Billed energy", metric: "billedEnergyPerSecond", format: "rate"
+          }];
+          const children = node ? [...(node.children || [])].sort(nodeComparator) : [];
+          const alerts = node ? alertsByPid(payload).get(node.pid) || [] : [];
+          return e("dialog", {
+            class: "process-dialog", "aria-labelledby": "process-dialog-title",
+            onCancel: event => { event.preventDefault(); closeProcess(); },
+            onClick: event => {
+              if (event.target !== event.currentTarget) return;
+              const rect = event.currentTarget.getBoundingClientRect();
+              if (event.clientX < rect.left || event.clientX > rect.right ||
+                  event.clientY < rect.top || event.clientY > rect.bottom) closeProcess();
+            }
+          },
+            e("div", { class: "dialog-actions" },
+              e("button", {
+                class: "preset-button", type: "button", disabled: state.detailHistory.length < 2,
+                onClick: () => { state.detailHistory.pop(); draw(); focusProcessTitle(); }
+              }, "Back"),
+              e("button", { class: "preset-button", type: "button", onClick: closeProcess }, "Close")
+            ),
+            e("h2", { id: "process-dialog-title", tabIndex: -1 }, (node ? node.name : selected.name) + " (PID " + selected.pid + ")"),
+            e("p", { class: "subtitle" }, "Captured: " + ((tree && tree.capturedAt) || "Unavailable")),
+            statusText(payload) ? e("p", { class: "notice", role: "status" }, statusText(payload)) : null,
+            state.requestError ? e("p", { class: "notice error", role: "status" }, state.requestError) : null,
+            !node ? e("p", { class: "notice", role: "status" }, "This process is no longer present in the current snapshot.") : [
+              e("dl", { class: "process-facts" }, ...facts.flatMap(([label, value]) => [
+                e("dt", null, label), e("dd", null, value == null || value === "" ? "Unavailable" : String(value))
+              ])),
+              alerts.length ? e("section", { "aria-label": "Process alerts" },
+                e("h3", null, "Alerts"), ...alerts.map(alert => e("p", { key: alert.key }, alert.message))) : null,
+              e("h3", null, "Children (" + children.length + ")"),
+              children.length ? e("ul", { class: "child-list" }, ...children.map(child =>
+                e("li", { key: child.key }, e("button", {
+                  class: "preset-button", type: "button", onClick: () => openProcess(child),
+                  "aria-label": "Details for " + child.name + " (PID " + child.pid + ")"
+                }, child.name + " · PID " + child.pid + " · " + (child.children || []).length + " children →"))
+              )) : e("p", { class: "subtitle" }, "No child processes in this snapshot."),
+              e("h3", null, "All metrics"),
+              e("p", { class: "subtitle" }, "Self / Total including descendants. Partial totals exclude unavailable values. Compressed / paged is a proxy; battery impact is a heuristic score."),
+              e("div", { class: "process-metrics" }, ...Object.keys(presets).map(group =>
+                detailsGroup(group, allColumns.filter(column => column.group === group).map(column =>
+                  detailRow(column.label, processMetricText(node, column, "self") +
+                    (column.selfOnly ? " (self only)" : " / " + processMetricText(node, column, "total")))
+                ))
+              ))
+            ]
+          );
         }
 
         function AlertPanel({ payload }) {
@@ -896,6 +1042,7 @@ object ProcessPage {
                 )
               )
             ),
+            e(ProcessDialog, { payload }),
             e(SystemDetails, { system, attribution }),
             payload && payload.reportText ? e("details", { class: "report-details" },
               e("summary", null, "Full text report"), e("pre", null, payload.reportText)
@@ -903,7 +1050,11 @@ object ProcessPage {
           );
         }
 
-        function draw() { render(e(App), root); }
+        function draw() {
+          render(e(App), root);
+          const dialog = root.querySelector(".process-dialog");
+          if (dialog && !dialog.open) dialog.showModal();
+        }
 
         function canPoll() {
           return pageMode === "live" && tokenPattern.test(token) &&

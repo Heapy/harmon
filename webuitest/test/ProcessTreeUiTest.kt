@@ -11,6 +11,93 @@ import kotlin.test.assertTrue
 
 class ProcessTreeUiTest {
     @Test
+    fun processDetailsNavigateTheFullTreeAndRestoreKeyboardFocus() =
+        processUiOnLivePage("process-details-navigation") { _, page ->
+            page.getByRole(AriaRole.BUTTON, processUiNamed("Collapse Firefox (PID 100)")).click()
+            assertThat(page.getByRole(AriaRole.DIALOG)).hasCount(0)
+            page.getByRole(AriaRole.SEARCHBOX, processUiNamed("Search processes")).fill("103")
+            val opener = processUiRow(page, 100).locator(".process-name")
+            opener.focus()
+            opener.press("Enter")
+            val dialog = page.getByRole(AriaRole.DIALOG)
+            assertThat(dialog).isVisible()
+            assertThat(dialog).hasAttribute("aria-labelledby", "process-dialog-title")
+            assertThat(dialog.locator("h2")).hasText("Firefox (PID 100)")
+            assertThat(dialog.locator(".process-metrics .detail-row")).hasCount(25)
+            assertThat(dialog).containsText("5.0% / 50.0%")
+            assertThat(dialog).containsText("Lifetime peak")
+            // The search hides GPU in the tree, but details retain every direct child.
+            assertThat(dialog.locator(".child-list button")).hasCount(2)
+            dialog.getByRole(AriaRole.BUTTON).filter(
+                com.microsoft.playwright.Locator.FilterOptions().setHasText("Firefox Content"),
+            ).click()
+            assertThat(dialog.locator("h2")).hasText("Firefox Content (PID 101)")
+            dialog.locator(".child-list button").click()
+            assertThat(dialog.locator("h2")).hasText("Firefox WebExtension (PID 103)")
+            assertThat(dialog).containsText("No child processes in this snapshot.")
+            page.getByRole(AriaRole.BUTTON, processUiNamed("Back")).click()
+            assertThat(dialog.locator("h2")).hasText("Firefox Content (PID 101)")
+            page.getByRole(AriaRole.BUTTON, processUiNamed("Back")).click()
+            assertThat(page.getByRole(AriaRole.BUTTON, processUiNamed("Back"))).isDisabled()
+            page.getByRole(AriaRole.BUTTON, processUiNamed("Close")).focus()
+            repeat(4) {
+                page.keyboard().press("Tab")
+                // Native dialogs may hand focus to browser chrome between cycles, never to background controls.
+                assertTrue(page.evaluate(
+                    "document.activeElement === document.body || document.activeElement.closest('dialog') !== null",
+                ) as Boolean)
+            }
+            page.keyboard().press("Escape")
+            assertThat(dialog).hasCount(0)
+            assertThat(opener).isFocused()
+        }
+
+    @Test
+    fun processDetailsFollowLiveUpdatesAndHandleDisappearingChildren() =
+        processUiOnLivePage("process-details-live") { harness, page ->
+            processUiRow(page, 100).locator("td").first().click()
+            val dialog = page.getByRole(AriaRole.DIALOG)
+            harness.sendAndWait("sample 2")
+            assertThat(dialog).containsText("9.0% / 62.0%")
+            assertThat(dialog.locator(".child-list button")).hasCount(3)
+            dialog.locator(".child-list button").filter(
+                com.microsoft.playwright.Locator.FilterOptions().setHasText("Firefox Utility"),
+            ).click()
+            harness.sendAndWait("sample 1")
+            assertThat(dialog).containsText("This process is no longer present in the current snapshot.")
+            assertThat(dialog.locator(".process-metrics")).hasCount(0)
+            page.getByRole(AriaRole.BUTTON, processUiNamed("Back")).click()
+            assertThat(dialog.locator("h2")).hasText("Firefox (PID 100)")
+            page.getByRole(AriaRole.BUTTON, processUiNamed("Close")).click()
+            assertThat(dialog).hasCount(0)
+            page.locator(".mode-button").click()
+            harness.sendAndWait("sample 2")
+            processUiRow(page, 100).locator(".process-name").click()
+            assertThat(dialog).containsText("5.0% / 50.0%")
+            assertThat(dialog.locator(".child-list button")).hasCount(2)
+            page.mouse().click(5.0, 5.0)
+            assertThat(dialog).hasCount(0)
+        }
+
+    @Test
+    fun processDetailsShowUnavailableValuesAndSafeUntruncatedContext() =
+        processUiOnLivePage("process-details-context") { _, page ->
+            processUiRow(page, 300).locator(".process-name").click()
+            val dialog = page.getByRole(AriaRole.DIALOG)
+            assertThat(dialog).containsText("PERMISSION DENIED")
+            assertThat(dialog).containsText("Unavailable / 2.0% · partial")
+            dialog.locator(".child-list button").click()
+            assertThat(dialog).containsText("/Users/test/Projects/Shared workspace")
+            assertThat(dialog).containsText("\"\" \"space value\"")
+            assertThat(dialog).containsText("<img src=x onerror=alert(1)>")
+            assertThat(dialog).containsText("[truncated]")
+            assertThat(dialog.locator("img")).hasCount(0)
+            page.screenshot(Page.ScreenshotOptions().setPath(java.nio.file.Path.of(
+                System.getProperty("java.io.tmpdir"), "harmon-process-details.png",
+            )))
+        }
+
+    @Test
     fun commandContextDistinguishesSameExecutableAndDirectoryAndRemainsPlainText() =
         processUiOnLivePage("command-context") { _, page ->
             val server = processUiRow(page, 200)
@@ -446,6 +533,14 @@ class ProcessTreeUiTest {
                         assertThat(processUiRow(page, 100).locator("td").nth(9)).hasText("10.0 GiB")
                         assertThat(page.locator(".mode-button")).isDisabled()
                         assertThat(page.locator(".mode-button")).containsText("Saved snapshot")
+                        processUiRow(page, 100).locator(".process-name").click()
+                        assertThat(page.getByRole(AriaRole.DIALOG)).isVisible()
+                        assertThat(page.getByRole(AriaRole.DIALOG)).not().containsText("Command line")
+                        page.getByRole(AriaRole.DIALOG).locator(".child-list button").filter(
+                            com.microsoft.playwright.Locator.FilterOptions().setHasText("Firefox Content"),
+                        ).click()
+                        assertThat(page.locator("#process-dialog-title")).hasText("Firefox Content (PID 101)")
+                        page.keyboard().press("Escape")
                         page.getByText("Full text report").click()
                         assertThat(page.locator(".report-details pre"))
                             .hasText("Fake Harmon report for browser tests.")
