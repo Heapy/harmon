@@ -1,4 +1,4 @@
-package io.heapy.harmon.sqldelight
+package io.heapy.ktc.plugins.sqldelight
 
 import app.cash.sqldelight.core.SqlDelightCompilationUnit
 import app.cash.sqldelight.core.SqlDelightDatabaseName
@@ -13,17 +13,18 @@ import java.io.File
 import java.nio.file.Path
 import java.util.ServiceLoader
 
-/**
- * Drives SQLDelight directly because it has no Kotlin Toolchain plugin. Generated migrations are
- * deliberately disabled; schema evolution belongs to the history store (see docs/history.md).
- */
+// SQLDelight ships code generation only through Gradle; this Toolchain plugin drives its compiler
+// directly through the vendored, Gradle-free SqlDelightEnvironment.
 @TaskAction
 fun generateDatabase(
     @Input sqDir: Path,
     @Output generatedSourceDir: Path,
+    packageName: String,
+    className: String,
+    moduleName: String,
 ) {
+    // The task output is reused, so deleted or renamed queries must not leave generated sources behind.
     val outDir = generatedSourceDir.toFile()
-    // Removed or renamed .sq files must not leave stale generated Kotlin behind.
     outDir.deleteRecursively()
     outDir.mkdirs()
 
@@ -38,9 +39,9 @@ fun generateDatabase(
         outputDirectoryFile = outDir,
     )
     val properties = DatabaseProperties(
-        packageName = DATABASE_PACKAGE,
+        packageName = packageName,
         compilationUnits = listOf(compilationUnit),
-        className = DATABASE_CLASS_NAME,
+        className = className,
         dependencies = emptyList(),
         deriveSchemaFromMigrations = false,
         treatNullAsUnknownForEquality = false,
@@ -49,39 +50,26 @@ fun generateDatabase(
         expandSelectStar = true,
     )
 
-    // The sqlite dialect registers itself through ServiceLoader.
+    // The dialect artifact registers its implementation through ServiceLoader.
     val dialect: SqlDelightDialect = ServiceLoader
         .load(SqlDelightDialect::class.java, SqlDelightDialect::class.java.classLoader)
         .firstOrNull()
-        ?: error(
-            "No SqlDelightDialect found on the classpath " +
-                "(expected app.cash.sqldelight:sqlite-3-38-dialect)",
-        )
+        ?: error("No SqlDelightDialect found on the classpath (expected app.cash.sqldelight:sqlite-3-38-dialect)")
 
     val environment = SqlDelightEnvironment(
         properties = properties,
         compilationUnit = compilationUnit,
         verifyMigrations = false,
         dialect = dialect,
-        moduleName = MODULE_NAME,
+        moduleName = moduleName,
     )
 
-    when (
-        val status = environment.generateSqlDelightFiles { line ->
-            println("[sqldelight-gen] $line")
-        }
-    ) {
+    when (val status = environment.generateSqlDelightFiles { line -> println("[sqldelight-gen] $line") }) {
         is SqlDelightEnvironment.CompilationStatus.Failure ->
             error("SQLDelight code generation failed:\n" + status.errors.joinToString("\n"))
         SqlDelightEnvironment.CompilationStatus.Success -> Unit
     }
 }
-
-private const val DATABASE_PACKAGE = "io.heapy.harmon.db"
-
-private const val DATABASE_CLASS_NAME = "HarmonDatabase"
-
-private const val MODULE_NAME = "harmon"
 
 private data class SourceFolder(
     override val folder: File,

@@ -631,8 +631,8 @@ No migration here is a generated one. The schema has exactly one version,
 sqliter maintains `user_version` from it, and the generated `Schema.migrate()` is
 a body that returns `QueryResult.Unit`.
 
-**A `.sqm` file never runs.** `plugins/sqldelight-gen` drives the SQLDelight
-compiler with `deriveSchemaFromMigrations = false` and `verifyMigrations = false`,
+**A `.sqm` file never runs.** `plugins/sqldelight`, installed from
+`Heapy/ktc-sqldelight`, drives the SQLDelight compiler with `deriveSchemaFromMigrations = false` and `verifyMigrations = false`,
 so `.sqm` files contribute nothing to generation and the empty `migrate()` is not
 an oversight — it is what those two flags produce. Adding a migration file and
 expecting the driver to apply it is the one mistake this section exists to

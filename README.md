@@ -225,6 +225,25 @@ resolves Kotlin 2.4.10.
 
 ## Build and test
 
+SQLDelight generation uses the shared `Heapy/ktc-sqldelight` plugin, installed
+through the checked-in `ktc-plugins` wrapper. Its sources and licenses are
+vendored in `plugins/sqldelight`; `ktc-plugins.lock.yaml` pins the exact revision.
+The plugin retains its upstream compiler settings; Harmon-owned modules use
+`harmon.module-template.yaml`. `history-sqlite/module.yaml` configures
+`io.heapy.harmon.db.HarmonDatabase`, and the managed catalog aliases keep the
+SQLDelight runtime and Native driver aligned with the generator.
+
+Verify the installation with `./ktc-plugins verify`. Update it through
+`./ktc-plugins update sqldelight --commit <full-commit-sha>`, review the sources
+and lockfile, then build and run the SQLite tests:
+
+```shell
+./kotlin build -m history-sqlite
+./kotlin test -m history-sqlite
+```
+
+Build and test the whole project with:
+
 ```shell
 ./kotlin build
 ./kotlin build --variant release
@@ -765,7 +784,7 @@ bridge-install/
                executable-path discovery used by setup and status
 bridge-probe/  libproc, Mach, sysctl, and IOKit cinterop
 bridge-http/   libcurl cinterop
-plugins/       the SQLDelight code generator, as a Toolchain plugin
+plugins/       shared SQLDelight Toolchain plugin managed by ktc-plugins
 selftest/      probe binding checks run from Kotlin
 test/          root CLI/factory/harness tests, plus the C harness in test/native
 launchd/       Harmon.app metadata and icon

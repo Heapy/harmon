@@ -1,9 +1,0 @@
-product: jvm/amper-plugin
-
-apply: [../../harmon.module-template.yaml]
-
-dependencies:
-  - $libs.sqldelight.core
-  - $libs.sqldelight.sqlite.dialect
-  - $libs.sql.psi.environment
-  - $libs.sqldelight.compiler.env

@@ -15,13 +15,8 @@
  */
 package app.cash.sqldelight.core
 
-// Vendored under Apache-2.0 from SQLDelight 2.3.2:
-//   sqldelight-gradle-plugin/src/main/kotlin/app/cash/sqldelight/core/SqlDelightEnvironment.kt
-// The optimistic-lock annotator is the only upstream code omitted because its type is unavailable
-// from `core`; keep the rest aligned so upgrades remain a diff. Retain the upstream package, but
-// delete this file if `core` begins shipping the class to avoid a duplicate on the build classpath.
-// Retain unreachable migration branches for clean upstream diffs; Generate.kt disables `.sqm`
-// migrations. See docs/history.md.
+// Vendored from SQLDelight 2.3.2's Gradle plugin. The optimistic-lock annotator is omitted because
+// it is not available in the Gradle-free core artifact used here.
 
 import app.cash.sqldelight.core.compiler.SqlDelightCompiler
 import app.cash.sqldelight.core.lang.DatabaseFileType
@@ -33,7 +28,6 @@ import app.cash.sqldelight.core.lang.SqlDelightFile
 import app.cash.sqldelight.core.lang.SqlDelightFileType
 import app.cash.sqldelight.core.lang.SqlDelightParserDefinition
 import app.cash.sqldelight.core.lang.SqlDelightQueriesFile
-import app.cash.sqldelight.core.lang.util.migrationFiles
 import app.cash.sqldelight.core.psi.SqlDelightImportStmt
 import app.cash.sqldelight.dialect.api.SqlDelightDialect
 import com.alecstrong.sql.psi.core.AnnotationException
@@ -51,21 +45,15 @@ import com.intellij.psi.FileTypeFileViewProviders
 import com.intellij.psi.PsiDirectory
 import com.intellij.psi.PsiDocumentManager
 import com.intellij.psi.PsiElement
-import com.intellij.psi.PsiErrorElement
 import com.intellij.psi.PsiFile
 import com.intellij.psi.PsiFileSystemItem
 import com.intellij.psi.PsiManager
-import com.intellij.psi.util.PsiTreeUtil
 import java.io.File
 import java.util.StringTokenizer
 import kotlin.math.log10
 import kotlin.reflect.KClass
 import kotlin.system.measureTimeMillis
 
-/**
- * Mocks an intellij environment for compiling sqldelight files without an instance of intellij
- * running.
- */
 class SqlDelightEnvironment(
   private val properties: SqlDelightDatabaseProperties,
   private val compilationUnit: SqlDelightCompilationUnit,
@@ -137,9 +125,6 @@ class SqlDelightEnvironment(
     }
   }
 
-  /**
-   * Run the SQLDelight compiler and return the error or success status.
-   */
   fun generateSqlDelightFiles(logger: (String) -> Unit): CompilationStatus {
     val errors = sortedMapOf<Long, MutableList<String>>()
     annotate(
@@ -212,33 +197,6 @@ class SqlDelightEnvironment(
     return CompilationStatus.Success
   }
 
-  fun forMigrationFiles(body: (MigrationFile) -> Unit) {
-    val psiManager = PsiManager.getInstance(projectEnvironment.project)
-    val migrationFiles: Collection<MigrationFile> = sourceFolders
-      .map { localFileSystem.findFileByPath(it.absolutePath)!! }
-      .map { psiManager.findDirectory(it)!! }
-      .flatMap { directory: PsiDirectory -> directory.migrationFiles() }
-    migrationFiles.sortedBy { it.version }
-      .forEach {
-        val errorElements = ArrayList<PsiErrorElement>()
-        PsiTreeUtil.processElements(it) { element ->
-          when (element) {
-            is PsiErrorElement -> errorElements.add(element)
-            // Uncomment when sqm files understand their state of the world.
-            // is SqlAnnotatedElement -> element.annotate(annotationHolder)
-          }
-          return@processElements true
-        }
-        if (errorElements.isNotEmpty()) {
-          throw SqlDelightException(
-            "Error Reading ${it.name}:\n\n" +
-              errorElements.joinToString(separator = "\n") { errorMessage(it, it.errorDescription) },
-          )
-        }
-        body(it)
-      }
-  }
-
   private fun errorMessage(element: PsiElement, message: String): String = "${element.containingFile.virtualFile.path}:${element.lineStart}:${element.charPositionInLine} $message\n${detailText(element)}"
 
   private fun detailText(element: PsiElement) = try {
@@ -252,9 +210,7 @@ class SqlDelightEnvironment(
       val lineValue = tokenizer.nextToken()
       result.append(("%0${maxDigits}d    %s\n").format(line, lineValue))
       if (element.lineStart == element.lineEnd && element.lineStart == line) {
-        // If it's an error on a single line highlight where on the line.
         result.append(("%${maxDigits}s    ").format(""))
-        // Print tabs when you see it, spaces for everything else.
         lineValue.subSequence(0 until element.charPositionInLine)
           .map { char -> if (char != '\t') " " else char }
           .forEach(result::append)
@@ -264,8 +220,6 @@ class SqlDelightEnvironment(
 
     result.toString()
   } catch (e: Exception) {
-    // If there is an exception while trying to print an error, just give back the unformatted error
-    // and print the stack trace for more debugging.
     e.printStackTrace()
     element.text
   }

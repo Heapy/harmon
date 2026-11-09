@@ -5,12 +5,16 @@ product:
 apply: [../harmon.module-template.yaml]
 
 plugins:
-  sqldelight-gen: enabled
+  sqldelight:
+    enabled: true
+    packageName: io.heapy.harmon.db
+    className: HarmonDatabase
 
 dependencies:
   - ../core
+  - $libs.ktc.sqldelight.runtime
   # Unlike project cinterops, this third-party klib is reachable from the test compilation.
-  - $libs.sqldelight.native.driver
+  - $libs.ktc.sqldelight.native.driver
 
 settings:
   kotlin:

@@ -9,3 +9,5 @@ dist/
 out/
 local.properties
 webuitest/test-results/
+# ktc-plugins managed entries
+/.ktc-plugins/

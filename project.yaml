@@ -6,10 +6,10 @@ modules:
   - ./core
   - ./harmon-collector
   - ./history-sqlite
-  - ./plugins/sqldelight-gen
+  - ./plugins/sqldelight
   - ./selftest
   - ./webuicheck
   - ./webuitest
 
 plugins:
-  - ./plugins/sqldelight-gen
+  - //plugins/sqldelight
